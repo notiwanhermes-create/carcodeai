@@ -741,39 +741,23 @@ function selectModel(m: string) {
       )}
 
       <div className="mx-auto max-w-6xl px-6 py-10">
-        {/* Top bar */}
         <div className="flex items-start justify-between gap-6">
           <div>
             <div className="text-xs font-medium text-slate-500">Car Diagnostics</div>
             <h1 className="mt-1 text-2xl font-semibold tracking-tight">CarCode AI Helper</h1>
-            <p className="mt-1 text-sm text-slate-500">
-              Save vehicles in your Garage, then diagnose by code or symptoms.
-            </p>
+            <p className="mt-1 text-sm text-slate-500">Save vehicles in your Garage, then diagnose by code or symptoms.</p>
           </div>
 
           <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
-            <button
-              onClick={() => setTab("diagnose")}
-              className={cn(
-                "rounded-xl px-4 py-2 text-sm font-semibold transition",
-                tab === "diagnose" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50"
-              )}
-            >
+            <button onClick={() => setTab("diagnose")} className={cn("rounded-xl px-4 py-2 text-sm font-semibold transition", tab === "diagnose" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50")}>
               Diagnose
             </button>
-            <button
-              onClick={() => setTab("garage")}
-              className={cn(
-                "rounded-xl px-4 py-2 text-sm font-semibold transition",
-                tab === "garage" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50"
-              )}
-            >
+            <button onClick={() => setTab("garage")} className={cn("rounded-xl px-4 py-2 text-sm font-semibold transition", tab === "garage" ? "bg-blue-600 text-white" : "text-slate-700 hover:bg-slate-50")}>
               Garage
             </button>
           </div>
         </div>
 
-        {/* Active vehicle pill */}
         <div className="mt-6">
           {activeVehicle ? (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
@@ -785,13 +769,7 @@ function selectModel(m: string) {
                   {activeVehicle.engine ? ` (${activeVehicle.engine})` : ""}
                 </div>
               </div>
-              <button
-                onClick={() => setTab("garage")}
-                className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold shadow-sm transition
-                           hover:bg-blue-600 hover:text-white hover:border-blue-600"
-              >
-                Change
-              </button>
+              <button onClick={() => setTab("garage")} className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold shadow-sm transition hover:bg-blue-600 hover:text-white hover:border-blue-600">Change</button>
             </div>
           ) : (
             <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -801,416 +779,78 @@ function selectModel(m: string) {
           )}
         </div>
 
-        {/* Content */}
         {tab === "diagnose" ? (
           <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[420px_1fr]">
-            {/* Left */}
             <div className="space-y-6">
               <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
                 <div className="text-sm font-semibold">Search Issue</div>
                 <div className="mt-1 text-xs text-slate-500">Use a code or symptoms.</div>
 
-                <form
-                  className="mt-5 grid gap-3"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    runDiagnostic(new FormData(e.currentTarget));
-                  }}
-                >
-                  <input
-                    name="code"
-                    placeholder="Trouble Code (optional)"
-                    className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                  />
-
-                  <textarea
-                    name="symptoms"
-                    placeholder="Describe symptoms (rough idle, stalls, no start, noise, etc.)"
-                    className="min-h-[130px] rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                  />
-
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className={cn(
-                      "mt-1 rounded-2xl border border-slate-200 bg-white py-3 text-sm font-semibold text-slate-900 shadow-sm transition",
-                      "hover:bg-blue-600 hover:text-white hover:border-blue-600",
-                      "focus:outline-none focus:ring-2 focus:ring-blue-500/30",
-                      "disabled:opacity-60"
-                    )}
-                  >
-                    {loading ? "Scanning..." : "FIX IT"}
-                  </button>
+                <form className="mt-5 grid gap-3" onSubmit={(e) => { e.preventDefault(); runDiagnostic(new FormData(e.currentTarget)); }}>
+                  <input name="code" placeholder="Trouble Code (optional)" className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                  <textarea name="symptoms" placeholder="Describe symptoms" className="min-h-[130px] rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                  <button type="submit" disabled={loading} className="mt-1 rounded-2xl bg-blue-600 text-white py-3 text-sm font-semibold">{loading ? "Scanning..." : "FIX IT"}</button>
                 </form>
 
-                {error && (
-                  <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                    {error}
-                  </div>
-                )}
+                {error && <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
               </div>
 
-              {/* Review */}
               <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-semibold">Causes Review</div>
-                    <div className="mt-1 text-xs text-slate-500">
-                      {stats.done}/{stats.total} reviewed
-                    </div>
-                  </div>
-
-                  <div className="w-24">
-                    <div className="h-2 w-full rounded-full bg-slate-200">
-                      <div className="h-2 rounded-full bg-blue-600" style={{ width: `${stats.pct}%` }} />
-                    </div>
-                    <div className="mt-1 text-right text-[11px] text-slate-500">{stats.pct}%</div>
-                  </div>
-                </div>
-
+                <div className="text-sm font-semibold">Causes Review</div>
                 <div className="mt-4 space-y-2">
-                  {review.length === 0 ? (
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
-                      Run a diagnostic to generate causes.
-                    </div>
-                  ) : (
-                    review.map((it) => (
-                      <button
-                        key={it.id}
-                        onClick={() => toggleDone(it.id)}
-                        className={cn(
-                          "w-full rounded-2xl border px-4 py-3 text-left text-sm transition",
-                          it.done
-                            ? "border-blue-200 bg-blue-50 text-slate-700"
-                            : "border-slate-200 bg-white hover:bg-slate-50"
-                        )}
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className={cn("h-2 w-2 rounded-full", it.done ? "bg-blue-600" : "bg-blue-300")} />
-                          <span className={cn(it.done && "line-through text-slate-400")}>{it.title}</span>
-                        </div>
-                      </button>
-                    ))
-                  )}
+                  {review.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">Run a diagnostic to generate causes.</div> : review.map((it) => (
+                    <button key={it.id} onClick={() => toggleDone(it.id)} className={cn("w-full rounded-2xl border px-4 py-3 text-left text-sm", it.done ? "border-blue-200 bg-blue-50" : "border-slate-200 bg-white")}>{it.title}</button>
+                  ))}
                 </div>
               </div>
             </div>
 
-            {/* Right */}
             <div className="space-y-6">
               <LikelyCausesPanel result={result} />
             </div>
           </div>
         ) : (
-          /* Garage */
           <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[420px_1fr]">
-            {/* Add vehicle */}
             <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
               <div className="text-sm font-semibold">Add a Vehicle</div>
               <div className="mt-1 text-xs text-slate-500">Saved in this browser (local).</div>
 
-              <form
-                className="mt-5 grid gap-3"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  addVehicle(new FormData(e.currentTarget));
-                  (e.currentTarget as HTMLFormElement).reset();
-
-                  setGYear("");
-                  setGMake("");
-                  setGModel("");
-                  setGVin("");
-                  setGEngine("");
-
-                  setMakeOptions([]);
-                  setModelOptions([]);
-                  setEngineOptions([]);
-
-                  setMakeOpen(false);
-                  setModelOpen(false);
-                  setEngineOpen(false);
-                }}
-              >
-                <input
-                  name="nickname"
-                  placeholder="Nickname (optional) e.g. My Truck"
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                />
-
-                {/* VIN (optional but recommended for accurate engine) */}
-                <input
-                  name="vin"
-                  placeholder="VIN (optional, helps auto-suggest engine)"
-                  value={gVin}
-                  onChange={(e) => setGVin(e.target.value)}
-                  autoComplete="off"
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-                />
-
+              <form className="mt-5 grid gap-3" onSubmit={(e) => { e.preventDefault(); addVehicle(new FormData(e.currentTarget)); (e.currentTarget as HTMLFormElement).reset(); setGYear(""); setGMake(""); setGModel(""); setGVin(""); setGEngine(""); }}>
+                <input name="nickname" placeholder="Nickname (optional)" className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                <input name="vin" placeholder="VIN (optional)" value={gVin} onChange={(e) => setGVin(e.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm" />
                 <div className="grid grid-cols-2 gap-3">
-  {/* MAKE (dropdown) */}
-  <div className="relative">
-    <input
-    ref={makeInputRef}
-      name="make"
-      placeholder="Make"
-      value={gMake}
-      onChange={(e) => {
-        setGMake(e.target.value);
-        setGModel("");
-        setMakeOpen(true);
-
-        // reset downstream
-        setGEngine("");
-        setEngineOptions([]);
-        setEngineOpen(false);
-      }}
-      onFocus={() => setMakeOpen(true)}
-      onBlur={() => setTimeout(() => setMakeOpen(false), 150)}
-      autoComplete="off"
-      className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none shadow-sm
-                 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-    />
-
-    {makeOpen && makeOptions.length > 0 && (
-  <div className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-lg">
-    <div className="max-h-56 overflow-auto">
-      {makeOptions.slice(0, 20).map((m) => (
-        <button
-          key={m}
-          type="button"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            selectMake(m);
-          }}
-          className="w-full px-4 py-2 text-left text-sm hover:bg-blue-600 hover:text-white"
-        >
-          {m}
-        </button>
-      ))}
-    </div>
-  </div>
-)}
-
-  </div>
-
-  {/* YEAR */}
-  <input
-    name="year"
-    placeholder="Year"
-    value={gYear}
-    onChange={(e) => {
-      setGYear(e.target.value);
-
-      // changing year can change engines
-      setGEngine("");
-      setEngineOptions([]);
-      setEngineOpen(false);
-    }}
-    className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none shadow-sm
-               focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-  />
-
-  {/* MODEL (dropdown) */}
-  <div className="relative">
-    <input
-      name="model"
-      placeholder="Model"
-      value={gModel}
-      onChange={(e) => {
-        setGModel(e.target.value);
-        setEngineOpen(false);
-        setModelOpen(true);
-
-        // reset engine while typing model
-        setGEngine("");
-        setEngineOptions([]);
-        setEngineOpen(false);
-      }}
-      onFocus={() => setModelOpen(true)}
-      onBlur={() => setTimeout(() => setModelOpen(false), 150)}
-      autoComplete="off"
-      disabled={!gMake.trim()}
-      className={cn(
-        "w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none shadow-sm",
-        "focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20",
-        !gMake.trim() && "bg-slate-50"
-      )}
-    />
-
-    {modelOpen && modelOptions.length > 0 && (
-      <div className="absolute left-0 right-0 top-full z-[9999] mt-2 overflow-visible rounded-2xl border border-slate-200 bg-white shadow-lg">
-
-
-        <div className="max-h-56 overflow-auto">
-          {modelOptions.slice(0, 20).map((m) => (
-            <button
-  key={m}
-  type="button"
-  onMouseDown={(e) => {
-    e.preventDefault();
-    selectModel(m);   // ✅ THIS is required
-  }}
-  className="w-full px-4 py-2 text-left text-sm hover:bg-blue-600 hover:text-white"
->
-  {m}
-</button>
-
-          ))}
-        </div>
-      </div>
-    )}
-  </div>
-
-  {/* ENGINE (dropdown) */}
-  <div className="relative">
-    <input
-      name="engine"
-      placeholder="Engine"
-      value={gEngine}
-      onChange={(e) => {
-        setGEngine(e.target.value);
-        setEngineOpen(true);
-      }}
-      onFocus={() => setEngineOpen(true)}
-      onBlur={() => setTimeout(() => setEngineOpen(false), 150)}
-      autoComplete="off"
-      className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm outline-none shadow-sm
-                 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
-    />
-
-    {engineOpen && engineOptions.length > 0 && (
-      <div className="absolute left-0 right-0 top-full z-[9999] mt-2 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-lg">
-        <div className="max-h-56 overflow-auto">
-          {engineOptions.map((eng: any, idx: number) => {
-            const label =
-              typeof eng === "string"
-                ? eng
-                : eng?.label ||
-                  eng?.details ||
-                  [eng?.cylinders ? `${eng.cylinders} cyl` : "", eng?.displacementL ? `${eng.displacementL}L` : ""]
-                    .filter(Boolean)
-                    .join(" ")
-                    .trim() ||
-                  "Engine";
-
-            const key = typeof eng === "string" ? `${eng}-${idx}` : eng?.id || `${label}-${idx}`;
-
-            return (
-              <button
-                key={key}
-                type="button"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  setGEngine(label);
-                  setEngineOpen(false);
-                }}
-                className="w-full px-4 py-2 text-left text-sm hover:bg-blue-600 hover:text-white"
-              >
-                <div className="font-medium">{label}</div>
-
-                {typeof eng !== "string" && (
-                  <div className="mt-0.5 text-[11px] text-slate-500">
-                    {[
-                      eng?.engineType,
-                      eng?.aspiration,
-                      eng?.fuel,
-                      eng?.cylinders ? `${eng.cylinders} cyl` : "",
-                      eng?.displacementL ? `${eng.displacementL}L` : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" • ")}
-                  </div>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    )}
-
-    <div className="mt-1 text-[11px] text-slate-500">
-      Tip: add VIN to get accurate engine suggestions.
-    </div>
-  </div>
-</div>
-
-<button
-  type="submit"
-  className="mt-1 rounded-2xl border border-slate-200 bg-white py-3 text-sm font-semibold text-slate-900 shadow-sm transition
-             hover:bg-blue-600 hover:text-white hover:border-blue-600"
->
-  Save to Garage
-</button>
-</form>
-
-{/* Vehicles list */}
-<div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-  <div className="flex items-center justify-between">
-    <div>
-      <div className="text-sm font-semibold">My Garage</div>
-      <div className="mt-1 text-xs text-slate-500">{garage.length} vehicle(s)</div>
-    </div>
-  </div>
-
-  <div className="mt-4 space-y-3">
-    {garage.length === 0 ? (
-      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
-        No vehicles yet. Add one on the left.
-      </div>
-    ) : (
-      garage.map((v) => {
-        const isActive = v.id === activeId;
-        return (
-          <div
-            key={v.id}
-            className={cn(
-              "rounded-2xl border p-4 transition",
-              isActive ? "border-blue-200 bg-blue-50" : "border-slate-200 bg-white"
-            )}
-          >
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold text-slate-900">
-                  {v.nickname ? `${v.nickname} • ` : ""}
-                  {v.year} {v.make} {v.model}
-                  {v.engine ? ` (${v.engine})` : ""}
+                  <input name="year" placeholder="Year" value={gYear} onChange={(e) => setGYear(e.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                  <input name="make" placeholder="Make" value={gMake} onChange={(e) => setGMake(e.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                  <input name="model" placeholder="Model" value={gModel} onChange={(e) => setGModel(e.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm" />
+                  <input name="engine" placeholder="Engine" value={gEngine} onChange={(e) => setGEngine(e.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm" />
                 </div>
-                <div className="mt-1 text-xs text-slate-500">
-                  Saved vehicle • click Set Active to diagnose faster
-                </div>
-                {v.vin ? <div className="mt-1 text-[11px] text-slate-400">VIN saved</div> : null}
-              </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setActiveId(v.id)}
-                  className={cn(
-                    "rounded-2xl border px-4 py-2 text-sm font-semibold shadow-sm transition",
-                    isActive
-                      ? "border-blue-600 bg-blue-600 text-white"
-                      : "border-slate-200 bg-white hover:bg-blue-600 hover:text-white hover:border-blue-600"
-                  )}
-                >
-                  {isActive ? "Active" : "Set Active"}
-                </button>
+                <button type="submit" className="mt-3 rounded-2xl border border-slate-200 bg-white py-3 text-sm font-semibold">Save to Garage</button>
+              </form>
+            </div>
 
-                <button
-                  type="button"
-                  onClick={() => removeVehicle(v.id)}
-                  className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-100"
-                >
-                  Delete
-                </button>
+            <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="text-sm font-semibold">My Garage</div>
+              <div className="mt-4 space-y-3">
+                {garage.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">No vehicles yet. Add one on the left.</div> : garage.map((v) => {
+                  const isActive = v.id === activeId;
+                  return (
+                    <div key={v.id} className={cn("rounded-2xl border p-4", isActive ? "border-blue-200 bg-blue-50" : "border-slate-200 bg-white")}>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="text-sm font-semibold">{v.nickname ? `${v.nickname} • ` : ""}{v.year} {v.make} {v.model}{v.engine ? ` (${v.engine})` : ""}</div>
+                          {v.vin ? <div className="text-xs text-slate-400">VIN saved</div> : null}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => setActiveId(v.id)} className={cn("rounded-2xl px-4 py-2 text-sm font-semibold", isActive ? "bg-blue-600 text-white" : "border border-slate-200 bg-white")}>{isActive ? "Active" : "Set Active"}</button>
+                          <button onClick={() => removeVehicle(v.id)} className="rounded-2xl px-3 py-2 text-sm">Delete</button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
-          </div>
-        );
-      })
-    )}
-  </div>
-</div>
           </div>
         )}
       </div>

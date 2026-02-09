@@ -13,11 +13,15 @@ export async function ensureDB() {
       id TEXT PRIMARY KEY,
       email TEXT,
       password_hash TEXT,
+      google_id TEXT,
       first_name TEXT,
       last_name TEXT,
       profile_image TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users (LOWER(email)) WHERE email IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS users_google_id_unique ON users (google_id) WHERE google_id IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS sessions (
       sid TEXT PRIMARY KEY,

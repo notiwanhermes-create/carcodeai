@@ -80,7 +80,7 @@ export async function loginUser(email: string, password: string): Promise<{ user
   const user = result.rows[0];
 
   if (!user.password_hash) {
-    return { error: "Invalid email or password." };
+    return { error: "This account uses Google sign-in. Please use the Google button." };
   }
 
   const valid = await bcrypt.compare(password, user.password_hash);
@@ -89,6 +89,29 @@ export async function loginUser(email: string, password: string): Promise<{ user
   }
 
   return { userId: user.id };
+}
+
+export async function findOrCreateGoogleUser(googleId: string, email: string, firstName?: string, lastName?: string, profileImage?: string): Promise<string> {
+  await ensureDB();
+
+  const existing = await pool.query("SELECT id FROM users WHERE google_id = $1", [googleId]);
+  if (existing.rows.length > 0) {
+    return existing.rows[0].id;
+  }
+
+  const byEmail = await pool.query("SELECT id, google_id FROM users WHERE LOWER(email) = LOWER($1)", [email]);
+  if (byEmail.rows.length > 0) {
+    await pool.query("UPDATE users SET google_id = $1, profile_image = COALESCE(profile_image, $2) WHERE id = $3", [googleId, profileImage || null, byEmail.rows[0].id]);
+    return byEmail.rows[0].id;
+  }
+
+  const userId = randomBytes(16).toString("hex");
+  await pool.query(
+    `INSERT INTO users (id, email, google_id, first_name, last_name, profile_image)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [userId, email.toLowerCase(), googleId, firstName || null, lastName || null, profileImage || null]
+  );
+  return userId;
 }
 
 export async function destroySession(): Promise<void> {

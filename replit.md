@@ -36,14 +36,15 @@ All API routes live under `app/api/` using Next.js Route Handlers:
 - **Type**: Email/password authentication with bcrypt password hashing
 - **Library**: `bcryptjs` for password hashing (12 rounds)
 - **Session Management**: Custom session system with random 64-char hex session IDs stored in PostgreSQL, 7-day expiry, session ID stored in httpOnly cookies
-- **Endpoints**: `/api/auth/login` (POST), `/api/auth/register` (POST), `/api/auth/logout` (GET/POST), `/api/auth/user` (GET)
-- **UI**: Modal-based login/register form in the frontend (no page redirects)
+- **Endpoints**: `/api/auth/login` (POST), `/api/auth/register` (POST), `/api/auth/logout` (GET/POST), `/api/auth/user` (GET), `/api/auth/google` (GET - initiates OAuth), `/api/auth/google/callback` (GET - OAuth callback)
+- **Google OAuth**: Uses `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` secrets. State parameter for CSRF protection. Links Google accounts with existing email accounts automatically.
+- **UI**: Modal-based login/register form in the frontend (no page redirects) with "Sign in with Google" button
 
 ### Database
 - **Engine**: PostgreSQL via `pg` (node-postgres) library with a connection pool
 - **Connection**: Uses `DATABASE_URL` environment variable
 - **Schema** (auto-created on first use via `ensureDB()`):
-  - `users` — id, email, first_name, last_name, profile_image, created_at
+  - `users` — id, email, password_hash, google_id, first_name, last_name, profile_image, created_at
   - `sessions` — sid (PK), user_id (FK→users), expires_at, created_at
   - `garage_vehicles` — id, user_id (FK→users), year, make, model, engine, vin, is_active, created_at
   - `maintenance_records` — id, user_id (FK→users), vehicle_id (FK→garage_vehicles), type, date, mileage, notes, created_at

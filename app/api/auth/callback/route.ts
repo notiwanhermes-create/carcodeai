@@ -1,6 +1,7 @@
-import { handleCallback, createSession, createAuthToken } from "@/app/lib/auth";
+import { handleCallback, createSession } from "@/app/lib/auth";
 import { headers } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
+import { randomBytes } from "crypto";
 
 function errorPage(msg: string, detail: string): Response {
   return new Response(
@@ -23,10 +24,7 @@ export async function GET(req: NextRequest) {
     const error = req.nextUrl.searchParams.get("error");
     const errorDesc = req.nextUrl.searchParams.get("error_description");
 
-    const h = await headers();
-    const hostname = h.get("x-forwarded-host") || h.get("host") || "";
-
-    console.log("Auth callback: hostname =", hostname);
+    console.log("Auth callback hit");
 
     if (error) {
       console.error("OIDC error:", error, errorDesc);
@@ -48,15 +46,23 @@ export async function GET(req: NextRequest) {
     const sid = await createSession(result.userId);
     const { originHost } = result;
 
-    const currentHost = hostname.split(":")[0];
-    const isCustomDomain = currentHost !== originHost && originHost && !originHost.includes("replit.dev");
+    const h = await headers();
+    const currentHost = (h.get("x-forwarded-host") || h.get("host") || "").split(":")[0];
+    const isCustomDomain = originHost !== currentHost && !originHost.includes("replit.dev");
 
     if (isCustomDomain) {
-      const token = await createAuthToken(sid, originHost);
+      const token = randomBytes(32).toString("hex");
+
+      const pool = (await import("@/app/lib/db")).default;
+      await pool.query(
+        "INSERT INTO auth_tokens (token, sid, origin_host) VALUES ($1, $2, $3)",
+        [token, sid, originHost]
+      );
+
       return NextResponse.redirect(new URL(`https://${originHost}/api/auth/complete?token=${token}`));
     }
 
-    const response = NextResponse.redirect(new URL(`https://${currentHost}/`));
+    const response = NextResponse.redirect(new URL("/", `https://${originHost}`));
     response.cookies.set("carcode_sid", sid, {
       httpOnly: true,
       secure: true,

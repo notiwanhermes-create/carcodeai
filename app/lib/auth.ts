@@ -1,7 +1,7 @@
 import * as client from "openid-client";
 import { cookies } from "next/headers";
 import pool, { ensureDB } from "./db";
-import { randomBytes, createHash } from "crypto";
+import { randomBytes, createHash, createHmac, createCipheriv, createDecipheriv } from "crypto";
 
 let configCache: Awaited<ReturnType<typeof client.discovery>> | null = null;
 
@@ -10,6 +10,11 @@ const FALLBACK_REPLIT_DOMAIN = "513227df-7af3-4ecf-b6fb-3dd6b112bc28-00-3mrjts8y
 
 function getClientId(): string {
   return process.env.REPL_ID || process.env.OIDC_CLIENT_ID || FALLBACK_CLIENT_ID;
+}
+
+function getSigningKey(): Buffer {
+  const secret = process.env.REPL_ID || FALLBACK_CLIENT_ID;
+  return createHash("sha256").update(secret).digest();
 }
 
 async function getOidcConfig() {
@@ -61,6 +66,32 @@ function generateCodeChallenge(verifier: string): string {
   return createHash("sha256").update(verifier).digest("base64url");
 }
 
+function encryptState(data: { nonce: string; cv: string; oh: string }): string {
+  const key = getSigningKey();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const json = JSON.stringify(data);
+  const encrypted = Buffer.concat([cipher.update(json, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, encrypted]).toString("base64url");
+}
+
+function decryptState(encoded: string): { nonce: string; cv: string; oh: string } | null {
+  try {
+    const key = getSigningKey();
+    const buf = Buffer.from(encoded, "base64url");
+    const iv = buf.subarray(0, 12);
+    const tag = buf.subarray(12, 28);
+    const encrypted = buf.subarray(28);
+    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+    return JSON.parse(decrypted.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
 export async function createSession(userId: string): Promise<string> {
   await ensureDB();
   const sid = generateSessionId();
@@ -98,24 +129,16 @@ export async function getSessionUser(): Promise<{
 }
 
 export async function getLoginUrl(requestHostname: string): Promise<string> {
-  await ensureDB();
   const config = await getOidcConfig();
   const replitDomain = getReplitDomain();
   const redirectUri = `https://${replitDomain}/api/auth/callback`;
-  const state = randomBytes(16).toString("hex");
+  const nonce = randomBytes(16).toString("hex");
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = generateCodeChallenge(codeVerifier);
 
   const originHost = sanitizeOriginHost(requestHostname);
 
-  await pool.query(
-    "INSERT INTO auth_pending (state, code_verifier, origin_host) VALUES ($1, $2, $3)",
-    [state, codeVerifier, originHost]
-  );
-
-  await pool.query(
-    "DELETE FROM auth_pending WHERE created_at < NOW() - INTERVAL '10 minutes'"
-  );
+  const state = encryptState({ nonce, cv: codeVerifier, oh: originHost });
 
   const authUrl = client.buildAuthorizationUrl(config, {
     redirect_uri: redirectUri,
@@ -138,22 +161,16 @@ export async function handleCallback(
   const replitDomain = getReplitDomain();
   const redirectUri = `https://${replitDomain}/api/auth/callback`;
 
-  const pendingResult = await pool.query(
-    "SELECT code_verifier, origin_host FROM auth_pending WHERE state = $1 AND created_at > NOW() - INTERVAL '10 minutes'",
-    [state]
-  );
-
-  if (pendingResult.rows.length === 0) {
-    console.error("Auth callback: no matching pending state found");
+  const stateData = decryptState(state);
+  if (!stateData) {
+    console.error("Auth callback: failed to decrypt state");
     return null;
   }
 
-  const { code_verifier: codeVerifier, origin_host: originHost } = pendingResult.rows[0];
-
-  await pool.query("DELETE FROM auth_pending WHERE state = $1", [state]);
+  const { cv: codeVerifier, oh: originHost } = stateData;
 
   try {
-    console.log("Auth callback: redirectUri =", redirectUri);
+    console.log("Auth callback: redirectUri =", redirectUri, "originHost =", originHost);
     const tokens = await client.authorizationCodeGrant(
       config,
       new URL(`${redirectUri}?code=${code}&state=${state}`),
@@ -185,31 +202,8 @@ export async function handleCallback(
     return { userId, originHost };
   } catch (e: any) {
     console.error("OIDC callback error:", e?.message || e);
-    console.error("OIDC callback details - redirectUri:", redirectUri);
     return null;
   }
-}
-
-export async function createAuthToken(sid: string, originHost: string): Promise<string> {
-  const token = randomBytes(32).toString("hex");
-  await pool.query(
-    "INSERT INTO auth_tokens (token, sid, origin_host) VALUES ($1, $2, $3)",
-    [token, sid, originHost]
-  );
-  await pool.query(
-    "DELETE FROM auth_tokens WHERE created_at < NOW() - INTERVAL '5 minutes'"
-  );
-  return token;
-}
-
-export async function consumeAuthToken(token: string): Promise<{ sid: string; originHost: string } | null> {
-  const result = await pool.query(
-    "SELECT sid, origin_host FROM auth_tokens WHERE token = $1 AND created_at > NOW() - INTERVAL '5 minutes'",
-    [token]
-  );
-  if (result.rows.length === 0) return null;
-  await pool.query("DELETE FROM auth_tokens WHERE token = $1", [token]);
-  return { sid: result.rows[0].sid, originHost: result.rows[0].origin_host };
 }
 
 export async function destroySession(): Promise<void> {

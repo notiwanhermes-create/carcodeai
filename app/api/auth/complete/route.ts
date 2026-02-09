@@ -1,6 +1,6 @@
-import { consumeAuthToken } from "@/app/lib/auth";
 import { headers } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
+import pool from "@/app/lib/db";
 
 export async function GET(req: NextRequest) {
   try {
@@ -10,15 +10,23 @@ export async function GET(req: NextRequest) {
       return NextResponse.redirect(new URL("/?auth_error=missing_token", req.url));
     }
 
-    const result = await consumeAuthToken(token);
+    const result = await pool.query(
+      "SELECT sid, origin_host FROM auth_tokens WHERE token = $1 AND created_at > NOW() - INTERVAL '5 minutes'",
+      [token]
+    );
 
-    if (!result) {
+    if (result.rows.length === 0) {
       return NextResponse.redirect(new URL("/?auth_error=invalid_token", req.url));
     }
 
+    const { sid, origin_host: originHost } = result.rows[0];
+
+    await pool.query("DELETE FROM auth_tokens WHERE token = $1", [token]);
+    await pool.query("DELETE FROM auth_tokens WHERE created_at < NOW() - INTERVAL '5 minutes'");
+
     const h = await headers();
     const currentHost = (h.get("x-forwarded-host") || h.get("host") || "").split(":")[0].toLowerCase();
-    const expectedHost = result.originHost.toLowerCase();
+    const expectedHost = originHost.toLowerCase();
 
     if (currentHost !== expectedHost && currentHost !== expectedHost.replace(/^www\./, "") && `www.${currentHost}` !== expectedHost) {
       console.error("Auth complete: host mismatch. Current:", currentHost, "Expected:", expectedHost);
@@ -26,7 +34,7 @@ export async function GET(req: NextRequest) {
     }
 
     const response = NextResponse.redirect(new URL("/", `https://${currentHost}`));
-    response.cookies.set("carcode_sid", result.sid, {
+    response.cookies.set("carcode_sid", sid, {
       httpOnly: true,
       secure: true,
       sameSite: "lax",

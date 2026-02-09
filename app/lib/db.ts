@@ -47,6 +47,20 @@ export async function ensureDB() {
       notes TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS auth_pending (
+      state TEXT PRIMARY KEY,
+      code_verifier TEXT NOT NULL,
+      origin_host TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_tokens (
+      token TEXT PRIMARY KEY,
+      sid TEXT NOT NULL,
+      origin_host TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
   `);
   initialized = true;
 }

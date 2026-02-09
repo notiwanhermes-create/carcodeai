@@ -33,14 +33,24 @@ function generateSessionId(): string {
   return randomBytes(32).toString("hex");
 }
 
-function getPublicHostname(requestHost?: string): string {
-  if (requestHost) {
-    const clean = requestHost.split(":")[0].replace(/^www\./, "");
-    if (clean && !clean.includes("0.0.0.0") && !clean.includes("localhost") && !clean.includes("127.0.0.1")) {
-      return clean;
-    }
-  }
+function getReplitDomain(): string {
   return process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS || FALLBACK_REPLIT_DOMAIN;
+}
+
+function isAllowedOriginHost(host: string): boolean {
+  const clean = host.split(":")[0].toLowerCase();
+  const replitDomain = getReplitDomain().toLowerCase();
+  if (clean === replitDomain) return true;
+  const allowedCustomDomains = ["carcodeai.com", "www.carcodeai.com"];
+  if (allowedCustomDomains.includes(clean)) return true;
+  if (clean.endsWith(".replit.dev") || clean.endsWith(".repl.co")) return true;
+  return false;
+}
+
+function sanitizeOriginHost(host: string): string {
+  const clean = host.split(":")[0].toLowerCase();
+  if (isAllowedOriginHost(clean)) return clean;
+  return getReplitDomain();
 }
 
 function generateCodeVerifier(): string {
@@ -87,29 +97,26 @@ export async function getSessionUser(): Promise<{
   }
 }
 
-export async function getLoginUrl(hostname: string): Promise<string> {
+export async function getLoginUrl(requestHostname: string): Promise<string> {
+  await ensureDB();
   const config = await getOidcConfig();
-  const publicHost = getPublicHostname(hostname);
-  const redirectUri = `https://${publicHost}/api/auth/callback`;
+  const replitDomain = getReplitDomain();
+  const redirectUri = `https://${replitDomain}/api/auth/callback`;
   const state = randomBytes(16).toString("hex");
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = generateCodeChallenge(codeVerifier);
 
-  const cookieStore = await cookies();
-  cookieStore.set("carcode_auth_state", state, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    maxAge: 600,
-    path: "/",
-  });
-  cookieStore.set("carcode_code_verifier", codeVerifier, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    maxAge: 600,
-    path: "/",
-  });
+  const originHost = sanitizeOriginHost(requestHostname);
+
+  await pool.query(
+    "INSERT INTO auth_pending (state, code_verifier, origin_host) VALUES ($1, $2, $3)",
+    [state, codeVerifier, originHost]
+  );
+
+  await pool.query(
+    "DELETE FROM auth_pending WHERE created_at < NOW() - INTERVAL '10 minutes'"
+  );
+
   const authUrl = client.buildAuthorizationUrl(config, {
     redirect_uri: redirectUri,
     scope: "openid email profile",
@@ -124,17 +131,29 @@ export async function getLoginUrl(hostname: string): Promise<string> {
 
 export async function handleCallback(
   code: string,
-  state: string,
-  hostname: string,
-  codeVerifier: string
-): Promise<{ userId: string } | null> {
+  state: string
+): Promise<{ userId: string; originHost: string } | null> {
   await ensureDB();
   const config = await getOidcConfig();
-  const publicHost = getPublicHostname(hostname);
-  const redirectUri = `https://${publicHost}/api/auth/callback`;
+  const replitDomain = getReplitDomain();
+  const redirectUri = `https://${replitDomain}/api/auth/callback`;
+
+  const pendingResult = await pool.query(
+    "SELECT code_verifier, origin_host FROM auth_pending WHERE state = $1 AND created_at > NOW() - INTERVAL '10 minutes'",
+    [state]
+  );
+
+  if (pendingResult.rows.length === 0) {
+    console.error("Auth callback: no matching pending state found");
+    return null;
+  }
+
+  const { code_verifier: codeVerifier, origin_host: originHost } = pendingResult.rows[0];
+
+  await pool.query("DELETE FROM auth_pending WHERE state = $1", [state]);
 
   try {
-    console.log("Auth callback: redirectUri =", redirectUri, "hostname =", hostname);
+    console.log("Auth callback: redirectUri =", redirectUri);
     const tokens = await client.authorizationCodeGrant(
       config,
       new URL(`${redirectUri}?code=${code}&state=${state}`),
@@ -163,12 +182,34 @@ export async function handleCallback(
       [userId, email, firstName, lastName, profileImage]
     );
 
-    return { userId };
+    return { userId, originHost };
   } catch (e: any) {
     console.error("OIDC callback error:", e?.message || e);
-    console.error("OIDC callback details - redirectUri:", redirectUri, "hostname:", hostname);
+    console.error("OIDC callback details - redirectUri:", redirectUri);
     return null;
   }
+}
+
+export async function createAuthToken(sid: string, originHost: string): Promise<string> {
+  const token = randomBytes(32).toString("hex");
+  await pool.query(
+    "INSERT INTO auth_tokens (token, sid, origin_host) VALUES ($1, $2, $3)",
+    [token, sid, originHost]
+  );
+  await pool.query(
+    "DELETE FROM auth_tokens WHERE created_at < NOW() - INTERVAL '5 minutes'"
+  );
+  return token;
+}
+
+export async function consumeAuthToken(token: string): Promise<{ sid: string; originHost: string } | null> {
+  const result = await pool.query(
+    "SELECT sid, origin_host FROM auth_tokens WHERE token = $1 AND created_at > NOW() - INTERVAL '5 minutes'",
+    [token]
+  );
+  if (result.rows.length === 0) return null;
+  await pool.query("DELETE FROM auth_tokens WHERE token = $1", [token]);
+  return { sid: result.rows[0].sid, originHost: result.rows[0].origin_host };
 }
 
 export async function destroySession(): Promise<void> {

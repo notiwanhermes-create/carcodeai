@@ -62,7 +62,11 @@ export async function GET(req: NextRequest) {
 
     const sid = await createSession(result.userId);
 
-    const response = NextResponse.redirect(new URL("/", baseUrl));
+    const originHost = cookieStore.get("carcode_origin_host")?.value;
+    cookieStore.delete("carcode_origin_host");
+    const finalRedirect = originHost ? `https://${originHost}` : baseUrl;
+
+    const response = NextResponse.redirect(new URL("/", finalRedirect));
     response.cookies.set("carcode_sid", sid, {
       httpOnly: true,
       secure: true,

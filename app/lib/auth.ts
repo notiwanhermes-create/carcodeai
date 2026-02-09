@@ -28,8 +28,12 @@ function generateSessionId(): string {
 }
 
 function getPublicHostname(hostname: string): string {
+  const replitDomain = process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS;
+  if (replitDomain) {
+    return replitDomain;
+  }
   if (hostname.includes("0.0.0.0") || hostname.includes("localhost") || hostname.includes("127.0.0.1")) {
-    return process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS || hostname;
+    return hostname;
   }
   return hostname.split(":")[0];
 }
@@ -101,6 +105,16 @@ export async function getLoginUrl(hostname: string): Promise<string> {
     maxAge: 600,
     path: "/",
   });
+  const originHost = hostname.split(":")[0];
+  if (originHost && originHost !== publicHost) {
+    cookieStore.set("carcode_origin_host", originHost, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      maxAge: 600,
+      path: "/",
+    });
+  }
 
   const authUrl = client.buildAuthorizationUrl(config, {
     redirect_uri: redirectUri,

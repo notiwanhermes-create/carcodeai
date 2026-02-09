@@ -536,11 +536,12 @@ export default function Home() {
       if (savedLang && LANGUAGES.some(l => l.code === savedLang)) setLang(savedLang);
     } catch {}
 
+    const isMobile = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     const handleInstall = (e: Event) => {
       e.preventDefault();
       setInstallPrompt(e);
       const dismissed = localStorage.getItem("carcode_install_dismissed");
-      if (!dismissed) setShowInstallBanner(true);
+      if (!dismissed && isMobile) setShowInstallBanner(true);
     };
     window.addEventListener("beforeinstallprompt", handleInstall);
 

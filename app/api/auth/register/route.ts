@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     response.cookies.set("carcode_sid", sid, {
       httpOnly: true,
       secure: true,
-      sameSite: "lax",
+      sameSite: "none",
       maxAge: 7 * 24 * 60 * 60,
       path: "/",
     });

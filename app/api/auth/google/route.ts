@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
   cookieStore.set("google_oauth_state", state, {
     httpOnly: true,
     secure: true,
-    sameSite: "lax",
+    sameSite: "none",
     maxAge: 600,
     path: "/",
   });

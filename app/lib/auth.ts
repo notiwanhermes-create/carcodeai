@@ -6,6 +6,7 @@ import { randomBytes, createHash } from "crypto";
 let configCache: Awaited<ReturnType<typeof client.discovery>> | null = null;
 
 const FALLBACK_CLIENT_ID = "513227df-7af3-4ecf-b6fb-3dd6b112bc28";
+const FALLBACK_REPLIT_DOMAIN = "513227df-7af3-4ecf-b6fb-3dd6b112bc28-00-3mrjts8yngnmn.riker.replit.dev";
 
 function getClientId(): string {
   return process.env.REPL_ID || process.env.OIDC_CLIENT_ID || FALLBACK_CLIENT_ID;
@@ -27,15 +28,8 @@ function generateSessionId(): string {
   return randomBytes(32).toString("hex");
 }
 
-function getPublicHostname(hostname: string): string {
-  const replitDomain = process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS;
-  if (replitDomain) {
-    return replitDomain;
-  }
-  if (hostname.includes("0.0.0.0") || hostname.includes("localhost") || hostname.includes("127.0.0.1")) {
-    return hostname;
-  }
-  return hostname.split(":")[0];
+function getPublicHostname(): string {
+  return process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS || FALLBACK_REPLIT_DOMAIN;
 }
 
 function generateCodeVerifier(): string {
@@ -84,7 +78,7 @@ export async function getSessionUser(): Promise<{
 
 export async function getLoginUrl(hostname: string): Promise<string> {
   const config = await getOidcConfig();
-  const publicHost = getPublicHostname(hostname);
+  const publicHost = getPublicHostname();
   const redirectUri = `https://${publicHost}/api/auth/callback`;
   const state = randomBytes(16).toString("hex");
   const codeVerifier = generateCodeVerifier();
@@ -136,7 +130,7 @@ export async function handleCallback(
 ): Promise<{ userId: string } | null> {
   await ensureDB();
   const config = await getOidcConfig();
-  const publicHost = getPublicHostname(hostname);
+  const publicHost = getPublicHostname();
   const redirectUri = `https://${publicHost}/api/auth/callback`;
 
   try {

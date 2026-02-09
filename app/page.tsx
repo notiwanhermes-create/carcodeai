@@ -442,13 +442,6 @@ function Toast({ message, visible }: { message: string; visible: boolean }) {
   );
 }
 
-type AuthUser = {
-  id: string;
-  email: string | null;
-  first_name: string | null;
-  last_name: string | null;
-  profile_image: string | null;
-};
 
 export default function Home() {
   const [mounted, setMounted] = useState(false);
@@ -462,18 +455,6 @@ export default function Home() {
   const [garage, setGarage] = useState<Vehicle[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
 
-  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [googleOAuthAvailable, setGoogleOAuthAvailable] = useState(false);
-  const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const [authModalOpen, setAuthModalOpen] = useState(false);
-  const [authMode, setAuthMode] = useState<"login" | "register">("login");
-  const [authEmail, setAuthEmail] = useState("");
-  const [authPassword, setAuthPassword] = useState("");
-  const [authFirstName, setAuthFirstName] = useState("");
-  const [authLastName, setAuthLastName] = useState("");
-  const [authError, setAuthError] = useState("");
-  const [authSubmitting, setAuthSubmitting] = useState(false);
 
   const theme = "dark" as const;
   const t = (dark: string, _light: string) => dark;
@@ -554,44 +535,6 @@ export default function Home() {
     };
     window.addEventListener("beforeinstallprompt", handleInstall);
 
-    const urlParams = new URLSearchParams(window.location.search);
-    const authError = urlParams.get("auth_error");
-    if (authError) {
-      const messages: Record<string, string> = {
-        google_not_configured: "Google sign-in is not available. Please use email and password.",
-        invalid_redirect_uri: "Sign in failed: domain not recognized. Please try again.",
-        state_mismatch: "Sign in failed: session expired. Please try again.",
-        missing_verifier: "Sign in failed: cookies not available. Please try again.",
-        callback_failed: "Sign in failed: could not complete authentication.",
-        server_error: "Sign in failed: server error. Please try again.",
-        missing_params: "Sign in failed: incomplete response.",
-        token_failed: "Google sign-in failed: could not verify with Google.",
-        unexpected: "Sign in failed: unexpected error. Please try email and password.",
-      };
-      showToast(messages[authError] || `Sign in failed: ${authError}`);
-      window.history.replaceState({}, "", "/");
-    }
-
-    fetch("/api/auth/config").then(r => r.json()).then(c => {
-      if (c?.google) setGoogleOAuthAvailable(true);
-    }).catch(() => {});
-
-    fetch("/api/auth/user", { credentials: "include" })
-      .then((r) => r.json())
-      .then((u) => {
-        if (u && u.id) {
-          setAuthUser(u);
-          return fetch("/api/garage", { credentials: "include" }).then((r) => r.ok ? r.json() : null).then((data) => {
-            if (data && data.garage) {
-              setGarage(data.garage);
-              setActiveId(data.activeId || data.garage[0]?.id || null);
-              if (data.maintenance) setMaintenanceRecords(data.maintenance);
-            }
-          });
-        }
-      })
-      .catch(() => {})
-      .finally(() => setAuthLoading(false));
 
     return () => window.removeEventListener("beforeinstallprompt", handleInstall);
   }, []);
@@ -600,28 +543,12 @@ export default function Home() {
     try {
       localStorage.setItem("carcode_garage_v1", JSON.stringify({ garage, activeId }));
     } catch {}
-    if (authUser) {
-      fetch("/api/garage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ action: "sync", garage, activeId, maintenance: maintenanceRecords }),
-      }).catch(() => {});
-    }
   }, [garage, activeId]);
 
   useEffect(() => {
     try {
       localStorage.setItem("carcode_maintenance_v1", JSON.stringify(maintenanceRecords));
     } catch {}
-    if (authUser && Object.keys(maintenanceRecords).length > 0) {
-      fetch("/api/garage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ action: "sync", garage, activeId, maintenance: maintenanceRecords }),
-      }).catch(() => {});
-    }
   }, [maintenanceRecords]);
 
   useEffect(() => {
@@ -951,54 +878,6 @@ export default function Home() {
 
   const [symptomsValue, setSymptomsValue] = useState("");
 
-  const handleAuthSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError("");
-    setAuthSubmitting(true);
-    try {
-      const endpoint = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
-      const body: any = { email: authEmail, password: authPassword };
-      if (authMode === "register") {
-        body.firstName = authFirstName;
-        body.lastName = authLastName;
-      }
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setAuthError(data.error || "Something went wrong.");
-        return;
-      }
-      setAuthModalOpen(false);
-      setAuthEmail("");
-      setAuthPassword("");
-      setAuthFirstName("");
-      setAuthLastName("");
-      if (data.user && data.user.id) {
-        setAuthUser(data.user);
-        try {
-          const garageRes = await fetch("/api/garage", { credentials: "include" });
-          if (garageRes.ok) {
-            const gData = await garageRes.json();
-            if (gData && gData.garage) {
-              setGarage(gData.garage);
-              setActiveId(gData.activeId || gData.garage[0]?.id || null);
-              if (gData.maintenance) setMaintenanceRecords(gData.maintenance);
-            }
-          }
-        } catch {}
-      }
-      showToast(authMode === "login" ? "Signed in successfully!" : "Account created successfully!");
-    } catch {
-      setAuthError("Connection error. Please try again.");
-    } finally {
-      setAuthSubmitting(false);
-    }
-  };
 
   if (!mounted) return <main className="min-h-screen bg-[#0f172a]" />;
 
@@ -1143,65 +1022,6 @@ export default function Home() {
               )}
             </div>
 
-            {!authLoading && (
-              authUser ? (
-                <div className="relative">
-                  <button
-                    onClick={() => setUserMenuOpen(!userMenuOpen)}
-                    className={cn(
-                      "flex h-10 items-center gap-2 px-2.5 shrink-0 rounded-xl transition-all",
-                      t("border border-white/10 bg-white/10 hover:bg-white/20", "border border-slate-200 bg-slate-50 hover:bg-slate-100")
-                    )}
-                  >
-                    {authUser.profile_image ? (
-                      <img src={authUser.profile_image} alt="" className="h-6 w-6 rounded-full" />
-                    ) : (
-                      <div className={cn("flex h-6 w-6 items-center justify-center rounded-full text-[10px] font-bold", t("bg-blue-500 text-white", "bg-blue-100 text-blue-700"))}>
-                        {(authUser.first_name || authUser.email || "U")[0].toUpperCase()}
-                      </div>
-                    )}
-                    <span className={cn("hidden sm:inline text-sm font-medium truncate max-w-[80px]", t("text-slate-200", "text-slate-700"))}>
-                      {authUser.first_name || authUser.email?.split("@")[0] || tr("myAccount", lang)}
-                    </span>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={t("#94a3b8", "#64748b")} strokeWidth="2.5"><path d="M6 9l6 6 6-6"/></svg>
-                  </button>
-                  {userMenuOpen && (
-                    <>
-                      <div className="fixed inset-0 z-40" onClick={() => setUserMenuOpen(false)} />
-                      <div className={cn("absolute right-0 top-full mt-2 z-50 rounded-xl shadow-xl overflow-hidden w-48", t("glass-dropdown", "bg-white border border-slate-200 shadow-lg"))}>
-                        <div className={cn("px-4 py-3 border-b", t("border-white/10", "border-slate-100"))}>
-                          <div className={cn("text-sm font-semibold truncate", t("text-white", "text-slate-900"))}>
-                            {authUser.first_name ? `${authUser.first_name}${authUser.last_name ? ` ${authUser.last_name}` : ""}` : authUser.email || tr("myAccount", lang)}
-                          </div>
-                          {authUser.email && authUser.first_name && (
-                            <div className={cn("text-xs truncate mt-0.5", t("text-slate-400", "text-slate-500"))}>{authUser.email}</div>
-                          )}
-                          <div className="flex items-center gap-1.5 mt-2">
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#22c55e" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
-                            <span className="text-[10px] text-emerald-500">{tr("dataSynced", lang)}</span>
-                          </div>
-                        </div>
-                        <a
-                          href="/api/auth/logout"
-                          className={cn("w-full px-4 py-2.5 text-left text-sm flex items-center gap-2 transition-colors", t("text-red-400 hover:bg-white/10", "text-red-500 hover:bg-red-50"))}
-                        >
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-                          {tr("signOut", lang)}
-                        </a>
-                      </div>
-                    </>
-                  )}
-                </div>
-              ) : (
-                <button
-                  onClick={() => { setAuthMode("login"); setAuthError(""); setAuthModalOpen(true); }}
-                  className="flex h-10 items-center gap-2 px-4 shrink-0 rounded-xl bg-blue-500 text-white text-sm font-semibold transition-all hover:bg-blue-400 shadow-md shadow-blue-500/25"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-                  {tr("signIn", lang)}
-                </button>
-              )
-            )}
           </div>
         </div>
 
@@ -1869,146 +1689,7 @@ export default function Home() {
           </div>
         )}
 
-        {!authUser && !authLoading && (
-          <div className={cn("mt-4 mb-6 rounded-2xl px-4 py-3 flex items-center gap-3", t("bg-amber-500/10 border border-amber-500/20", "bg-amber-50 border border-amber-200"))}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-            </svg>
-            <div className="flex-1 min-w-0">
-              <div className={cn("text-xs sm:text-sm", t("text-amber-200/80", "text-amber-800"))}>{tr("guestWarning", lang)}</div>
-            </div>
-            <button
-              onClick={() => { setAuthMode("login"); setAuthError(""); setAuthModalOpen(true); }}
-              className="shrink-0 rounded-lg bg-amber-500 text-white px-3 py-1.5 text-xs font-semibold transition hover:bg-amber-400"
-            >
-              {tr("signIn", lang)}
-            </button>
-          </div>
-        )}
       </div>
-      {authModalOpen && (
-        <>
-          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" onClick={() => setAuthModalOpen(false)} />
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <div className="relative w-full max-w-sm rounded-2xl bg-slate-800/95 border border-white/10 shadow-2xl p-6 backdrop-blur-xl">
-              <button
-                onClick={() => setAuthModalOpen(false)}
-                className="absolute top-4 right-4 text-slate-400 hover:text-white transition"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
-
-              <h2 className="text-xl font-bold text-white mb-1">
-                {authMode === "login" ? tr("signIn", lang) : tr("signUp", lang)}
-              </h2>
-              <p className="text-sm text-slate-400 mb-5">
-                {authMode === "login" ? tr("guestWarning", lang).split(".")[0] + "." : tr("guestWarning", lang).split(".")[0] + "."}
-              </p>
-
-              {authError && (
-                <div className="mb-4 rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-sm text-red-400">
-                  {authError}
-                </div>
-              )}
-
-              {googleOAuthAvailable && (
-                <>
-                  <a
-                    href="/api/auth/google"
-                    className="flex items-center justify-center gap-3 w-full rounded-xl border border-white/10 bg-slate-700/40 py-2.5 text-sm font-medium text-white hover:bg-slate-700/70 transition"
-                  >
-                    <svg width="18" height="18" viewBox="0 0 48 48">
-                      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-                      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-                      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-                      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-                    </svg>
-                    {authMode === "login" ? tr("signInGoogle", lang) : tr("signUpGoogle", lang)}
-                  </a>
-
-                  <div className="flex items-center gap-3 my-1">
-                    <div className="flex-1 h-px bg-white/10"></div>
-                    <span className="text-xs text-slate-500">{tr("orLabel", lang)}</span>
-                    <div className="flex-1 h-px bg-white/10"></div>
-                  </div>
-                </>
-              )}
-
-              <form onSubmit={handleAuthSubmit} className="space-y-3">
-                {authMode === "register" && (
-                  <div className="flex gap-3">
-                    <div className="flex-1">
-                      <label className="block text-xs text-slate-400 mb-1">{tr("firstName", lang)}</label>
-                      <input
-                        type="text"
-                        value={authFirstName}
-                        onChange={(e) => setAuthFirstName(e.target.value)}
-                        className="w-full rounded-lg bg-slate-700/50 border border-white/10 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500 transition"
-                        placeholder="John"
-                      />
-                    </div>
-                    <div className="flex-1">
-                      <label className="block text-xs text-slate-400 mb-1">{tr("lastName", lang)}</label>
-                      <input
-                        type="text"
-                        value={authLastName}
-                        onChange={(e) => setAuthLastName(e.target.value)}
-                        className="w-full rounded-lg bg-slate-700/50 border border-white/10 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500 transition"
-                        placeholder="Doe"
-                      />
-                    </div>
-                  </div>
-                )}
-
-                <div>
-                  <label className="block text-xs text-slate-400 mb-1">{tr("email", lang)}</label>
-                  <input
-                    type="email"
-                    required
-                    value={authEmail}
-                    onChange={(e) => setAuthEmail(e.target.value)}
-                    className="w-full rounded-lg bg-slate-700/50 border border-white/10 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500 transition"
-                    placeholder="you@example.com"
-                    autoComplete="email"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs text-slate-400 mb-1">{tr("password", lang)}</label>
-                  <input
-                    type="password"
-                    required
-                    minLength={6}
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    className="w-full rounded-lg bg-slate-700/50 border border-white/10 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500 transition"
-                    placeholder="••••••••"
-                    autoComplete={authMode === "login" ? "current-password" : "new-password"}
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={authSubmitting}
-                  className="w-full rounded-xl bg-blue-500 text-white py-2.5 text-sm font-semibold transition hover:bg-blue-400 disabled:opacity-50 disabled:cursor-not-allowed shadow-md shadow-blue-500/25 mt-2"
-                >
-                  {authSubmitting ? "..." : authMode === "login" ? tr("signIn", lang) : tr("signUp", lang)}
-                </button>
-              </form>
-
-              <div className="mt-4 text-center text-sm text-slate-400">
-                {authMode === "login" ? tr("noAccount", lang) : tr("haveAccount", lang)}{" "}
-                <button
-                  onClick={() => { setAuthMode(authMode === "login" ? "register" : "login"); setAuthError(""); }}
-                  className="text-blue-400 hover:text-blue-300 font-semibold transition"
-                >
-                  {authMode === "login" ? tr("signUp", lang) : tr("signIn", lang)}
-                </button>
-              </div>
-            </div>
-          </div>
-        </>
-      )}
     </main>
   );
 }

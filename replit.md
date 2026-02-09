@@ -2,7 +2,7 @@
 
 ## Overview
 
-CarCode AI is a Progressive Web App (PWA) for diagnosing vehicle issues using OBD-II trouble codes or symptom descriptions, powered by OpenAI. Users can enter a diagnostic trouble code (like P0300) or describe symptoms, select their vehicle (year/make/model/engine), and receive AI-generated diagnostic causes with severity levels, confirmation steps, and fix suggestions. The app includes a multi-vehicle garage system with maintenance record tracking, VIN decoding, multi-language support (7 languages), and Replit-based authentication.
+CarCode AI is a Progressive Web App (PWA) for diagnosing vehicle issues using OBD-II trouble codes or symptom descriptions, powered by OpenAI. Users can enter a diagnostic trouble code (like P0300) or describe symptoms, select their vehicle (year/make/model/engine), and receive AI-generated diagnostic causes with severity levels, confirmation steps, and fix suggestions. The app includes a multi-vehicle garage system with maintenance record tracking, VIN decoding, and multi-language support (7 languages). Data is stored locally in the browser (localStorage). Authentication/login has been removed.
 
 ## User Preferences
 

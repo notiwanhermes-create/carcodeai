@@ -2,12 +2,8 @@ import { handleCallback, createSession } from "@/app/lib/auth";
 import { cookies, headers } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 
-function getCleanHost(host: string): string {
-  return host.split(":")[0].replace(/^www\./, "");
-}
-
 function getBaseUrl(host: string): string {
-  const clean = getCleanHost(host);
+  const clean = host.split(":")[0];
   if (clean && !clean.includes("0.0.0.0") && !clean.includes("localhost") && !clean.includes("127.0.0.1")) {
     return `https://${clean}`;
   }

@@ -1,6 +1,5 @@
 import { getLoginUrl } from "@/app/lib/auth";
 import { headers } from "next/headers";
-import { NextResponse } from "next/server";
 
 function errorPage(msg: string, detail: string): Response {
   return new Response(
@@ -21,15 +20,9 @@ export async function GET() {
   try {
     const h = await headers();
     hostname = h.get("x-forwarded-host") || h.get("host") || "";
-    const bareHost = hostname.split(":")[0];
-
-    if (bareHost.startsWith("www.")) {
-      const nonWww = bareHost.replace(/^www\./, "");
-      return NextResponse.redirect(new URL(`https://${nonWww}/api/auth/login`));
-    }
 
     const loginUrl = await getLoginUrl(hostname);
-    return NextResponse.redirect(new URL(loginUrl));
+    return Response.redirect(loginUrl, 302);
   } catch (e: any) {
     console.error("Login route error:", e?.message || e, "hostname:", hostname);
     return errorPage(

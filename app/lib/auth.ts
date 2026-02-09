@@ -118,6 +118,7 @@ export async function handleCallback(
   const redirectUri = `https://${publicHost}/api/auth/callback`;
 
   try {
+    console.log("Auth callback: redirectUri =", redirectUri, "hostname =", hostname);
     const tokens = await client.authorizationCodeGrant(
       config,
       new URL(`${redirectUri}?code=${code}&state=${state}`),
@@ -128,7 +129,10 @@ export async function handleCallback(
     );
 
     const claims = tokens.claims();
-    if (!claims) return null;
+    if (!claims) {
+      console.error("Auth callback: no claims returned");
+      return null;
+    }
 
     const userId = claims.sub;
     const email = (claims as any).email || null;
@@ -144,8 +148,9 @@ export async function handleCallback(
     );
 
     return { userId };
-  } catch (e) {
-    console.error("OIDC callback error:", e);
+  } catch (e: any) {
+    console.error("OIDC callback error:", e?.message || e);
+    console.error("OIDC callback details - redirectUri:", redirectUri, "hostname:", hostname);
     return null;
   }
 }

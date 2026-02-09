@@ -16,12 +16,20 @@ function getPublicBaseUrl(reqUrl: string, host: string): string {
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get("code");
   const state = req.nextUrl.searchParams.get("state");
+  const error = req.nextUrl.searchParams.get("error");
+  const errorDesc = req.nextUrl.searchParams.get("error_description");
 
   const h = await headers();
   const hostname = h.get("x-forwarded-host") || h.get("host") || "";
   const baseUrl = getPublicBaseUrl(req.url, hostname);
 
+  if (error) {
+    console.error("OIDC error:", error, errorDesc);
+    return Response.redirect(new URL("/", baseUrl));
+  }
+
   if (!code || !state) {
+    console.error("Auth callback missing code or state");
     return Response.redirect(new URL("/", baseUrl));
   }
 
@@ -29,6 +37,7 @@ export async function GET(req: NextRequest) {
   const savedState = cookieStore.get("carcode_auth_state")?.value;
 
   if (!savedState || savedState !== state) {
+    console.error("Auth state mismatch. Saved:", !!savedState, "Received:", !!state);
     return Response.redirect(new URL("/", baseUrl));
   }
 
@@ -37,12 +46,14 @@ export async function GET(req: NextRequest) {
   cookieStore.delete("carcode_code_verifier");
 
   if (!codeVerifier) {
+    console.error("Auth callback missing code_verifier cookie");
     return Response.redirect(new URL("/", baseUrl));
   }
 
   const result = await handleCallback(code, state, hostname, codeVerifier);
 
   if (!result) {
+    console.error("handleCallback returned null");
     return Response.redirect(new URL("/", baseUrl));
   }
 

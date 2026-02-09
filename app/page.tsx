@@ -545,6 +545,21 @@ export default function Home() {
     };
     window.addEventListener("beforeinstallprompt", handleInstall);
 
+    const urlParams = new URLSearchParams(window.location.search);
+    const authError = urlParams.get("auth_error");
+    if (authError) {
+      const messages: Record<string, string> = {
+        invalid_redirect_uri: "Sign in failed: domain not recognized. Please try again.",
+        state_mismatch: "Sign in failed: session expired. Please try again.",
+        missing_verifier: "Sign in failed: cookies not available. Please try again.",
+        callback_failed: "Sign in failed: could not complete authentication.",
+        server_error: "Sign in failed: server error. Please try again.",
+        missing_params: "Sign in failed: incomplete response.",
+      };
+      showToast(messages[authError] || `Sign in failed: ${authError}`);
+      window.history.replaceState({}, "", "/");
+    }
+
     fetch("/api/auth/user")
       .then((r) => r.json())
       .then((u) => {

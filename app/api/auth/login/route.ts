@@ -6,6 +6,13 @@ export async function GET() {
   try {
     const h = await headers();
     const hostname = h.get("x-forwarded-host") || h.get("host") || "";
+    const bareHost = hostname.split(":")[0];
+
+    if (bareHost.startsWith("www.")) {
+      const nonWww = bareHost.replace(/^www\./, "");
+      return NextResponse.redirect(`https://${nonWww}/api/auth/login`);
+    }
+
     console.log("Login route: hostname =", hostname);
     const loginUrl = await getLoginUrl(hostname);
     console.log("Login route: redirecting to", loginUrl.substring(0, 80) + "...");

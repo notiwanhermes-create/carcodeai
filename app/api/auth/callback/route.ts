@@ -2,9 +2,13 @@ import { handleCallback, createSession } from "@/app/lib/auth";
 import { cookies, headers } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 
-function getPublicBaseUrl(host: string): string {
-  if (host && !host.includes("0.0.0.0") && !host.includes("localhost") && !host.includes("127.0.0.1")) {
-    const clean = host.split(":")[0].replace(/^www\./, "");
+function getCleanHost(host: string): string {
+  return host.split(":")[0].replace(/^www\./, "");
+}
+
+function getBaseUrl(host: string): string {
+  const clean = getCleanHost(host);
+  if (clean && !clean.includes("0.0.0.0") && !clean.includes("localhost") && !clean.includes("127.0.0.1")) {
     return `https://${clean}`;
   }
   const domain = process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS;
@@ -23,26 +27,26 @@ export async function GET(req: NextRequest) {
 
     const h = await headers();
     const hostname = h.get("x-forwarded-host") || h.get("host") || "";
-    const baseUrl = getPublicBaseUrl(hostname);
+    const baseUrl = getBaseUrl(hostname);
 
     console.log("Auth callback: hostname =", hostname, "baseUrl =", baseUrl);
 
     if (error) {
       console.error("OIDC error:", error, errorDesc);
-      return NextResponse.redirect(new URL("/", baseUrl));
+      return NextResponse.redirect(new URL(`/?auth_error=${encodeURIComponent(error)}`, baseUrl));
     }
 
     if (!code || !state) {
       console.error("Auth callback missing code or state");
-      return NextResponse.redirect(new URL("/", baseUrl));
+      return NextResponse.redirect(new URL("/?auth_error=missing_params", baseUrl));
     }
 
     const cookieStore = await cookies();
     const savedState = cookieStore.get("carcode_auth_state")?.value;
 
     if (!savedState || savedState !== state) {
-      console.error("Auth state mismatch. Saved:", !!savedState, "Received:", !!state);
-      return NextResponse.redirect(new URL("/", baseUrl));
+      console.error("Auth state mismatch. Saved:", savedState ? "yes" : "no", "Received:", state ? "yes" : "no");
+      return NextResponse.redirect(new URL("/?auth_error=state_mismatch", baseUrl));
     }
 
     const codeVerifier = cookieStore.get("carcode_code_verifier")?.value;
@@ -51,14 +55,14 @@ export async function GET(req: NextRequest) {
 
     if (!codeVerifier) {
       console.error("Auth callback missing code_verifier cookie");
-      return NextResponse.redirect(new URL("/", baseUrl));
+      return NextResponse.redirect(new URL("/?auth_error=missing_verifier", baseUrl));
     }
 
     const result = await handleCallback(code, state, hostname, codeVerifier);
 
     if (!result) {
       console.error("handleCallback returned null - check OIDC callback error above");
-      return NextResponse.redirect(new URL("/", baseUrl));
+      return NextResponse.redirect(new URL("/?auth_error=callback_failed", baseUrl));
     }
 
     const sid = await createSession(result.userId);
@@ -76,6 +80,6 @@ export async function GET(req: NextRequest) {
   } catch (e: any) {
     console.error("Auth callback unhandled error:", e?.message || e);
     const domain = process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS || "localhost:5000";
-    return NextResponse.redirect(new URL("/", `https://${domain}`));
+    return NextResponse.redirect(new URL("/?auth_error=server_error", `https://${domain}`));
   }
 }

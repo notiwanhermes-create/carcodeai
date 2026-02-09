@@ -5,8 +5,10 @@ import { randomBytes, createHash } from "crypto";
 
 let configCache: Awaited<ReturnType<typeof client.discovery>> | null = null;
 
+const FALLBACK_CLIENT_ID = "513227df-7af3-4ecf-b6fb-3dd6b112bc28";
+
 function getClientId(): string {
-  return process.env.REPL_ID || process.env.OIDC_CLIENT_ID || "";
+  return process.env.REPL_ID || process.env.OIDC_CLIENT_ID || FALLBACK_CLIENT_ID;
 }
 
 async function getOidcConfig() {

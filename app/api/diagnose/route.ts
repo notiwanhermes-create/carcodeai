@@ -11,6 +11,7 @@ type Body = {
   model?: string;
   engine?: string;
   symptoms?: string;
+  lang?: string;
 };
 
 function safeJsonParse(text: string) {
@@ -47,6 +48,7 @@ export async function POST(req: Request) {
     const code = (body.code || "").trim();
     const engine = (body.engine || "").trim();
     const symptoms = (body.symptoms || "").trim();
+    const lang = (body.lang || "en").trim();
 
     if (!code && !symptoms) {
       return Response.json(
@@ -55,42 +57,57 @@ export async function POST(req: Request) {
       );
     }
 
+    const langMap: Record<string, string> = {
+      en: "English",
+      es: "Spanish",
+      fr: "French",
+      ar: "Arabic",
+      pt: "Portuguese",
+      de: "German",
+      zh: "Chinese",
+    };
+    const outputLanguage = langMap[lang] || "English";
+
     const vehicleLine = `${year} ${make} ${model}${engine ? ` (${engine})` : ""}`;
     const complaintLine = code
       ? `OBD-II code: ${code}`
       : `Symptoms: ${symptoms}`;
 
-    // IMPORTANT: force JSON output and uniqueness
     const system = `
 You are an automotive diagnostic assistant.
 Return ONLY valid JSON. No markdown, no backticks, no extra text.
+IMPORTANT: All text values in the JSON (summary_title, title, why, confirm steps, fix steps, difficulty) MUST be written in ${outputLanguage}.
 
 Rules:
-- Provide 4–7 likely causes, ranked from most to least likely.
+- Provide 4–6 likely causes, ranked from most to least likely.
 - Each cause must have UNIQUE confirm steps and fix steps tailored to that cause (avoid repeating generic advice).
 - Confirm steps should be things a DIY person can do.
 - Fix steps should be practical and safe.
 - Keep each bullet short (1 line).
-- If info is missing, ask 1-2 questions in "questions".
+- For severity: use "high" (most likely cause), "medium" (possible cause), or "low" (less likely).
+- Do NOT include any prices or cost estimates.
+- For difficulty: use "DIY Easy" (anyone can do it), "DIY Moderate" (needs some tools/knowledge), or "Mechanic Recommended" (professional needed). Translate the difficulty label into ${outputLanguage}.
 `;
 
     const user = `
 Vehicle: ${vehicleLine}
 ${complaintLine}
 
-Output JSON in this exact schema:
+Output JSON in this exact schema (all text values in ${outputLanguage}):
 {
   "vehicle": "${vehicleLine}",
   "input": { "code": "${code}", "symptoms": "${symptoms}" },
+  "summary_title": "string (A concise title describing the issue in ${outputLanguage})",
   "causes": [
     {
       "title": "string",
       "why": "string (1 sentence)",
+      "severity": "high | medium | low",
+      "difficulty": "string (translated to ${outputLanguage})",
       "confirm": ["string","string","string"],
       "fix": ["string","string","string"]
     }
-  ],
-  "questions": ["string","string"]
+  ]
 }
 `;
 

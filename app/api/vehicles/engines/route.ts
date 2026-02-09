@@ -65,9 +65,11 @@ function cylLabel(cyl?: number) {
   if (cyl === 3) return "I3";
   if (cyl === 4) return "I4";
   if (cyl === 5) return "I5";
-  if (cyl === 6) return "V6 / I6";
+  if (cyl === 6) return "6-cyl";
   if (cyl === 8) return "V8";
-  return `${cyl} cyl`;
+  if (cyl === 10) return "V10";
+  if (cyl === 12) return "V12";
+  return `${cyl}-cyl`;
 }
 
 function toLitersFromCC(cc?: number) {
@@ -115,21 +117,70 @@ export async function GET(req: Request) {
 
   if (!year || !make || !model) return jsonError("year, make, model are required");
 
-  // NOTE: CarQuery string matching is picky.
-  // Ideally your Y/M/M dropdowns also come from CarQuery to avoid mismatch. :contentReference[oaicite:1]{index=1}
-  const url =
-    `https://www.carqueryapi.com/api/0.3/?cmd=getTrims&full_results=1` +
-    `&year=${encodeURIComponent(year)}` +
-    `&make=${encodeURIComponent(make)}` +
-    `&model=${encodeURIComponent(model)}`;
-
   try {
-    const r = await fetch(url, { cache: "no-store" });
-    if (!r.ok) return jsonError("CarQuery request failed", 502);
+    const makeLower = make.toLowerCase();
 
-    const text = await r.text();
-    const data = parseCarQueryJSON(text);
-    const trims = Array.isArray(data?.Trims) ? data.Trims : [];
+    function generateModelVariations(m: string): string[] {
+      const variations: string[] = [m];
+
+      variations.push(m.split(" ")[0]);
+      variations.push(m.replace(/\s+/g, ""));
+      variations.push(m.toLowerCase());
+      variations.push(m.replace(/-/g, " "));
+      variations.push(m.replace(/\s+/g, "-"));
+
+      const seriesMatch = m.match(/^(\d+)/);
+      if (seriesMatch) {
+        variations.push(`${seriesMatch[1]} Series`);
+        if (seriesMatch[1].length > 1) {
+          variations.push(`${seriesMatch[1][0]} Series`);
+        }
+      }
+
+      const alphaOnly = m.replace(/[^a-zA-Z\s-]/g, "").trim();
+      if (alphaOnly && alphaOnly !== m) {
+        variations.push(alphaOnly);
+      }
+
+      const lettersStripped = m.replace(/[a-zA-Z]+$/i, "").trim();
+      if (lettersStripped && lettersStripped !== m) {
+        variations.push(lettersStripped);
+      }
+
+      if (makeLower === "mercedes-benz" || makeLower === "mercedes") {
+        const mbMatch = m.match(/^([A-Za-z]+)/);
+        if (mbMatch) {
+          variations.push(`${mbMatch[1]}-Class`);
+          variations.push(`${mbMatch[1]} Class`);
+        }
+      }
+
+      return variations.filter((v, i, a) => v.trim() !== "" && a.indexOf(v) === i);
+    }
+
+    const modelsToTry = generateModelVariations(model);
+
+    let trims: any[] = [];
+    for (const m of modelsToTry) {
+      const url =
+        `https://www.carqueryapi.com/api/0.3/?cmd=getTrims&full_results=1` +
+        `&year=${encodeURIComponent(year)}` +
+        `&make=${encodeURIComponent(make)}` +
+        `&model=${encodeURIComponent(m)}`;
+      
+      const r = await fetch(url, {
+        cache: "no-store",
+        headers: { "User-Agent": "CarCodeAI/1.0" },
+      });
+      if (r.ok) {
+        const text = await r.text();
+        const data = parseCarQueryJSON(text);
+        if (Array.isArray(data?.Trims) && data.Trims.length > 0) {
+          trims = data.Trims;
+          break; 
+        }
+      }
+    }
 
     // Build unique engines + variants grouped under them
     const enginesMap = new Map<string, EngineOption>();
@@ -166,9 +217,6 @@ export async function GET(req: Request) {
 
       // Stronger dedupe signature
       const signature = [
-        year,
-        make.toLowerCase(),
-        model.toLowerCase(),
         displacementL ?? "",
         cylinders ?? "",
         engineType ?? "",
@@ -176,9 +224,7 @@ export async function GET(req: Request) {
         fuel ?? "",
         powerPS ?? "",
         torqueNm ?? "",
-        transmissionType ?? "",
-        drive ?? ""
-      ].join("|");
+      ].filter(Boolean).join("|");
 
       const existing = enginesMap.get(signature);
       if (!existing) {

@@ -42,26 +42,21 @@ export async function GET(request: Request) {
       .map((x: any) => String(x?.Model_Name ?? x?.ModelName ?? "").trim())
       .filter(Boolean);
 
-    // If q empty, just return top models (limit)
+    const unique = Array.from(new Set(all)).sort((a, b) => a.localeCompare(b));
+    
+    // If q empty, just return all models
     if (!q) {
-      const unique = Array.from(new Set(all)).slice(0, 60);
       return NextResponse.json({ models: unique });
     }
 
-    const filtered = all.filter((name) => normalize(name).includes(q));
+    const filtered = unique.filter((name) => normalize(name).includes(q));
 
     const ranked = filtered
       .map((name) => ({ name, s: scoreModel(name, q) }))
       .sort((a, b) => b.s - a.s || a.name.localeCompare(b.name))
       .map((x) => x.name);
 
-    const unique: string[] = [];
-    for (const m of ranked) {
-      if (!unique.includes(m)) unique.push(m);
-      if (unique.length >= 60) break;
-    }
-
-    return NextResponse.json({ models: unique });
+    return NextResponse.json({ models: ranked });
   } catch {
     return NextResponse.json({ models: [] });
   }

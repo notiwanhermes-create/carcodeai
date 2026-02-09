@@ -2,10 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 import { randomBytes } from "crypto";
 import { cookies } from "next/headers";
 
-function getBaseUrl(): string {
+const ALLOWED_HOSTS = new Set([
+  process.env.REPLIT_DEV_DOMAIN,
+  ...(process.env.REPLIT_DOMAINS || "").split(",").filter(Boolean),
+  "carcodeai.com",
+  "www.carcodeai.com",
+].filter(Boolean));
+
+function getBaseUrl(req: NextRequest): string {
+  const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || "";
+  const cleanHost = host.split(":")[0];
+  if (ALLOWED_HOSTS.has(cleanHost) || ALLOWED_HOSTS.has(host)) {
+    return `https://${host}`;
+  }
   const domain = process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS || "";
   if (domain) return `https://${domain.split(",")[0]}`;
-  return process.env.NEXT_PUBLIC_APP_URL || "https://localhost:5000";
+  return "https://localhost:5000";
 }
 
 export async function GET(req: NextRequest) {
@@ -14,7 +26,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Google OAuth is not configured." }, { status: 500 });
   }
 
-  const baseUrl = getBaseUrl();
+  const baseUrl = getBaseUrl(req);
   const redirectUri = `${baseUrl}/api/auth/google/callback`;
 
   const state = randomBytes(32).toString("hex");

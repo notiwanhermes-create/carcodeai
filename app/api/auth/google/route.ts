@@ -23,7 +23,8 @@ function getBaseUrl(req: NextRequest): string {
 export async function GET(req: NextRequest) {
   const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
   if (!clientId) {
-    return NextResponse.json({ error: "Google OAuth is not configured." }, { status: 500 });
+    const baseUrl = getBaseUrl(req);
+    return NextResponse.redirect(`${baseUrl}/?auth_error=google_not_configured`);
   }
 
   const baseUrl = getBaseUrl(req);

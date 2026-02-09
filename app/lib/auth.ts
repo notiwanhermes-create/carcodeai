@@ -1,95 +1,10 @@
-import * as client from "openid-client";
 import { cookies } from "next/headers";
 import pool, { ensureDB } from "./db";
-import { randomBytes, createHash, createHmac, createCipheriv, createDecipheriv } from "crypto";
-
-let configCache: Awaited<ReturnType<typeof client.discovery>> | null = null;
-
-const FALLBACK_CLIENT_ID = "513227df-7af3-4ecf-b6fb-3dd6b112bc28";
-const FALLBACK_REPLIT_DOMAIN = "513227df-7af3-4ecf-b6fb-3dd6b112bc28-00-3mrjts8yngnmn.riker.replit.dev";
-
-function getClientId(): string {
-  return process.env.REPL_ID || process.env.OIDC_CLIENT_ID || FALLBACK_CLIENT_ID;
-}
-
-function getSigningKey(): Buffer {
-  const secret = process.env.REPL_ID || FALLBACK_CLIENT_ID;
-  return createHash("sha256").update(secret).digest();
-}
-
-async function getOidcConfig() {
-  if (!configCache) {
-    const clientId = getClientId();
-    if (!clientId) throw new Error("Missing REPL_ID or OIDC_CLIENT_ID");
-    const timeoutMs = 10000;
-    const discoveryPromise = client.discovery(
-      new URL(process.env.ISSUER_URL ?? "https://replit.com/oidc"),
-      clientId
-    );
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("OIDC discovery timed out after 10s")), timeoutMs)
-    );
-    configCache = await Promise.race([discoveryPromise, timeoutPromise]);
-  }
-  return configCache;
-}
+import { randomBytes, createHash } from "crypto";
+import bcrypt from "bcryptjs";
 
 function generateSessionId(): string {
   return randomBytes(32).toString("hex");
-}
-
-function getReplitDomain(): string {
-  return process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS || FALLBACK_REPLIT_DOMAIN;
-}
-
-function isAllowedOriginHost(host: string): boolean {
-  const clean = host.split(":")[0].toLowerCase();
-  const replitDomain = getReplitDomain().toLowerCase();
-  if (clean === replitDomain) return true;
-  const allowedCustomDomains = ["carcodeai.com", "www.carcodeai.com"];
-  if (allowedCustomDomains.includes(clean)) return true;
-  if (clean.endsWith(".replit.dev") || clean.endsWith(".repl.co")) return true;
-  return false;
-}
-
-function sanitizeOriginHost(host: string): string {
-  const clean = host.split(":")[0].toLowerCase();
-  if (isAllowedOriginHost(clean)) return clean;
-  return getReplitDomain();
-}
-
-function generateCodeVerifier(): string {
-  return randomBytes(32).toString("base64url");
-}
-
-function generateCodeChallenge(verifier: string): string {
-  return createHash("sha256").update(verifier).digest("base64url");
-}
-
-function encryptState(data: { nonce: string; cv: string; oh: string }): string {
-  const key = getSigningKey();
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", key, iv);
-  const json = JSON.stringify(data);
-  const encrypted = Buffer.concat([cipher.update(json, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return Buffer.concat([iv, tag, encrypted]).toString("base64url");
-}
-
-function decryptState(encoded: string): { nonce: string; cv: string; oh: string } | null {
-  try {
-    const key = getSigningKey();
-    const buf = Buffer.from(encoded, "base64url");
-    const iv = buf.subarray(0, 12);
-    const tag = buf.subarray(12, 28);
-    const encrypted = buf.subarray(28);
-    const decipher = createDecipheriv("aes-256-gcm", key, iv);
-    decipher.setAuthTag(tag);
-    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
-    return JSON.parse(decrypted.toString("utf8"));
-  } catch {
-    return null;
-  }
 }
 
 export async function createSession(userId: string): Promise<string> {
@@ -128,82 +43,52 @@ export async function getSessionUser(): Promise<{
   }
 }
 
-export async function getLoginUrl(requestHostname: string): Promise<string> {
-  const config = await getOidcConfig();
-  const replitDomain = getReplitDomain();
-  const redirectUri = `https://${replitDomain}/api/auth/callback`;
-  const nonce = randomBytes(16).toString("hex");
-  const codeVerifier = generateCodeVerifier();
-  const codeChallenge = generateCodeChallenge(codeVerifier);
-
-  const originHost = sanitizeOriginHost(requestHostname);
-
-  const state = encryptState({ nonce, cv: codeVerifier, oh: originHost });
-
-  const authUrl = client.buildAuthorizationUrl(config, {
-    redirect_uri: redirectUri,
-    scope: "openid email profile",
-    state,
-    response_type: "code",
-    code_challenge: codeChallenge,
-    code_challenge_method: "S256",
-  });
-
-  return authUrl.href;
-}
-
-export async function handleCallback(
-  code: string,
-  state: string
-): Promise<{ userId: string; originHost: string } | null> {
+export async function registerUser(email: string, password: string, firstName?: string, lastName?: string): Promise<{ userId: string } | { error: string }> {
   await ensureDB();
-  const config = await getOidcConfig();
-  const replitDomain = getReplitDomain();
-  const redirectUri = `https://${replitDomain}/api/auth/callback`;
 
-  const stateData = decryptState(state);
-  if (!stateData) {
-    console.error("Auth callback: failed to decrypt state");
-    return null;
-  }
-
-  const { cv: codeVerifier, oh: originHost } = stateData;
+  const passwordHash = await bcrypt.hash(password, 12);
+  const userId = randomBytes(16).toString("hex");
 
   try {
-    console.log("Auth callback: redirectUri =", redirectUri, "originHost =", originHost);
-    const tokens = await client.authorizationCodeGrant(
-      config,
-      new URL(`${redirectUri}?code=${code}&state=${state}`),
-      {
-        expectedState: state,
-        pkceCodeVerifier: codeVerifier,
-      }
-    );
-
-    const claims = tokens.claims();
-    if (!claims) {
-      console.error("Auth callback: no claims returned");
-      return null;
-    }
-
-    const userId = claims.sub;
-    const email = (claims as any).email || null;
-    const firstName = (claims as any).first_name || null;
-    const lastName = (claims as any).last_name || null;
-    const profileImage = (claims as any).profile_image_url || null;
-
     await pool.query(
-      `INSERT INTO users (id, email, first_name, last_name, profile_image)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (id) DO UPDATE SET email = $2, first_name = $3, last_name = $4, profile_image = $5`,
-      [userId, email, firstName, lastName, profileImage]
+      `INSERT INTO users (id, email, password_hash, first_name, last_name)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [userId, email.toLowerCase(), passwordHash, firstName || null, lastName || null]
     );
-
-    return { userId, originHost };
   } catch (e: any) {
-    console.error("OIDC callback error:", e?.message || e);
-    return null;
+    if (e?.code === "23505") {
+      return { error: "An account with this email already exists." };
+    }
+    throw e;
   }
+
+  return { userId };
+}
+
+export async function loginUser(email: string, password: string): Promise<{ userId: string } | { error: string }> {
+  await ensureDB();
+
+  const result = await pool.query(
+    "SELECT id, password_hash FROM users WHERE LOWER(email) = LOWER($1)",
+    [email]
+  );
+
+  if (result.rows.length === 0) {
+    return { error: "Invalid email or password." };
+  }
+
+  const user = result.rows[0];
+
+  if (!user.password_hash) {
+    return { error: "Invalid email or password." };
+  }
+
+  const valid = await bcrypt.compare(password, user.password_hash);
+  if (!valid) {
+    return { error: "Invalid email or password." };
+  }
+
+  return { userId: user.id };
 }
 
 export async function destroySession(): Promise<void> {

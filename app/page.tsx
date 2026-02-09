@@ -465,6 +465,14 @@ export default function Home() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authFirstName, setAuthFirstName] = useState("");
+  const [authLastName, setAuthLastName] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authSubmitting, setAuthSubmitting] = useState(false);
 
   const theme = "dark" as const;
   const t = (dark: string, _light: string) => dark;
@@ -933,6 +941,54 @@ export default function Home() {
 
   const [symptomsValue, setSymptomsValue] = useState("");
 
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    setAuthSubmitting(true);
+    try {
+      const endpoint = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
+      const body: any = { email: authEmail, password: authPassword };
+      if (authMode === "register") {
+        body.firstName = authFirstName;
+        body.lastName = authLastName;
+      }
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAuthError(data.error || "Something went wrong.");
+        return;
+      }
+      setAuthModalOpen(false);
+      setAuthEmail("");
+      setAuthPassword("");
+      setAuthFirstName("");
+      setAuthLastName("");
+      const userRes = await fetch("/api/auth/user");
+      const user = await userRes.json();
+      if (user && user.id) {
+        setAuthUser(user);
+        const garageRes = await fetch("/api/garage");
+        if (garageRes.ok) {
+          const gData = await garageRes.json();
+          if (gData && gData.garage) {
+            setGarage(gData.garage);
+            setActiveId(gData.activeId || gData.garage[0]?.id || null);
+            if (gData.maintenance) setMaintenanceRecords(gData.maintenance);
+          }
+        }
+      }
+      showToast(authMode === "login" ? "Signed in successfully!" : "Account created successfully!");
+    } catch {
+      setAuthError("Connection error. Please try again.");
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
   if (!mounted) return <main className="min-h-screen bg-[#0f172a]" />;
 
   const inputClass = t(
@@ -1126,13 +1182,13 @@ export default function Home() {
                   )}
                 </div>
               ) : (
-                <a
-                  href="/api/auth/login"
+                <button
+                  onClick={() => { setAuthMode("login"); setAuthError(""); setAuthModalOpen(true); }}
                   className="flex h-10 items-center gap-2 px-4 shrink-0 rounded-xl bg-blue-500 text-white text-sm font-semibold transition-all hover:bg-blue-400 shadow-md shadow-blue-500/25"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
                   {tr("signIn", lang)}
-                </a>
+                </button>
               )
             )}
           </div>
@@ -1810,15 +1866,115 @@ export default function Home() {
             <div className="flex-1 min-w-0">
               <div className={cn("text-xs sm:text-sm", t("text-amber-200/80", "text-amber-800"))}>{tr("guestWarning", lang)}</div>
             </div>
-            <a
-              href="/api/auth/login"
+            <button
+              onClick={() => { setAuthMode("login"); setAuthError(""); setAuthModalOpen(true); }}
               className="shrink-0 rounded-lg bg-amber-500 text-white px-3 py-1.5 text-xs font-semibold transition hover:bg-amber-400"
             >
               {tr("signIn", lang)}
-            </a>
+            </button>
           </div>
         )}
       </div>
+      {authModalOpen && (
+        <>
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" onClick={() => setAuthModalOpen(false)} />
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div className="relative w-full max-w-sm rounded-2xl bg-slate-800/95 border border-white/10 shadow-2xl p-6 backdrop-blur-xl">
+              <button
+                onClick={() => setAuthModalOpen(false)}
+                className="absolute top-4 right-4 text-slate-400 hover:text-white transition"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+
+              <h2 className="text-xl font-bold text-white mb-1">
+                {authMode === "login" ? tr("signIn", lang) : tr("signUp", lang)}
+              </h2>
+              <p className="text-sm text-slate-400 mb-5">
+                {authMode === "login" ? tr("guestWarning", lang).split(".")[0] + "." : tr("guestWarning", lang).split(".")[0] + "."}
+              </p>
+
+              {authError && (
+                <div className="mb-4 rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2 text-sm text-red-400">
+                  {authError}
+                </div>
+              )}
+
+              <form onSubmit={handleAuthSubmit} className="space-y-3">
+                {authMode === "register" && (
+                  <div className="flex gap-3">
+                    <div className="flex-1">
+                      <label className="block text-xs text-slate-400 mb-1">{tr("firstName", lang)}</label>
+                      <input
+                        type="text"
+                        value={authFirstName}
+                        onChange={(e) => setAuthFirstName(e.target.value)}
+                        className="w-full rounded-lg bg-slate-700/50 border border-white/10 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500 transition"
+                        placeholder="John"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-xs text-slate-400 mb-1">{tr("lastName", lang)}</label>
+                      <input
+                        type="text"
+                        value={authLastName}
+                        onChange={(e) => setAuthLastName(e.target.value)}
+                        className="w-full rounded-lg bg-slate-700/50 border border-white/10 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500 transition"
+                        placeholder="Doe"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">{tr("email", lang)}</label>
+                  <input
+                    type="email"
+                    required
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    className="w-full rounded-lg bg-slate-700/50 border border-white/10 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500 transition"
+                    placeholder="you@example.com"
+                    autoComplete="email"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">{tr("password", lang)}</label>
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    className="w-full rounded-lg bg-slate-700/50 border border-white/10 px-3 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-blue-500 transition"
+                    placeholder="••••••••"
+                    autoComplete={authMode === "login" ? "current-password" : "new-password"}
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={authSubmitting}
+                  className="w-full rounded-xl bg-blue-500 text-white py-2.5 text-sm font-semibold transition hover:bg-blue-400 disabled:opacity-50 disabled:cursor-not-allowed shadow-md shadow-blue-500/25 mt-2"
+                >
+                  {authSubmitting ? "..." : authMode === "login" ? tr("signIn", lang) : tr("signUp", lang)}
+                </button>
+              </form>
+
+              <div className="mt-4 text-center text-sm text-slate-400">
+                {authMode === "login" ? tr("noAccount", lang) : tr("haveAccount", lang)}{" "}
+                <button
+                  onClick={() => { setAuthMode(authMode === "login" ? "register" : "login"); setAuthError(""); }}
+                  className="text-blue-400 hover:text-blue-300 font-semibold transition"
+                >
+                  {authMode === "login" ? tr("signUp", lang) : tr("signIn", lang)}
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </main>
   );
 }

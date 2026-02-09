@@ -33,11 +33,11 @@ All API routes live under `app/api/` using Next.js Route Handlers:
 - **`/api/ping`** (GET) — Health check endpoint
 
 ### Authentication
-- **Protocol**: OpenID Connect (OIDC) via Replit's identity provider (`https://replit.com/oidc`)
-- **Library**: `openid-client` v6 for OIDC discovery and token exchange
-- **PKCE**: Uses code verifier/challenge (S256) stored in cookies during auth flow
-- **Session Management**: Custom session system with random 64-char hex session IDs stored in PostgreSQL, 7-day expiry, session ID stored in cookies
-- **Flow**: `/api/auth/login` → Replit OIDC → `/api/auth/callback` → creates session → redirect to app
+- **Type**: Email/password authentication with bcrypt password hashing
+- **Library**: `bcryptjs` for password hashing (12 rounds)
+- **Session Management**: Custom session system with random 64-char hex session IDs stored in PostgreSQL, 7-day expiry, session ID stored in httpOnly cookies
+- **Endpoints**: `/api/auth/login` (POST), `/api/auth/register` (POST), `/api/auth/logout` (GET/POST), `/api/auth/user` (GET)
+- **UI**: Modal-based login/register form in the frontend (no page redirects)
 
 ### Database
 - **Engine**: PostgreSQL via `pg` (node-postgres) library with a connection pool
@@ -75,7 +75,7 @@ All API routes live under `app/api/` using Next.js Route Handlers:
 - `react` / `react-dom` (19.2.3) — UI library
 - `openai` (6.x) — OpenAI SDK
 - `pg` (8.x) — PostgreSQL client
-- `openid-client` (6.x) — OIDC authentication
+- `bcryptjs` — Password hashing for authentication
 - `react-markdown` (10.x) — Markdown rendering for AI responses
 - `memoizee` — Function memoization
 - `tailwindcss` (4.x) — CSS framework

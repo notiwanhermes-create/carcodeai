@@ -12,6 +12,7 @@ export async function ensureDB() {
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       email TEXT,
+      password_hash TEXT,
       first_name TEXT,
       last_name TEXT,
       profile_image TEXT,
@@ -48,19 +49,6 @@ export async function ensureDB() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
 
-    CREATE TABLE IF NOT EXISTS auth_pending (
-      state TEXT PRIMARY KEY,
-      code_verifier TEXT NOT NULL,
-      origin_host TEXT NOT NULL,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS auth_tokens (
-      token TEXT PRIMARY KEY,
-      sid TEXT NOT NULL,
-      origin_host TEXT NOT NULL,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    );
   `);
   initialized = true;
 }

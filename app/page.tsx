@@ -466,8 +466,8 @@ export default function Home() {
   const [authLoading, setAuthLoading] = useState(true);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
 
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
-  const t = (dark: string, light: string) => theme === "dark" ? dark : light;
+  const theme = "dark" as const;
+  const t = (dark: string, _light: string) => dark;
 
   const [lang, setLang] = useState<LangCode>("en");
   const [langMenuOpen, setLangMenuOpen] = useState(false);
@@ -519,10 +519,6 @@ export default function Home() {
         setGarage(parsed.garage || []);
         setActiveId(parsed.activeId || (parsed.garage?.[0]?.id ?? null));
       }
-    } catch {}
-    try {
-      const savedTheme = localStorage.getItem("carcode_theme");
-      if (savedTheme === "light" || savedTheme === "dark") setTheme(savedTheme);
     } catch {}
     try {
       const rawMaint = localStorage.getItem("carcode_maintenance_v1");
@@ -580,12 +576,6 @@ export default function Home() {
       }).catch(() => {});
     }
   }, [garage, activeId]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem("carcode_theme", theme);
-    } catch {}
-  }, [theme]);
 
   useEffect(() => {
     try {
@@ -1087,33 +1077,6 @@ export default function Home() {
                 </>
               )}
             </div>
-
-            <button
-              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-              className={cn(
-                "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition-all",
-                t("border border-white/10 bg-white/10 text-yellow-300 hover:bg-white/20", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100")
-              )}
-              aria-label="Toggle theme"
-            >
-              {theme === "dark" ? (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="5" />
-                  <line x1="12" y1="1" x2="12" y2="3" />
-                  <line x1="12" y1="21" x2="12" y2="23" />
-                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-                  <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-                  <line x1="1" y1="12" x2="3" y2="12" />
-                  <line x1="21" y1="12" x2="23" y2="12" />
-                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-                  <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-                </svg>
-              ) : (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-                </svg>
-              )}
-            </button>
 
             {!authLoading && (
               authUser ? (

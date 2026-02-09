@@ -1,0 +1,77 @@
+Terms of Service (paste as-is)
+
+Terms of Service – CarCode AI
+Effective date: [February 8, 2026]
+
+These Terms of Service (“Terms”) govern your access to and use of the CarCode AI website and related services (the “Service”). By using the Service, you agree to these Terms.
+
+1) The Service
+
+CarCode AI provides informational content and tools related to vehicle troubleshooting and diagnostics. The Service is for informational purposes only and does not replace professional advice or inspection by a qualified mechanic.
+
+2) Eligibility
+
+You must be at least 13 years old (or the minimum age required in your jurisdiction) to use the Service.
+
+3) Accounts and security
+
+If you create an account:
+
+You’re responsible for maintaining the confidentiality of your login credentials
+
+You agree to provide accurate information
+
+You’re responsible for activities that occur under your account
+
+We may suspend or terminate accounts for violations of these Terms or for security reasons.
+
+4) Acceptable use
+
+You agree not to:
+
+Misuse the Service, attempt to gain unauthorized access, or interfere with its operation
+
+Upload or transmit malware or harmful code
+
+Scrape, reverse engineer, or abuse the Service (except where permitted by law)
+
+Use the Service to violate any law or infringe others’ rights
+
+5) Diagnostic content and user inputs
+
+You may submit information such as vehicle details, symptoms, and codes. You represent that you have the right to submit it and that it does not violate any laws or third-party rights.
+
+6) No warranties
+
+The Service is provided “as is” and “as available.” To the fullest extent permitted by law, CarCode AI disclaims all warranties, express or implied, including merchantability, fitness for a particular purpose, and non-infringement.
+
+7) Safety disclaimer
+
+Vehicle issues can be dangerous. Always follow manufacturer guidance and take appropriate safety precautions. If you suspect a serious safety issue, stop driving and seek professional help. You are solely responsible for decisions you make based on information from the Service.
+
+8) Limitation of liability
+
+To the fullest extent permitted by law, CarCode AI will not be liable for indirect, incidental, special, consequential, or punitive damages, or any loss of profits, data, or goodwill, arising out of or related to your use of the Service.
+
+In any case, CarCode AI’s total liability for claims relating to the Service will not exceed [USD $100] (or the minimum amount allowed by law).
+
+9) Third-party services
+
+The Service may integrate with third parties (e.g., Google sign-in, hosting, analytics). Your use of third-party services is governed by their terms and policies. CarCode AI is not responsible for third-party services.
+
+10) Termination
+
+You may stop using the Service at any time. We may suspend or terminate access to the Service at any time if we reasonably believe you violated these Terms or to protect the Service and users.
+
+11) Changes to the Service or Terms
+
+We may update the Service or these Terms from time to time. We will post the updated Terms with a new effective date. Continued use of the Service after changes means you accept the updated Terms.
+
+12) Governing law
+
+These Terms are governed by the laws of [your province/state and country], without regard to conflict of laws rules.
+
+13) Contact
+
+Questions about these Terms? Contact us at: [support@carcodeai.com
+].

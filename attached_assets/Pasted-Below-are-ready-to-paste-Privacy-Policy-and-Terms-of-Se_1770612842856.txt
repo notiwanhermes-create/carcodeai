@@ -1,0 +1,118 @@
+Below are ready-to-paste Privacy Policy and Terms of Service texts for CarCode AI. They’re written for a small web app that provides car diagnostic info and optional accounts (email/password + Google). Replace the bracketed placeholders.
+
+Privacy Policy (paste as-is)
+
+Privacy Policy – CarCode AI
+Effective date: [February 8, 2026]
+
+CarCode AI (“CarCode AI”, “we”, “us”) provides vehicle troubleshooting and diagnostic information through our website (the “Service”). This Privacy Policy explains what information we collect, how we use it, and your choices.
+
+1) Information we collect
+
+A. Account information (if you create an account)
+
+Email address
+
+Name (first/last name), if provided
+
+Profile image, if you sign in with Google
+
+Authentication identifiers (e.g., Google account ID)
+
+B. Login and session data
+
+Session cookies and session identifiers used to keep you signed in
+
+Basic security logs related to authentication (e.g., failed sign-in attempts)
+
+C. Usage information
+
+Pages viewed and basic interaction data (for example, to understand what features are used)
+
+Approximate location (city/region) and device/browser details may be inferred from IP address by analytics tools
+
+D. Diagnostic inputs you provide
+
+Information you type into the Service (e.g., symptoms, DTC/OBD codes, vehicle details such as make/model/year).
+Please avoid entering sensitive personal data into diagnostic fields.
+
+2) How we use information
+
+We use your information to:
+
+Provide and operate the Service
+
+Create and manage your account and sign-in sessions
+
+Respond to requests and provide support
+
+Improve the Service, including troubleshooting, analytics, and performance
+
+Detect, prevent, and address fraud, abuse, or security issues
+
+Comply with legal obligations
+
+3) Cookies
+
+We use cookies for:
+
+Authentication (keeping you logged in)
+
+Security (protecting accounts and the Service)
+
+Analytics (understanding how the Service is used)
+
+You can control cookies through your browser settings. Some parts of the Service may not work properly without cookies.
+
+4) Sharing of information
+
+We do not sell your personal information.
+
+We may share information:
+
+With service providers who help us operate the Service (e.g., hosting, databases, analytics). They are permitted to process data only to provide services to us.
+
+With authentication providers (e.g., Google) when you choose to sign in using them.
+
+For legal and safety reasons if required by law, or to protect the rights, safety, and security of CarCode AI, our users, or others.
+
+In a business transfer (e.g., merger, acquisition, or asset sale), where user information may be transferred as part of the transaction.
+
+5) Data retention
+
+We keep personal information for as long as necessary to provide the Service and for legitimate business purposes (such as security, fraud prevention, and legal compliance). You may request deletion as described below.
+
+6) Your choices and rights
+
+Depending on where you live, you may have rights to:
+
+Access, correct, or delete your personal information
+
+Object to or restrict certain processing
+
+Withdraw consent where processing is based on consent
+
+To make a request, contact us at: [support@carcodeai.com
+] (or [notiwanhermes@gmail.com
+]).
+
+7) Security
+
+We use reasonable administrative, technical, and organizational measures to protect information. No method of transmission or storage is 100% secure.
+
+8) Children’s privacy
+
+The Service is not intended for children under 13 (or the age required by your jurisdiction). We do not knowingly collect personal information from children.
+
+9) International users
+
+Your information may be processed in countries other than where you live. We take steps to protect your information consistent with this Privacy Policy.
+
+10) Changes to this policy
+
+We may update this Privacy Policy from time to time. The “Effective date” will reflect the latest version. Material changes will be posted on this page.
+
+11) Contact
+
+Questions? Contact us at: [support@carcodeai.com
+].

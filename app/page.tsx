@@ -930,7 +930,7 @@ export default function Home() {
 
   return (
     <main className={cn(
-      "relative min-h-screen transition-colors duration-300",
+      "relative min-h-screen transition-colors duration-300 overflow-x-hidden",
       t("text-slate-100", "bg-gradient-to-b from-slate-50 via-white to-slate-50 text-slate-900")
     )}>
       {theme === "dark" && (
@@ -1007,11 +1007,11 @@ export default function Home() {
         </div>
       )}
 
-      <div className="relative z-10 mx-auto max-w-6xl px-4 sm:px-6 py-6 sm:py-10">
-        <div className="flex flex-col sm:flex-row items-start justify-between gap-4 sm:gap-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-500 shadow-lg shadow-blue-500/30 animate-float">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <div className="relative z-10 mx-auto max-w-6xl px-4 sm:px-6 py-4 sm:py-10 overflow-x-hidden">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="flex h-10 w-10 sm:h-11 sm:w-11 shrink-0 items-center justify-center rounded-2xl bg-blue-500 shadow-lg shadow-blue-500/30 animate-float">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M7 17m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
                 <path d="M17 17m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
                 <path d="M5 17H3v-4l2-5h9l4 5h1a2 2 0 0 1 2 2v2h-2" />
@@ -1020,40 +1020,22 @@ export default function Home() {
                 <path d="M10 5h8" />
               </svg>
             </div>
-            <div>
-              <h1 className={cn("text-xl sm:text-2xl font-bold tracking-tight bg-gradient-to-r bg-clip-text text-transparent", t("from-white to-blue-200", "from-slate-900 to-blue-600"))}>{tr("appTitle", lang)}</h1>
-              <p className={cn("text-xs sm:text-sm", t("text-slate-400", "text-slate-500"))}>{tr("appSubtitle", lang)}</p>
+            <div className="min-w-0">
+              <h1 className={cn("text-lg sm:text-2xl font-bold tracking-tight bg-gradient-to-r bg-clip-text text-transparent truncate", t("from-white to-blue-200", "from-slate-900 to-blue-600"))}>{tr("appTitle", lang)}</h1>
+              <p className={cn("text-xs sm:text-sm truncate", t("text-slate-400", "text-slate-500"))}>{tr("appSubtitle", lang)}</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 w-full sm:w-auto">
-            <div className={cn("flex items-center gap-1 rounded-2xl p-1 w-full sm:w-auto", cardClass)}>
-              {(["diagnose", "garage", "service", "codes"] as const).map((tabName) => (
-                <button
-                  key={tabName}
-                  onClick={() => setTab(tabName)}
-                  className={cn(
-                    "rounded-xl px-2.5 sm:px-4 py-2 text-xs sm:text-sm font-semibold transition-all flex-1 sm:flex-none",
-                    tab === tabName
-                      ? "bg-blue-500 text-white shadow-md shadow-blue-500/30"
-                      : t("text-slate-400 hover:bg-white/10 hover:text-white", "text-slate-500 hover:bg-slate-100 hover:text-slate-900")
-                  )}
-                >
-                  {tabName === "diagnose" ? tr("diagnose", lang) : tabName === "garage" ? tr("garage", lang) : tabName === "service" ? tr("service", lang) : tr("codes", lang)}
-                </button>
-              ))}
-            </div>
-
+          <div className="flex items-center gap-2 shrink-0">
             <div className="relative">
               <button
                 onClick={() => setLangMenuOpen(!langMenuOpen)}
                 className={cn(
-                  "flex h-10 items-center gap-1.5 px-3 shrink-0 rounded-xl transition-all text-sm font-medium",
+                  "flex h-9 sm:h-10 items-center gap-1 px-2 sm:px-3 rounded-xl transition-all text-sm font-medium",
                   t("border border-white/10 bg-white/10 text-slate-300 hover:bg-white/20", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100")
                 )}
               >
                 <span>{LANGUAGES.find(l => l.code === lang)?.flag}</span>
-                <span className="hidden sm:inline">{LANGUAGES.find(l => l.code === lang)?.label}</span>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6"/></svg>
               </button>
               {langMenuOpen && (
@@ -1140,7 +1122,24 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="mt-6 relative z-30">
+        <div className={cn("mt-4 flex items-center gap-1 rounded-2xl p-1 overflow-x-auto", cardClass)}>
+          {(["diagnose", "garage", "service", "codes"] as const).map((tabName) => (
+            <button
+              key={tabName}
+              onClick={() => setTab(tabName)}
+              className={cn(
+                "rounded-xl px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold transition-all flex-1 whitespace-nowrap",
+                tab === tabName
+                  ? "bg-blue-500 text-white shadow-md shadow-blue-500/30"
+                  : t("text-slate-400 hover:bg-white/10 hover:text-white", "text-slate-500 hover:bg-slate-100 hover:text-slate-900")
+              )}
+            >
+              {tabName === "diagnose" ? tr("diagnose", lang) : tabName === "garage" ? tr("garage", lang) : tabName === "service" ? tr("service", lang) : tr("codes", lang)}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-4 relative z-30">
           {activeVehicle ? (
             <div className={cn("flex flex-wrap items-center justify-between gap-3 rounded-2xl px-4 sm:px-5 py-4 overflow-visible", cardStrongClass)}>
               <div className="flex items-center gap-3 min-w-0">

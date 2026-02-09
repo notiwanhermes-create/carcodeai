@@ -1,4 +1,5 @@
 import { registerUser, createSession } from "@/app/lib/auth";
+import pool, { ensureDB } from "@/app/lib/db";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
@@ -27,7 +28,14 @@ export async function POST(req: NextRequest) {
 
     const sid = await createSession(result.userId);
 
-    const response = NextResponse.json({ success: true });
+    await ensureDB();
+    const userResult = await pool.query(
+      "SELECT id, email, first_name, last_name, profile_image FROM users WHERE id = $1",
+      [result.userId]
+    );
+    const user = userResult.rows[0] || null;
+
+    const response = NextResponse.json({ success: true, user });
     response.cookies.set("carcode_sid", sid, {
       httpOnly: true,
       secure: true,

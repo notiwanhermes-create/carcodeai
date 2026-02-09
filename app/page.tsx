@@ -568,12 +568,12 @@ export default function Home() {
       window.history.replaceState({}, "", "/");
     }
 
-    fetch("/api/auth/user")
+    fetch("/api/auth/user", { credentials: "include" })
       .then((r) => r.json())
       .then((u) => {
         if (u && u.id) {
           setAuthUser(u);
-          return fetch("/api/garage").then((r) => r.ok ? r.json() : null).then((data) => {
+          return fetch("/api/garage", { credentials: "include" }).then((r) => r.ok ? r.json() : null).then((data) => {
             if (data && data.garage) {
               setGarage(data.garage);
               setActiveId(data.activeId || data.garage[0]?.id || null);
@@ -596,6 +596,7 @@ export default function Home() {
       fetch("/api/garage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ action: "sync", garage, activeId, maintenance: maintenanceRecords }),
       }).catch(() => {});
     }
@@ -609,6 +610,7 @@ export default function Home() {
       fetch("/api/garage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ action: "sync", garage, activeId, maintenance: maintenanceRecords }),
       }).catch(() => {});
     }
@@ -955,6 +957,7 @@ export default function Home() {
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(body),
       });
       const data = await res.json();
@@ -967,19 +970,19 @@ export default function Home() {
       setAuthPassword("");
       setAuthFirstName("");
       setAuthLastName("");
-      const userRes = await fetch("/api/auth/user");
-      const user = await userRes.json();
-      if (user && user.id) {
-        setAuthUser(user);
-        const garageRes = await fetch("/api/garage");
-        if (garageRes.ok) {
-          const gData = await garageRes.json();
-          if (gData && gData.garage) {
-            setGarage(gData.garage);
-            setActiveId(gData.activeId || gData.garage[0]?.id || null);
-            if (gData.maintenance) setMaintenanceRecords(gData.maintenance);
+      if (data.user && data.user.id) {
+        setAuthUser(data.user);
+        try {
+          const garageRes = await fetch("/api/garage", { credentials: "include" });
+          if (garageRes.ok) {
+            const gData = await garageRes.json();
+            if (gData && gData.garage) {
+              setGarage(gData.garage);
+              setActiveId(gData.activeId || gData.garage[0]?.id || null);
+              if (gData.maintenance) setMaintenanceRecords(gData.maintenance);
+            }
           }
-        }
+        } catch {}
       }
       showToast(authMode === "login" ? "Signed in successfully!" : "Account created successfully!");
     } catch {

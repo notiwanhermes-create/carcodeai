@@ -16,10 +16,15 @@ async function getOidcConfig() {
   if (!configCache) {
     const clientId = getClientId();
     if (!clientId) throw new Error("Missing REPL_ID or OIDC_CLIENT_ID");
-    configCache = await client.discovery(
+    const timeoutMs = 10000;
+    const discoveryPromise = client.discovery(
       new URL(process.env.ISSUER_URL ?? "https://replit.com/oidc"),
       clientId
     );
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("OIDC discovery timed out after 10s")), timeoutMs)
+    );
+    configCache = await Promise.race([discoveryPromise, timeoutPromise]);
   }
   return configCache;
 }

@@ -11,9 +11,10 @@ export async function GET() {
     console.log("Login route: redirecting to", loginUrl.substring(0, 80) + "...");
     return NextResponse.redirect(loginUrl);
   } catch (e: any) {
-    console.error("Login route error:", e?.message || e);
+    const msg = e?.message || String(e);
+    console.error("Login route error:", msg);
     return NextResponse.json(
-      { error: "Login failed. Please try again." },
+      { error: "Login failed: " + msg },
       { status: 500 }
     );
   }

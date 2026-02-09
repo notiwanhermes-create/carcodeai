@@ -923,12 +923,12 @@ export default function Home() {
   }, [vinQ]);
 
   const quickSymptoms = [
-    { label: tr("checkEngineLight", lang), value: "Check engine light is on" },
-    { label: tr("strangeNoise", lang), value: "Strange noise coming from engine" },
-    { label: tr("wontStart", lang), value: "Car won't start or cranks but doesn't turn over" },
-    { label: tr("overheating", lang), value: "Engine is overheating" },
-    { label: tr("roughIdle", lang), value: "Engine idles roughly or vibrates" },
-    { label: tr("poorFuelEconomy", lang), value: "Getting worse gas mileage than usual" },
+    { label: tr("checkEngineLight", lang), value: tr("checkEngineLightDesc", lang) },
+    { label: tr("strangeNoise", lang), value: tr("strangeNoiseDesc", lang) },
+    { label: tr("wontStart", lang), value: tr("wontStartDesc", lang) },
+    { label: tr("overheating", lang), value: tr("overheatingDesc", lang) },
+    { label: tr("roughIdle", lang), value: tr("roughIdleDesc", lang) },
+    { label: tr("poorFuelEconomy", lang), value: tr("poorFuelEconomyDesc", lang) },
   ];
 
   const [symptomsValue, setSymptomsValue] = useState("");

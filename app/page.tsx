@@ -1625,11 +1625,11 @@ export default function Home() {
                           </div>
 
                           <form className="grid gap-2 mb-4" onSubmit={(e) => { e.preventDefault(); addMaintenanceRecord(v.id, new FormData(e.currentTarget)); (e.currentTarget as HTMLFormElement).reset(); }}>
-                            <select name="maint_type" className={cn(inputClass, "rounded-xl px-3 py-2 text-xs transition-colors")}>
-                              {([["Oil Change","mtOilChange"],["Tire Rotation","mtTireRotation"],["Brake Service","mtBrakeService"],["Coolant Flush","mtCoolantFlush"],["Transmission Service","mtTransService"],["Air Filter","mtAirFilter"],["Battery","mtBattery"],["Other","mtOther"]] as const).map(([val, key]) => <option key={val} value={val}>{tr(key, lang)}</option>)}
+                            <select name="maint_type" className={cn(inputClass, "rounded-xl px-3 py-2 text-xs transition-colors appearance-none")} style={{ colorScheme: "dark" }}>
+                              {([["Oil Change","mtOilChange"],["Tire Rotation","mtTireRotation"],["Brake Service","mtBrakeService"],["Coolant Flush","mtCoolantFlush"],["Transmission Service","mtTransService"],["Air Filter","mtAirFilter"],["Battery","mtBattery"],["Other","mtOther"]] as const).map(([val, key]) => <option key={val} value={val} className="bg-slate-800 text-slate-200">{tr(key, lang)}</option>)}
                             </select>
                             <div className="grid grid-cols-2 gap-2">
-                              <input name="maint_date" type="date" defaultValue={new Date().toISOString().slice(0, 10)} className={cn(inputClass, "rounded-xl px-3 py-2 text-xs transition-colors")} />
+                              <input name="maint_date" type="date" defaultValue={new Date().toISOString().slice(0, 10)} className={cn(inputClass, "rounded-xl px-3 py-2 text-xs transition-colors")} style={{ colorScheme: "dark" }} />
                               <input name="maint_mileage" placeholder={tr("mileage", lang)} className={cn(inputClass, "rounded-xl px-3 py-2 text-xs transition-colors")} />
                             </div>
                             <input name="maint_notes" placeholder={tr("notesOptional", lang)} className={cn(inputClass, "rounded-xl px-3 py-2 text-xs transition-colors")} />

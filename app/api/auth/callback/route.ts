@@ -4,7 +4,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 function getPublicBaseUrl(host: string): string {
   if (host && !host.includes("0.0.0.0") && !host.includes("localhost") && !host.includes("127.0.0.1")) {
-    return `https://${host.split(":")[0]}`;
+    const clean = host.split(":")[0].replace(/^www\./, "");
+    return `https://${clean}`;
   }
   const domain = process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS;
   if (domain) {
@@ -62,11 +63,7 @@ export async function GET(req: NextRequest) {
 
     const sid = await createSession(result.userId);
 
-    const originHost = cookieStore.get("carcode_origin_host")?.value;
-    cookieStore.delete("carcode_origin_host");
-    const finalRedirect = originHost ? `https://${originHost}` : baseUrl;
-
-    const response = NextResponse.redirect(new URL("/", finalRedirect));
+    const response = NextResponse.redirect(new URL("/", baseUrl));
     response.cookies.set("carcode_sid", sid, {
       httpOnly: true,
       secure: true,

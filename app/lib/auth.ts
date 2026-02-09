@@ -28,7 +28,13 @@ function generateSessionId(): string {
   return randomBytes(32).toString("hex");
 }
 
-function getPublicHostname(): string {
+function getPublicHostname(requestHost?: string): string {
+  if (requestHost) {
+    const clean = requestHost.split(":")[0].replace(/^www\./, "");
+    if (clean && !clean.includes("0.0.0.0") && !clean.includes("localhost") && !clean.includes("127.0.0.1")) {
+      return clean;
+    }
+  }
   return process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS || FALLBACK_REPLIT_DOMAIN;
 }
 
@@ -78,7 +84,7 @@ export async function getSessionUser(): Promise<{
 
 export async function getLoginUrl(hostname: string): Promise<string> {
   const config = await getOidcConfig();
-  const publicHost = getPublicHostname();
+  const publicHost = getPublicHostname(hostname);
   const redirectUri = `https://${publicHost}/api/auth/callback`;
   const state = randomBytes(16).toString("hex");
   const codeVerifier = generateCodeVerifier();
@@ -99,17 +105,6 @@ export async function getLoginUrl(hostname: string): Promise<string> {
     maxAge: 600,
     path: "/",
   });
-  const originHost = hostname.split(":")[0];
-  if (originHost && originHost !== publicHost) {
-    cookieStore.set("carcode_origin_host", originHost, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "lax",
-      maxAge: 600,
-      path: "/",
-    });
-  }
-
   const authUrl = client.buildAuthorizationUrl(config, {
     redirect_uri: redirectUri,
     scope: "openid email profile",
@@ -130,7 +125,7 @@ export async function handleCallback(
 ): Promise<{ userId: string } | null> {
   await ensureDB();
   const config = await getOidcConfig();
-  const publicHost = getPublicHostname();
+  const publicHost = getPublicHostname(hostname);
   const redirectUri = `https://${publicHost}/api/auth/callback`;
 
   try {

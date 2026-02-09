@@ -5,11 +5,17 @@ import { randomBytes, createHash } from "crypto";
 
 let configCache: Awaited<ReturnType<typeof client.discovery>> | null = null;
 
+function getClientId(): string {
+  return process.env.REPL_ID || process.env.OIDC_CLIENT_ID || "";
+}
+
 async function getOidcConfig() {
   if (!configCache) {
+    const clientId = getClientId();
+    if (!clientId) throw new Error("Missing REPL_ID or OIDC_CLIENT_ID");
     configCache = await client.discovery(
       new URL(process.env.ISSUER_URL ?? "https://replit.com/oidc"),
-      process.env.REPL_ID!
+      clientId
     );
   }
   return configCache;

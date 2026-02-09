@@ -13,7 +13,7 @@ function getBaseUrl(req: NextRequest): string {
   const host = req.headers.get("x-forwarded-host") || req.headers.get("host") || "";
   const cleanHost = host.split(":")[0];
   if (ALLOWED_HOSTS.has(cleanHost) || ALLOWED_HOSTS.has(host)) {
-    return `https://${host}`;
+    return `https://${cleanHost}`;
   }
   const domain = process.env.REPLIT_DEV_DOMAIN || process.env.REPLIT_DOMAINS || "";
   if (domain) return `https://${domain.split(",")[0]}`;

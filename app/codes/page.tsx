@@ -1,26 +1,97 @@
-export default function CodesIndexPage() {
-  return (
-    <main className="mx-auto max-w-3xl px-4 py-10">
-      <h1 className="text-3xl font-bold">OBD-II Trouble Codes</h1>
-      <p className="mt-3 text-gray-700">
-        Search Google for a code and land directly on a code page like{" "}
-        <a className="underline" href="/codes/p0300">
-          /codes/p0300
-        </a>
-        .
-      </p>
+import type { Metadata } from "next";
+import { COMMON_CODES, CATEGORY_LABELS } from "../data/common-codes";
+import Link from "next/link";
 
-      <div className="mt-6 grid grid-cols-2 gap-3">
-        {["P0300", "P0420", "P0171", "P0455", "P0442", "P0128"].map((c) => (
-          <a
-            key={c}
-            className="rounded-lg border p-4 hover:bg-gray-50"
-            href={`/codes/${c.toLowerCase()}`}
+export const metadata: Metadata = {
+  title: "OBD-II Trouble Codes Directory | CarCode AI",
+  description:
+    "Browse common OBD-II diagnostic trouble codes (DTC). Find symptoms, causes, and fixes for engine, transmission, emissions, and other vehicle codes.",
+  alternates: { canonical: "/codes" },
+};
+
+export default function CodesIndexPage() {
+  const categories = Object.keys(CATEGORY_LABELS);
+
+  return (
+    <main className="min-h-screen bg-gradient-to-br from-[#0a0e1a] via-[#101829] to-[#0c1220] text-white">
+      <div className="mx-auto max-w-4xl px-4 py-10">
+        <nav className="text-sm text-gray-400 mb-6">
+          <Link className="hover:text-cyan-400 transition-colors" href="/">
+            Home
+          </Link>{" "}
+          / <span className="text-white font-semibold">OBD-II Codes</span>
+        </nav>
+
+        <h1 className="text-3xl md:text-4xl font-bold">
+          OBD-II Trouble Codes
+        </h1>
+        <p className="mt-3 text-gray-300 max-w-2xl">
+          Browse common diagnostic trouble codes below. Click any code for
+          detailed information about symptoms, causes, and fixes — or use{" "}
+          <Link href="/" className="text-cyan-400 hover:underline">
+            CarCode AI
+          </Link>{" "}
+          for a diagnosis tailored to your specific vehicle.
+        </p>
+
+        {categories.map((cat) => {
+          const codes = COMMON_CODES.filter((c) => c.category === cat);
+          if (codes.length === 0) return null;
+          const catInfo = CATEGORY_LABELS[cat];
+          return (
+            <section key={cat} className="mt-10">
+              <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+                <span
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-sm font-bold"
+                  style={{ backgroundColor: catInfo.color + "22", color: catInfo.color }}
+                >
+                  {catInfo.icon}
+                </span>
+                <span style={{ color: catInfo.color }}>{catInfo.label}</span>
+              </h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {codes.map((c) => (
+                  <Link
+                    key={c.code}
+                    className="rounded-xl border border-white/10 bg-white/5 p-4 hover:bg-white/10 hover:border-white/20 transition-all backdrop-blur-sm group"
+                    href={`/codes/${c.code.toLowerCase()}`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-lg font-bold text-cyan-400 group-hover:text-cyan-300">
+                        {c.code}
+                      </span>
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                          c.severity === "high"
+                            ? "bg-red-500/20 text-red-400"
+                            : c.severity === "medium"
+                              ? "bg-yellow-500/20 text-yellow-400"
+                              : "bg-green-500/20 text-green-400"
+                        }`}
+                      >
+                        {c.severity}
+                      </span>
+                    </div>
+                    <div className="text-sm text-gray-300 mt-1">{c.description}</div>
+                  </Link>
+                ))}
+              </div>
+            </section>
+          );
+        })}
+
+        <div className="mt-12 rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm text-center">
+          <h2 className="text-xl font-semibold">Don't see your code?</h2>
+          <p className="mt-2 text-gray-400">
+            CarCode AI can diagnose any OBD-II code. Enter your code and vehicle details for a personalized diagnosis.
+          </p>
+          <Link
+            className="mt-4 inline-block rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 px-6 py-3 text-white font-semibold shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/40 transition-shadow"
+            href="/"
           >
-            <div className="text-lg font-semibold">{c}</div>
-            <div className="text-sm text-gray-600">View details</div>
-          </a>
-        ))}
+            Try CarCode AI
+          </Link>
+        </div>
       </div>
     </main>
   );

@@ -5,13 +5,17 @@ let feedbackPool: Pool | null = null;
 
 function getPool() {
   if (!feedbackPool) {
-    if (!process.env.DATABASE_URL) {
+    const dbUrl = process.env.DATABASE_URL;
+    if (!dbUrl) {
       throw new Error("DATABASE_URL not configured");
     }
+    const needsSsl = dbUrl.includes("neon.tech") || dbUrl.includes("neon/") || 
+                     (process.env.NODE_ENV === "production" && !dbUrl.includes("sslmode=disable"));
     feedbackPool = new Pool({
-      connectionString: process.env.DATABASE_URL,
+      connectionString: dbUrl,
       max: 3,
-      connectionTimeoutMillis: 5000,
+      connectionTimeoutMillis: 10000,
+      ssl: needsSsl ? { rejectUnauthorized: false } : false,
     });
   }
   return feedbackPool;
@@ -21,18 +25,23 @@ let tableReady = false;
 
 async function ensureFeedbackTable() {
   const p = getPool();
-  await p.query(`
-    CREATE TABLE IF NOT EXISTS feedback (
-      id SERIAL PRIMARY KEY,
-      name TEXT,
-      email TEXT,
-      rating INTEGER,
-      message TEXT NOT NULL,
-      page TEXT,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    );
-  `);
-  tableReady = true;
+  const client = await p.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS feedback (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        email TEXT,
+        rating INTEGER,
+        message TEXT NOT NULL,
+        page TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    tableReady = true;
+  } finally {
+    client.release();
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -58,20 +67,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Rating must be between 1 and 5" }, { status: 400 });
     }
 
-    await p.query(
-      `INSERT INTO feedback (name, email, rating, message, page) VALUES ($1, $2, $3, $4, $5)`,
-      [
-        name?.trim() || null,
-        email?.trim() || null,
-        rating || null,
-        message.trim(),
-        page || null,
-      ]
-    );
+    const client = await p.connect();
+    try {
+      await client.query(
+        `INSERT INTO feedback (name, email, rating, message, page) VALUES ($1, $2, $3, $4, $5)`,
+        [
+          name?.trim() || null,
+          email?.trim() || null,
+          rating || null,
+          message.trim(),
+          page || null,
+        ]
+      );
+    } finally {
+      client.release();
+    }
 
     return NextResponse.json({ success: true });
   } catch (err: any) {
-    console.error("Feedback error:", err?.message || err);
+    console.error("Feedback error:", err?.message, err?.code);
     return NextResponse.json(
       { error: "Unable to send feedback right now. Please try again later." },
       { status: 500 }

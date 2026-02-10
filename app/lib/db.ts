@@ -1,6 +1,13 @@
 import { Pool } from "pg";
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const dbUrl = process.env.DATABASE_URL || "";
+const needsSsl = dbUrl.includes("neon.tech") || dbUrl.includes("neon/") ||
+                 (process.env.NODE_ENV === "production" && !dbUrl.includes("sslmode=disable"));
+
+const pool = new Pool({
+  connectionString: dbUrl,
+  ssl: needsSsl ? { rejectUnauthorized: false } : false,
+});
 
 export default pool;
 

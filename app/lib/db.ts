@@ -53,6 +53,16 @@ export async function ensureDB() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS feedback (
+      id SERIAL PRIMARY KEY,
+      name TEXT,
+      email TEXT,
+      rating INTEGER,
+      message TEXT NOT NULL,
+      page TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
   `);
   initialized = true;
 }

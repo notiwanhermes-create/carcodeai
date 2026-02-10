@@ -29,6 +29,7 @@ All API routes live under `app/api/` using Next.js Route Handlers:
 - **`/api/vehicles/models`** (GET) — Autocomplete for vehicle models using NHTSA VPIC API, with optional year filtering
 - **`/api/vehicles/engines`** (GET) — Engine option lookup using CarQuery API
 - **`/api/vehicles/vin`** (GET) — VIN decoding using NHTSA VPIC API, returns year/make/model/engine suggestions
+- **`/api/feedback`** (POST) — Saves user feedback (name, email, rating, message) to PostgreSQL
 - **`/api/auth/*`** — Authentication flow (login, callback, logout, user info)
 - **`/api/ping`** (GET) — Health check endpoint
 

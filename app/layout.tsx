@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { SpeedInsights } from "@vercel/speed-insights/next";
+import { GoogleAnalytics } from "@next/third-parties/google";
+
 import "./globals.css";
 
 const geistSans = Geist({
@@ -15,7 +17,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "CarCode AI Helper - Car Diagnostics",
-  description: "Diagnose vehicle issues using OBD-II trouble codes or symptom descriptions, powered by AI.",
+  description:
+    "Diagnose vehicle issues using OBD-II trouble codes or symptom descriptions, powered by AI.",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
@@ -39,8 +42,18 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
-        <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-192.png" />
+        <link
+          rel="icon"
+          type="image/png"
+          sizes="192x192"
+          href="/icons/icon-192.png"
+        />
+        <link
+          rel="icon"
+          type="image/png"
+          sizes="32x32"
+          href="/icons/icon-192.png"
+        />
         <link rel="shortcut icon" href="/icons/icon-192.png" />
         <link rel="apple-touch-icon" href="/icons/icon-192.png" />
       </head>
@@ -49,18 +62,10 @@ export default function RootLayout({
       >
         {children}
         <SpeedInsights />
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              if ('serviceWorker' in navigator) {
-                window.addEventListener('load', () => {
-                  navigator.serviceWorker.register('/sw.js').catch(() => {});
-                });
-              }
-            `,
-          }}
-        />
+        <GoogleAnalytics gaId="G-XY3LCKN74C" />
       </body>
+
+      <GoogleAnalytics gaId="G-XY3LCKN74C" />
     </html>
   );
 }

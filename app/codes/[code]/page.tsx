@@ -1,0 +1,209 @@
+import type { Metadata } from "next";
+
+type CodeData = {
+  code: string; // "P0300"
+  title: string; // "Random/Multiple Cylinder Misfire Detected"
+  meaning: string;
+  symptoms: string[];
+  causes: string[];
+  fixes: string[];
+  canDrive: string;
+  severity: "Low" | "Medium" | "High";
+};
+
+function normalizeCode(raw: string) {
+  return raw.trim().toUpperCase();
+}
+
+// ✅ Simple fallback content (so every P0xxx page is indexable even if you don't have a DB entry yet)
+function fallbackCodeData(code: string): CodeData {
+  const c = normalizeCode(code);
+  return {
+    code: c,
+    title: `${c} Trouble Code`,
+    meaning: `${c} is an OBD-II diagnostic trouble code. This page explains common meanings, symptoms, causes, and fixes. Exact meaning can vary by make/model.`,
+    symptoms: [
+      "Check Engine Light (CEL)",
+      "Reduced performance",
+      "Rough idle or hesitation",
+      "Poor fuel economy",
+    ],
+    causes: [
+      "Faulty sensor or wiring issue",
+      "Vacuum leak or air/fuel imbalance",
+      "Ignition/fuel system problem",
+      "Mechanical issue (less common)",
+    ],
+    fixes: [
+      "Scan freeze-frame data and confirm the code",
+      "Inspect wiring/connectors and relevant sensors",
+      "Check intake/vacuum leaks",
+      "Test components per service manual steps",
+      "Clear code and verify it does not return",
+    ],
+    canDrive:
+      "Sometimes you can drive short distances, but if the engine is misfiring, overheating, or running poorly, stop driving and diagnose ASAP.",
+    severity: "Medium",
+  };
+}
+
+// ✅ Optional: If you already have an API endpoint that returns details, use it here.
+// Example endpoint you can build later: /api/dtc?code=P0300
+async function getCodeData(code: string): Promise<CodeData> {
+  const c = normalizeCode(code);
+
+  // If you already have an endpoint, uncomment this and implement it:
+  // const res = await fetch(`${process.env.NEXT_PUBLIC_SITE_URL}/api/dtc?code=${encodeURIComponent(c)}`, { cache: "force-cache" });
+  // if (res.ok) return res.json();
+
+  return fallbackCodeData(c);
+}
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ code: string }>;
+}): Promise<Metadata> {
+  const { code: codeParam } = await params;
+  const code = normalizeCode(codeParam);
+  const d = await getCodeData(code);
+
+  const title = `${d.code} Code – ${d.title} | CarCode AI`;
+  const description = `${d.code}: ${d.title}. Symptoms, causes, and fixes. Diagnose the issue faster with CarCode AI.`;
+
+  return {
+    title,
+    description,
+    alternates: { canonical: `/codes/${d.code.toLowerCase()}` },
+    openGraph: {
+      title,
+      description,
+      url: `/codes/${d.code.toLowerCase()}`,
+      type: "article",
+    },
+  };
+}
+
+function FAQJsonLd({ code, title }: { code: string; title: string }) {
+  const json = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: [
+      {
+        "@type": "Question",
+        name: `What does ${code} mean?`,
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: `${code} indicates: ${title}. Exact meaning can vary by make/model/year.`,
+        },
+      },
+      {
+        "@type": "Question",
+        name: `Is it safe to drive with ${code}?`,
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: `It depends. If the vehicle is misfiring, overheating, or has severe drivability issues, stop driving and diagnose. Otherwise, drive cautiously and repair soon.`,
+        },
+      },
+      {
+        "@type": "Question",
+        name: `What are common causes of ${code}?`,
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: `Common causes include wiring/connectors, sensor faults, vacuum leaks, ignition/fuel issues, and sometimes mechanical problems.`,
+        },
+      },
+    ],
+  };
+
+  return (
+    <script
+      type="application/ld+json"
+      dangerouslySetInnerHTML={{ __html: JSON.stringify(json) }}
+    />
+  );
+}
+
+export default async function CodePage({
+  params,
+}: {
+  params: Promise<{ code: string }>;
+}) {
+  const { code: codeParam } = await params;
+  const code = normalizeCode(codeParam);
+  const d = await getCodeData(code);
+
+  return (
+    <main className="mx-auto max-w-3xl px-4 py-10">
+      <FAQJsonLd code={d.code} title={d.title} />
+
+      <nav className="text-sm text-gray-600 mb-4">
+        <a className="underline" href="/">
+          Home
+        </a>{" "}
+        /{" "}
+        <a className="underline" href="/codes">
+          OBD-II Codes
+        </a>{" "}
+        / <span className="font-semibold">{d.code}</span>
+      </nav>
+
+      <h1 className="text-3xl font-bold">
+        {d.code} – {d.title}
+      </h1>
+
+      <p className="mt-3 text-gray-700 leading-relaxed">
+        {d.meaning}
+      </p>
+
+      <div className="mt-6 rounded-lg border p-4">
+        <div className="text-sm text-gray-600">Severity</div>
+        <div className="text-lg font-semibold">{d.severity}</div>
+      </div>
+
+      <section className="mt-8">
+        <h2 className="text-xl font-semibold">Common Symptoms</h2>
+        <ul className="mt-3 list-disc pl-6 text-gray-700">
+          {d.symptoms.map((s) => (
+            <li key={s}>{s}</li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="mt-8">
+        <h2 className="text-xl font-semibold">Common Causes</h2>
+        <ul className="mt-3 list-disc pl-6 text-gray-700">
+          {d.causes.map((c) => (
+            <li key={c}>{c}</li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="mt-8">
+        <h2 className="text-xl font-semibold">How to Fix</h2>
+        <ol className="mt-3 list-decimal pl-6 text-gray-700">
+          {d.fixes.map((f) => (
+            <li key={f}>{f}</li>
+          ))}
+        </ol>
+      </section>
+
+      <section className="mt-8 rounded-lg bg-gray-50 p-5">
+        <h2 className="text-xl font-semibold">Can I Drive With This Code?</h2>
+        <p className="mt-2 text-gray-700">{d.canDrive}</p>
+      </section>
+
+      <div className="mt-10 flex gap-3">
+        <a
+          className="rounded-lg bg-blue-600 px-4 py-2 text-white font-semibold"
+          href={`/?code=${encodeURIComponent(d.code)}`}
+        >
+          Diagnose {d.code} with AI
+        </a>
+        <a className="rounded-lg border px-4 py-2 font-semibold" href="/codes">
+          Browse Codes
+        </a>
+      </div>
+    </main>
+  );
+}

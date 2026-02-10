@@ -18,6 +18,46 @@ function normalizeCode(raw: string) {
   return decodeURIComponent(raw).trim().toUpperCase();
 }
 
+function getRelatedCodes(code: string): { code: string; description: string }[] {
+  const c = code.toUpperCase();
+  const prefix = c[0];
+  const numPart = c.slice(1);
+  const num = parseInt(numPart, 10);
+  if (isNaN(num)) return [];
+
+  const related: { code: string; description: string }[] = [];
+
+  const candidates = [
+    num - 2, num - 1, num + 1, num + 2, num + 3, num + 4,
+  ];
+
+  for (const n of candidates) {
+    if (n < 0 || n > 9999) continue;
+    const candidate = `${prefix}${n.toString().padStart(4, "0")}`;
+    if (candidate === c) continue;
+    const entry = COMMON_CODES.find((e) => e.code === candidate);
+    if (entry) {
+      related.push({ code: entry.code, description: entry.description });
+    }
+    if (related.length >= 6) break;
+  }
+
+  if (related.length < 3) {
+    const entry = COMMON_CODES.find((e) => e.code === c);
+    if (entry) {
+      const sameCategory = COMMON_CODES.filter(
+        (e) => e.category === entry.category && e.code !== c && !related.some((r) => r.code === e.code)
+      );
+      for (const s of sameCategory) {
+        related.push({ code: s.code, description: s.description });
+        if (related.length >= 6) break;
+      }
+    }
+  }
+
+  return related;
+}
+
 function getCategoryLabel(cat: string) {
   const labels: Record<string, string> = {
     engine: "Engine / Powertrain",
@@ -267,6 +307,28 @@ export default async function CodePage({
           <h2 className="text-xl font-semibold text-white">Can I Drive With This Code?</h2>
           <p className="mt-3 text-gray-300 leading-relaxed">{d.canDrive}</p>
         </section>
+
+        {(() => {
+          const related = getRelatedCodes(d.code);
+          if (related.length === 0) return null;
+          return (
+            <section className="mt-10">
+              <h2 className="text-xl font-semibold text-cyan-400">Related Codes</h2>
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {related.map((r) => (
+                  <Link
+                    key={r.code}
+                    href={`/codes/${r.code.toLowerCase()}`}
+                    className="rounded-xl border border-white/10 bg-white/5 p-4 hover:bg-white/10 hover:border-white/20 transition-all backdrop-blur-sm group"
+                  >
+                    <span className="text-base font-bold text-cyan-400 group-hover:text-cyan-300">{r.code}</span>
+                    <span className="block text-sm text-gray-400 mt-0.5">{r.description}</span>
+                  </Link>
+                ))}
+              </div>
+            </section>
+          );
+        })()}
 
         <div className="mt-10 flex flex-wrap gap-3">
           <Link

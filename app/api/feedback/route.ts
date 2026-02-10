@@ -1,9 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
-import pool, { ensureDB } from "../../lib/db";
+import pool from "../../lib/db";
+
+async function ensureFeedbackTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS feedback (
+      id SERIAL PRIMARY KEY,
+      name TEXT,
+      email TEXT,
+      rating INTEGER,
+      message TEXT NOT NULL,
+      page TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+}
+
+let tableReady = false;
 
 export async function POST(req: NextRequest) {
   try {
-    await ensureDB();
+    if (!tableReady) {
+      await ensureFeedbackTable();
+      tableReady = true;
+    }
+
     const body = await req.json();
     const { name, email, rating, message, page } = body;
 
@@ -31,7 +51,7 @@ export async function POST(req: NextRequest) {
     );
 
     return NextResponse.json({ success: true });
-  } catch (err) {
+  } catch (err: any) {
     console.error("Feedback error:", err);
     return NextResponse.json({ error: "Failed to save feedback" }, { status: 500 });
   }

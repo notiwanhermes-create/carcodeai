@@ -17,6 +17,10 @@ type EngineOption =
       source?: string;
     };
 
+function engineLabel(raw: string): string {
+  return raw.split(" - ")[0].split("•")[0].split("|")[0].split("(")[0].trim();
+}
+
 import * as ReactDOM from "react-dom";
 
 type Vehicle = {
@@ -820,9 +824,18 @@ export default function Home() {
         );
         const data = await res.json();
         const list = Array.isArray(data?.engines) ? data.engines : [];
+        const seen = new Set<string>();
+        const deduped = list.filter((e: any) => {
+          const rawLabel = typeof e === "string" ? e : e?.label || e?.engine || "";
+          const key = engineLabel(String(rawLabel));
+          if (!key) return false;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
         if (!cancelled) {
-          setEngineOptions(list);
-          if (list.length) setEngineOpen(true);
+          setEngineOptions(deduped);
+          if (deduped.length) setEngineOpen(true);
         }
       } catch { if (!cancelled) setEngineOptions([]); }
     })();
@@ -1325,12 +1338,12 @@ export default function Home() {
                   </div>
 
                   <div className="relative">
+                    <input type="hidden" name="engine" value={gEngine} />
                     <input
-                      name="engine"
                       ref={engineInputRef}
                       placeholder={tr("engine", lang)}
-                      value={gEngine}
-                      onChange={(e) => { setGEngine(e.target.value); setEngineOpen(true); }}
+                      value={engineLabel(gEngine)}
+                      onChange={(e) => { setGEngine(e.target.value.trim()); setEngineOpen(true); }}
                       onFocus={() => { setEngineOpen(true); }}
                       onBlur={() => { setTimeout(() => setEngineOpen(false), 200); }}
                       className={cn(inputClass, "w-full rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")}
@@ -1339,7 +1352,7 @@ export default function Home() {
                       <div className={cn("absolute z-[100] mt-1 max-h-48 w-full overflow-auto rounded-xl shadow-xl", dropdownClass)}>
                         {engineOptions.map((e: any, idx: number) => {
                           const label = typeof e === "string" ? e : e.label || e.engine;
-                          const details = typeof e === "string" ? "" : e.details;
+                          const displayLabel = engineLabel(String(label ?? ""));
                           const engineKey = typeof e === "string" ? `${e}-${idx}` : `${e.id || label}-${idx}`;
                           return (
                             <button
@@ -1349,8 +1362,7 @@ export default function Home() {
                               onClick={() => { setGEngine(label); setEngineOpen(false); }}
                               className={cn("group w-full px-4 py-2 text-left text-sm transition-colors hover:bg-blue-500 hover:text-white", t("text-slate-200", "text-slate-700"))}
                             >
-                              <div className="font-medium">{label}</div>
-                              {details && <div className={cn("text-[10px] group-hover:text-blue-100", t("text-slate-400", "text-slate-500"))}>{details}</div>}
+                              <div className="font-medium">{displayLabel}</div>
                             </button>
                           );
                         })}

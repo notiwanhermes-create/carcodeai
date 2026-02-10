@@ -2,7 +2,6 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import { GoogleAnalytics } from "@next/third-parties/google";
-
 import "./globals.css";
 
 const geistSans = Geist({
@@ -57,15 +56,18 @@ export default function RootLayout({
         <link rel="shortcut icon" href="/icons/icon-192.png" />
         <link rel="apple-touch-icon" href="/icons/icon-192.png" />
       </head>
+
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
+
+        {/* Vercel Speed Insights */}
         <SpeedInsights />
+
+        {/* Google Analytics 4 */}
         <GoogleAnalytics gaId="G-XY3LCKN74C" />
       </body>
-
-      <GoogleAnalytics gaId="G-XY3LCKN74C" />
     </html>
   );
 }

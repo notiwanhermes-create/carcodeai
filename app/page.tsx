@@ -103,20 +103,46 @@ function FeedbackSection({ theme, lang }: { theme: "dark" | "light"; lang: LangC
   const [error, setError] = useState("");
 
   const handleSubmit = async () => {
-    if (!message.trim()) { setError("Please enter your feedback"); return; }
+    if (!message.trim()) {
+      setError("Please enter your feedback");
+      return;
+    }
     setSending(true);
     setError("");
     try {
       const res = await fetch("/api/feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), email: email.trim(), rating: rating || undefined, message: message.trim() }),
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim(),
+          rating: rating || undefined,
+          message: message.trim(),
+          pageUrl: typeof window !== "undefined" ? window.location.href : undefined,
+        }),
       });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.error || "Failed to send"); }
+      let errorMessage = "Something went wrong";
+      if (!res.ok) {
+        try {
+          const d = await res.json();
+          if (typeof d?.error === "string") errorMessage = d.error;
+        } catch {
+          errorMessage = res.status >= 500
+            ? "Unable to send feedback right now. Please try again later."
+            : "Something went wrong. Please try again.";
+        }
+        throw new Error(errorMessage);
+      }
       setSent(true);
-      setName(""); setEmail(""); setMessage(""); setRating(0);
-    } catch (e: any) { setError(e.message || "Something went wrong"); }
-    finally { setSending(false); }
+      setName("");
+      setEmail("");
+      setMessage("");
+      setRating(0);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Something went wrong");
+    } finally {
+      setSending(false);
+    }
   };
 
   if (sent) {

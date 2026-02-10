@@ -42,9 +42,16 @@ type Cause = {
   fix?: string[];
 };
 
+type DtcLookupResult = {
+  code: string;
+  title: string;
+  found: boolean;
+};
+
 type ApiOk = {
   causes: Cause[];
   summary_title?: string;
+  dtcLookup?: DtcLookupResult[];
 };
 
 type ApiErr = { error: string };
@@ -275,12 +282,37 @@ function LikelyCausesPanel({
     <div className="space-y-4">
       <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
         <div className="flex items-start justify-between gap-3">
-          <div>
+          <div className="min-w-0 flex-1">
             <div className={cn("text-[11px] font-medium", t("text-slate-400", "text-slate-500"))}>DIAGNOSTIC SUMMARY</div>
-            <div className={cn("mt-1 text-2xl font-semibold tracking-tight", t("text-white", "text-slate-900"))}>
-              {result?.summary_title || tr("likelyCauses", lang)}
-            </div>
-            <div className={cn("mt-1 text-sm", t("text-slate-400", "text-slate-500"))}>
+            {result?.dtcLookup && result.dtcLookup.length > 0 ? (
+              <div className="mt-2 space-y-2">
+                {result.dtcLookup.map((dtc) => (
+                  <div key={dtc.code} className="flex items-start gap-3">
+                    <span className={cn(
+                      "shrink-0 rounded-lg px-2.5 py-1 text-sm font-bold tracking-wide",
+                      dtc.found
+                        ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                        : "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                    )}>
+                      {dtc.code}
+                    </span>
+                    <div className="min-w-0">
+                      <div className={cn("text-lg font-semibold tracking-tight leading-tight", t("text-white", "text-slate-900"))}>
+                        {dtc.title}
+                      </div>
+                      {!dtc.found && (
+                        <div className="mt-0.5 text-xs text-amber-400/80">Not in standard database</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className={cn("mt-1 text-2xl font-semibold tracking-tight", t("text-white", "text-slate-900"))}>
+                {result?.summary_title || tr("likelyCauses", lang)}
+              </div>
+            )}
+            <div className={cn("mt-2 text-sm", t("text-slate-400", "text-slate-500"))}>
               Tap a cause to see how to confirm it and how to fix it.
             </div>
           </div>

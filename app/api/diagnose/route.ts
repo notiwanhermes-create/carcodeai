@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { extractDtcCodes, lookupDtc, type DtcLookupResult } from "../../lib/dtc-lookup";
 
 export const runtime = "nodejs";
 
@@ -18,7 +19,6 @@ function safeJsonParse(text: string) {
   try {
     return JSON.parse(text);
   } catch {
-    // Try to extract JSON if model wrapped it
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
     if (start >= 0 && end > start) {
@@ -69,14 +69,29 @@ export async function POST(req: Request) {
     const outputLanguage = langMap[lang] || "English";
 
     const vehicleLine = `${year} ${make} ${model}${engine ? ` (${engine})` : ""}`;
-    const complaintLine = code
-      ? `OBD-II code: ${code}`
-      : `Symptoms: ${symptoms}`;
+
+    let dtcResults: DtcLookupResult[] = [];
+    let complaintLine: string;
+
+    if (code) {
+      const extracted = extractDtcCodes(code);
+      if (extracted.length > 0) {
+        dtcResults = extracted.map(lookupDtc);
+        const codeDescriptions = dtcResults.map(r =>
+          `OBD-II code ${r.code}: ${r.title}`
+        ).join("\n");
+        complaintLine = codeDescriptions;
+      } else {
+        complaintLine = `OBD-II code: ${code}`;
+      }
+    } else {
+      complaintLine = `Symptoms: ${symptoms}`;
+    }
 
     const system = `
 You are an automotive diagnostic assistant.
 Return ONLY valid JSON. No markdown, no backticks, no extra text.
-IMPORTANT: All text values in the JSON (summary_title, title, why, confirm steps, fix steps, difficulty) MUST be written in ${outputLanguage}.
+IMPORTANT: All text values in the JSON (title, why, confirm steps, fix steps, difficulty) MUST be written in ${outputLanguage}.
 
 Rules:
 - Provide 4–6 likely causes, ranked from most to least likely.
@@ -87,6 +102,7 @@ Rules:
 - For severity: use "high" (most likely cause), "medium" (possible cause), or "low" (less likely).
 - Do NOT include any prices or cost estimates.
 - For difficulty: use "DIY Easy" (anyone can do it), "DIY Moderate" (needs some tools/knowledge), or "Mechanic Recommended" (professional needed). Translate the difficulty label into ${outputLanguage}.
+- Do NOT generate or guess the code title/definition. The code definition has already been looked up and provided to you. Focus only on likely causes, confirmation steps, and fixes.
 `;
 
     const user = `
@@ -97,11 +113,10 @@ Output JSON in this exact schema (all text values in ${outputLanguage}):
 {
   "vehicle": "${vehicleLine}",
   "input": { "code": "${code}", "symptoms": "${symptoms}" },
-  "summary_title": "string (A concise title describing the issue in ${outputLanguage})",
   "causes": [
     {
-      "title": "string",
-      "why": "string (1 sentence)",
+      "title": "string (name of the likely cause, e.g. 'Worn Spark Plugs')",
+      "why": "string (1 sentence explaining why this cause is likely)",
       "severity": "high | medium | low",
       "difficulty": "string (translated to ${outputLanguage})",
       "confirm": ["string","string","string"],
@@ -117,7 +132,6 @@ Output JSON in this exact schema (all text values in ${outputLanguage}):
         { role: "system", content: system },
         { role: "user", content: user },
       ],
-      // make it more consistent about JSON
       temperature: 0.2,
     });
 
@@ -133,6 +147,11 @@ Output JSON in this exact schema (all text values in ${outputLanguage}):
         },
         { status: 500 }
       );
+    }
+
+    if (dtcResults.length > 0) {
+      parsed.dtcLookup = dtcResults;
+      parsed.summary_title = dtcResults.map(r => `${r.code}: ${r.title}`).join(" | ");
     }
 
     return Response.json(parsed, { status: 200 });

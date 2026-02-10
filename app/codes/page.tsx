@@ -34,6 +34,21 @@ export default function CodesIndexPage() {
           for a diagnosis tailored to your specific vehicle.
         </p>
 
+        <div className="mt-8 rounded-2xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm">
+          <h2 className="text-xl font-semibold text-cyan-400 mb-3">What Are OBD-II Trouble Codes?</h2>
+          <div className="space-y-3 text-gray-300 text-sm leading-relaxed">
+            <p>
+              OBD-II (On-Board Diagnostics, version 2) is a standardized system built into every car and light truck sold in the United States since 1996. When your vehicle detects a problem — anything from a misfiring engine to a loose gas cap — the OBD-II system stores a <strong className="text-white">Diagnostic Trouble Code (DTC)</strong> and usually turns on the Check Engine Light. Each code is a five-character identifier like P0300 or C0035 that pinpoints the system or circuit where the fault was detected. Codes starting with <strong className="text-white">P</strong> relate to the powertrain (engine and transmission), <strong className="text-white">B</strong> to body systems, <strong className="text-white">C</strong> to the chassis (brakes, steering, suspension), and <strong className="text-white">U</strong> to the communication network between modules.
+            </p>
+            <p>
+              Symptoms are the clues your car gives you before or alongside a trouble code. Rough idling, poor fuel economy, hesitation during acceleration, unusual noises, or warning lights on your dashboard are all signs that something needs attention. Sometimes a single symptom maps to dozens of possible causes, which is why reading the specific DTC is so valuable — it narrows the search and saves time at the repair shop.
+            </p>
+            <p>
+              <strong className="text-white">CarCode AI</strong> takes diagnostics a step further. Instead of handing you a generic code definition, it combines the trouble code with your exact vehicle — year, make, model, and engine — to deliver AI-powered analysis. You get ranked probable causes, severity ratings, step-by-step confirmation checks, and recommended fixes, all in plain language. Whether you are a weekend DIY mechanic or just want to understand what your mechanic is telling you, CarCode AI helps you make informed decisions, avoid unnecessary repairs, and keep your vehicle running safely.
+            </p>
+          </div>
+        </div>
+
         {categories.map((cat) => {
           const codes = COMMON_CODES.filter((c) => c.category === cat);
           if (codes.length === 0) return null;

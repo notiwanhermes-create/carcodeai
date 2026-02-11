@@ -1,4 +1,6 @@
 import OpenAI from "openai";
+import { getCodeDefinition } from "../../lib/code-definition";
+import { normalizeCode } from "../../lib/code-parse";
 import { extractDtcCodes, lookupDtc, type DtcLookupResult } from "../../lib/dtc-lookup";
 
 export const runtime = "nodejs";
@@ -13,6 +15,13 @@ type Body = {
   engine?: string;
   symptoms?: string;
   lang?: string;
+};
+
+type CodeDefinitionPayload = {
+  code: string;
+  title: string;
+  description: string;
+  source: string | null;
 };
 
 function safeJsonParse(text: string) {
@@ -30,6 +39,18 @@ function safeJsonParse(text: string) {
   }
 }
 
+/** Always return JSON (no HTML). */
+function jsonResponse(body: object, status: number) {
+  return Response.json(body, { status, headers: { "Content-Type": "application/json" } });
+}
+
+/** Split code input by comma and trim; also support single OEM hex codes. */
+function parseCodeInput(raw: string): string[] {
+  const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length > 0) return parts;
+  return [raw.trim()].filter(Boolean);
+}
+
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as Body;
@@ -37,25 +58,6 @@ export async function POST(req: Request) {
     const year = (body.year || "").trim();
     const make = (body.make || "").trim();
     const model = (body.model || "").trim();
-
-    if (!year || !make || !model) {
-      return Response.json(
-        { error: "Year, Make, and Model are required." },
-        { status: 400 }
-      );
-    }
-
-    const code = (body.code || "").trim();
-    const engine = (body.engine || "").trim();
-    const symptoms = (body.symptoms || "").trim();
-    const lang = (body.lang || "en").trim();
-
-    if (!code && !symptoms) {
-      return Response.json(
-        { error: "Enter a trouble code OR describe symptoms." },
-        { status: 400 }
-      );
-    }
 
     const langMap: Record<string, string> = {
       en: "English",
@@ -66,27 +68,111 @@ export async function POST(req: Request) {
       de: "German",
       zh: "Chinese",
     };
-    const outputLanguage = langMap[lang] || "English";
+    const outputLanguage = langMap[(body.lang || "en").trim()] || "English";
+
+    if (!year || !make || !model) {
+      return jsonResponse({ error: "Year, Make, and Model are required." }, 400);
+    }
+
+    const code = (body.code || "").trim();
+    const engine = (body.engine || "").trim();
+    const symptoms = (body.symptoms || "").trim();
+    const lang = (body.lang || "en").trim();
+
+    if (!code && !symptoms) {
+      return jsonResponse({ error: "Enter a trouble code OR describe symptoms." }, 400);
+    }
 
     const vehicleLine = `${year} ${make} ${model}${engine ? ` (${engine})` : ""}`;
 
+    let verifiedDefinitions: CodeDefinitionPayload[] = [];
     let dtcResults: DtcLookupResult[] = [];
     let complaintLine: string;
 
     if (code) {
-      const extracted = extractDtcCodes(code);
-      if (extracted.length > 0) {
-        dtcResults = extracted.map(lookupDtc);
-        const codeDescriptions = dtcResults.map(r =>
-          `OBD-II code ${r.code}: ${r.title}`
-        ).join("\n");
-        complaintLine = codeDescriptions;
+      const codes = parseCodeInput(code);
+      for (const singleCode of codes) {
+        const lookup = await getCodeDefinition(singleCode, make);
+        if (lookup.found && lookup.definition) {
+          verifiedDefinitions.push({
+            code: lookup.definition.code,
+            title: lookup.definition.title,
+            description: lookup.definition.description,
+            source: lookup.definition.source ?? null,
+          });
+          dtcResults.push({
+            code: lookup.definition.code,
+            title: lookup.definition.title,
+            found: true,
+          });
+        } else {
+          if (lookup.parseType === "oem_hex" && lookup.needsMake) {
+            return jsonResponse(
+              {
+                error: "Manufacturer-specific code requires vehicle make. We do not guess OEM code meanings.",
+                code: normalizeCode(singleCode),
+                next: "Select your make or paste scan-tool description.",
+              },
+              400
+            );
+          }
+          if (lookup.parseType === "oem_hex") {
+            return jsonResponse(
+              {
+                error: "Manufacturer-specific code not in our verified database yet.",
+                code: normalizeCode(singleCode),
+                make: make.trim() || undefined,
+                next: "Paste scan-tool description or try symptoms.",
+              },
+              404
+            );
+          }
+          if (lookup.parseType === "obd2") {
+            return jsonResponse(
+              {
+                error: "OBD-II code not in our database. We do not invent code meanings.",
+                code: normalizeCode(singleCode),
+                next: "Try symptoms or check our /codes page.",
+              },
+              404
+            );
+          }
+          return jsonResponse(
+            {
+              error: "Unrecognized code format. Use OBD-II (e.g. P0300) or OEM hex (e.g. 480A12) with make.",
+              code: singleCode,
+              next: "Paste scan-tool description or try symptoms.",
+            },
+            400
+          );
+        }
+      }
+
+      if (verifiedDefinitions.length > 0) {
+        complaintLine = verifiedDefinitions
+          .map((d) => `Code: ${d.code} — ${d.title}. Description: ${d.description || ""}`)
+          .join("\n");
       } else {
-        complaintLine = `OBD-II code: ${code}`;
+        const extracted = extractDtcCodes(code);
+        if (extracted.length > 0) {
+          dtcResults = extracted.map(lookupDtc);
+          complaintLine = dtcResults.map((r) => `Code: ${r.code} — ${r.title}.`).join("\n");
+        } else {
+          complaintLine = `Code: ${code}`;
+        }
       }
     } else {
       complaintLine = `Symptoms: ${symptoms}`;
     }
+
+    const dtcDefinitionsBlock =
+      verifiedDefinitions.length > 0
+        ? verifiedDefinitions
+            .map((d) => `- ${d.code}: ${d.title} (${d.description || ""})`)
+            .join("\n")
+        : "";
+
+    const hasVerifiedDefinition = verifiedDefinitions.length > 0;
 
     const system = `
 You are an automotive diagnostic assistant.
@@ -102,12 +188,17 @@ Rules:
 - For severity: use "high" (most likely cause), "medium" (possible cause), or "low" (less likely).
 - Do NOT include any prices or cost estimates.
 - For difficulty: use "DIY Easy" (anyone can do it), "DIY Moderate" (needs some tools/knowledge), or "Mechanic Recommended" (professional needed). Translate the difficulty label into ${outputLanguage}.
-- Do NOT generate or guess the code title/definition. The code definition has already been looked up and provided to you. Focus only on likely causes, confirmation steps, and fixes.
+- If a code definition is provided above, you MUST use it exactly and MUST NOT invent/replace the meaning. Your job is only to suggest likely causes, confirmation steps, and fixes—not to redefine the code.
 `;
+
+    const definitionInstruction = hasVerifiedDefinition
+      ? `Authoritative code definitions (use these exactly; do not rephrase or replace):\n${dtcDefinitionsBlock}\n\n`
+      : "";
 
     const user = `
 Vehicle: ${vehicleLine}
-${complaintLine}
+
+${definitionInstruction}Complaint / codes:\n${complaintLine}
 
 Output JSON in this exact schema (all text values in ${outputLanguage}):
 {
@@ -139,26 +230,33 @@ Output JSON in this exact schema (all text values in ${outputLanguage}):
     const parsed = safeJsonParse(text);
 
     if (!parsed || !parsed.causes) {
-      return Response.json(
+      return jsonResponse(
         {
-          error:
-            "AI returned unexpected format. Try again with more symptoms.",
+          error: "AI returned unexpected format. Try again with more symptoms.",
           debug: text.slice(0, 500),
         },
-        { status: 500 }
+        500
       );
     }
 
     if (dtcResults.length > 0) {
       parsed.dtcLookup = dtcResults;
-      parsed.summary_title = dtcResults.map(r => `${r.code}: ${r.title}`).join(" | ");
+      parsed.summary_title = dtcResults.map((r) => `${r.code}: ${r.title}`).join(" | ");
     }
 
-    return Response.json(parsed, { status: 200 });
-  } catch (e: any) {
-    return Response.json(
-      { error: e?.message || "Server error." },
-      { status: 500 }
-    );
+    if (code && verifiedDefinitions.length > 0) {
+      const primary = verifiedDefinitions[0];
+      parsed.code_definition = {
+        code: primary.code,
+        title: primary.title,
+        description: primary.description,
+        source: primary.source,
+      };
+    }
+
+    return jsonResponse(parsed, 200);
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : "Server error.";
+    return jsonResponse({ error: message }, 500);
   }
 }

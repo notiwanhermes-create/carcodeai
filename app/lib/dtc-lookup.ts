@@ -1,8 +1,6 @@
-import dtcDatabase from "../data/dtc-database.json";
+import { getDtcDefinition } from "./dtc-definition";
 
 const DTC_REGEX = /\b([PBCU]\d{4})\b/gi;
-
-const db = dtcDatabase as Record<string, string>;
 
 export interface DtcLookupResult {
   code: string;
@@ -25,20 +23,21 @@ export function extractDtcCodes(input: string): string[] {
   return codes;
 }
 
+const SYSTEM_LABELS: Record<string, string> = {
+  P: "Powertrain",
+  B: "Body",
+  C: "Chassis",
+  U: "Network/Communication",
+};
+
 export function lookupDtc(code: string): DtcLookupResult {
-  const normalized = code.toUpperCase().trim();
-  const title = db[normalized];
-  if (title) {
-    return { code: normalized, title, found: true };
+  const normalized = (code || "").toUpperCase().trim();
+  const def = getDtcDefinition(normalized);
+  if (def) {
+    return { code: def.code, title: def.title, found: true };
   }
   const prefix = normalized[0];
-  const labels: Record<string, string> = {
-    P: "Powertrain",
-    B: "Body",
-    C: "Chassis",
-    U: "Network/Communication",
-  };
-  const category = labels[prefix] || "Unknown";
+  const category = SYSTEM_LABELS[prefix] || "Unknown";
   const isManufacturer = normalized.length === 5 && ["1", "2", "3"].includes(normalized[1]);
   const fallbackTitle = isManufacturer
     ? `Manufacturer-Specific ${category} Code`

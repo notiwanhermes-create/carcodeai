@@ -6,7 +6,7 @@ const noCacheHeaders = {
   Pragma: "no-cache",
 };
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const path = request.nextUrl.pathname;
   if (path.startsWith("/admin") || path.startsWith("/api/admin")) {
     const res = NextResponse.next();

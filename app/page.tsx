@@ -54,6 +54,13 @@ type ApiOk = {
   dtcLookup?: DtcLookupResult[];
 };
 
+type ApiNoDefinition = {
+  noDefinition: true;
+  message: string;
+  code?: string;
+  make?: string;
+};
+
 type ApiErr = { error: string };
 
 type MaintenanceRecord = {
@@ -408,7 +415,7 @@ function LikelyCausesPanel({
   onDownload,
   lang,
 }: {
-  result: ApiOk | null;
+  result: ApiOk | ApiNoDefinition | null;
   theme: "dark" | "light";
   code?: string;
   symptoms?: string;
@@ -419,6 +426,16 @@ function LikelyCausesPanel({
 }) {
   const [openIdx, setOpenIdx] = useState<number | null>(null);
   const t = (dark: string, light: string) => theme === "dark" ? dark : light;
+
+  if (result && "noDefinition" in result && result.noDefinition) {
+    return (
+      <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
+        <div className={cn("text-sm font-semibold", t("text-amber-200", "text-amber-800"))}>No verified definition</div>
+        <p className={cn("mt-2 text-sm", t("text-slate-300", "text-slate-600"))}>{result.message}</p>
+        {result.code && <p className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>Code: {result.code}</p>}
+      </div>
+    );
+  }
 
   if (!result?.causes?.length) {
     return (
@@ -678,7 +695,7 @@ export default function Home() {
     [garage, activeId]
   );
 
-  const [result, setResult] = useState<ApiOk | null>(null);
+  const [result, setResult] = useState<ApiOk | ApiNoDefinition | null>(null);
   const [lastCode, setLastCode] = useState("");
   const [lastSymptoms, setLastSymptoms] = useState("");
   const [lastVehicle, setLastVehicle] = useState<{ year: string; make: string; model: string; engine?: string } | null>(null);
@@ -834,13 +851,12 @@ export default function Home() {
         body: JSON.stringify(payload),
       });
 
-      const data = (await res.json()) as ApiOk | ApiErr;
+      const data = (await res.json()) as ApiOk | ApiNoDefinition | ApiErr;
 
       if (!res.ok) {
         setError("error" in data ? data.error : "Request failed.");
       } else {
-        const apiResult = data as ApiOk;
-        setResult(apiResult);
+        setResult(data as ApiOk | ApiNoDefinition);
         setSearchPanelOpen(false);
       }
     } catch (e: any) {
@@ -857,10 +873,11 @@ export default function Home() {
       `Vehicle: ${veh.year} ${veh.make} ${veh.model}${veh.engine ? ` (${veh.engine})` : ""}`,
       `Code: ${lastCode || "N/A"} | Symptoms: ${lastSymptoms || "N/A"}`,
       "---",
-      result?.summary_title || "Likely Causes",
+      result && "noDefinition" in result ? result.message : (result?.summary_title || "Likely Causes"),
       "",
     ];
-    result?.causes.forEach((c, i) => {
+    if (result && "causes" in result && result.causes?.length) {
+    result.causes.forEach((c, i) => {
       const sev = c.severity === "high" ? "Most Likely" : c.severity === "low" ? "Less Likely" : "Possible";
       lines.push(`Cause ${i + 1}: ${c.title} [${sev}]`);
       if (c.why) lines.push(`  Why: ${c.why}`);
@@ -869,6 +886,7 @@ export default function Home() {
       if (c.fix?.length) lines.push(`  Fix: ${c.fix.join("; ")}`);
       lines.push("");
     });
+    }
     return lines.join("\n");
   }
 

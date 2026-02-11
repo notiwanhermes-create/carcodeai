@@ -1,6 +1,10 @@
 import type { Metadata } from "next";
 import { COMMON_CODES } from "../../data/common-codes";
+import { getCodeDefinition, getCodeParseOnly } from "../../lib/code-definition";
+import { getDtcDefinition } from "../../lib/dtc-definition";
 import Link from "next/link";
+
+const OEM_MAKE_OPTIONS = ["BMW", "Mercedes", "VW", "Audi", "Volvo", "Porsche", "Ford", "GM", "Toyota", "Honda", "Hyundai", "Kia"] as const;
 
 type CodeData = {
   code: string;
@@ -12,10 +16,18 @@ type CodeData = {
   canDrive: string;
   severity: "Low" | "Medium" | "High";
   category: string;
+  hasDefinition: boolean;
+  /** For badge: "Generic OBD-II" vs "Manufacturer-specific" */
+  codeKind: "obd2" | "oem" | "unknown";
+  /** OEM hex code but no make in URL yet */
+  oemNeedsMake?: boolean;
+  /** OEM with make selected but not in DB */
+  oemNotFound?: boolean;
+  oemMake?: string;
 };
 
 function normalizeCode(raw: string) {
-  return decodeURIComponent(raw).trim().toUpperCase();
+  return decodeURIComponent(raw).trim().toUpperCase().replace(/[\s-]/g, "");
 }
 
 function getRelatedCodes(code: string): { code: string; description: string }[] {
@@ -35,9 +47,11 @@ function getRelatedCodes(code: string): { code: string; description: string }[] 
     if (n < 0 || n > 9999) continue;
     const candidate = `${prefix}${n.toString().padStart(4, "0")}`;
     if (candidate === c) continue;
+    const def = getDtcDefinition(candidate);
     const entry = COMMON_CODES.find((e) => e.code === candidate);
-    if (entry) {
-      related.push({ code: entry.code, description: entry.description });
+    const description = def?.title ?? entry?.description ?? "Trouble code";
+    if (def || entry) {
+      related.push({ code: candidate, description });
     }
     if (related.length >= 6) break;
   }
@@ -49,7 +63,8 @@ function getRelatedCodes(code: string): { code: string; description: string }[] 
         (e) => e.category === entry.category && e.code !== c && !related.some((r) => r.code === e.code)
       );
       for (const s of sameCategory) {
-        related.push({ code: s.code, description: s.description });
+        const desc = getDtcDefinition(s.code)?.title ?? s.description;
+        related.push({ code: s.code, description: desc });
         if (related.length >= 6) break;
       }
     }
@@ -78,104 +93,153 @@ function getSeverityColor(s: string) {
   return "text-green-400 border-green-500/40 bg-green-500/10";
 }
 
-function getCodeData(code: string): CodeData {
+const severityMap: Record<string, "Low" | "Medium" | "High"> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+};
+
+const genericSections = {
+  symptoms: [
+    "Check Engine Light (CEL) or warning indicator",
+    "Reduced engine performance or limp mode",
+    "Rough idle, hesitation, or stalling",
+    "Poor fuel economy",
+  ],
+  causes: [
+    "Faulty sensor or wiring issue",
+    "Vacuum leak or air/fuel imbalance",
+    "Ignition or fuel system problem",
+    "Mechanical issue (less common)",
+  ],
+  fixes: [
+    "Scan freeze-frame data and confirm the code",
+    "Inspect wiring, connectors, and relevant sensors",
+    "Check for intake or vacuum leaks",
+    "Test components per your vehicle's service manual",
+    "Clear the code and verify it does not return",
+  ],
+  canDrive:
+    "It depends on the specific issue. If the engine is misfiring, overheating, or running poorly, stop driving and diagnose immediately. Otherwise, drive cautiously and repair soon.",
+};
+
+async function getCodeData(code: string, make?: string | null): Promise<CodeData> {
   const c = normalizeCode(code);
+  const lookup = await getCodeDefinition(code, make ?? undefined);
   const entry = COMMON_CODES.find((e) => e.code === c);
 
-  if (entry) {
-    const severityMap: Record<string, "Low" | "Medium" | "High"> = {
-      low: "Low",
-      medium: "Medium",
-      high: "High",
-    };
+  if (lookup.found && lookup.definition) {
+    const def = lookup.definition;
+    const category = entry?.category ?? "engine";
+    const commonCause = entry?.commonCause ?? "Faulty sensor, wiring, or related component";
+    const isObd2 = def.codeType === "obd2";
+    const meaning = isObd2
+      ? `${def.code} is an OBD-II diagnostic trouble code indicating: ${def.title}. ${def.description !== def.title ? def.description : ""} This code falls under the ${getCategoryLabel(category)} category. The most common cause is: ${commonCause}.`.trim()
+      : `${def.code} (${def.make}): ${def.title}. ${def.description}`.trim();
     return {
-      code: c,
-      title: entry.description,
-      meaning: `${c} is an OBD-II diagnostic trouble code indicating: ${entry.description}. This code falls under the ${getCategoryLabel(entry.category)} category. The most common cause is: ${entry.commonCause}.`,
-      symptoms: [
-        "Check Engine Light (CEL) or warning indicator",
-        "Reduced engine performance or limp mode",
-        "Rough idle, hesitation, or stalling",
-        "Poor fuel economy",
-      ],
-      causes: [entry.commonCause, "Wiring or connector damage", "Related sensor failure", "ECM/PCM software issue"],
+      hasDefinition: true,
+      code: def.code,
+      title: def.title,
+      meaning,
+      symptoms: genericSections.symptoms,
+      causes: [commonCause, "Wiring or connector damage", "Related sensor failure", "ECM/PCM software issue"],
       fixes: [
         "Scan for freeze-frame data and confirm the code",
         "Inspect wiring, connectors, and related sensors",
-        `Address primary cause: ${entry.commonCause}`,
+        `Address primary cause: ${commonCause}`,
         "Clear the code and perform a test drive",
         "Re-scan to verify the code does not return",
       ],
       canDrive:
-        entry.severity === "high"
+        entry?.severity === "high"
           ? "Not recommended. This is a high-severity code that could cause further damage or safety issues. Diagnose and repair as soon as possible."
-          : entry.severity === "medium"
+          : entry?.severity === "medium"
             ? "You may drive short distances cautiously, but schedule a diagnosis soon. Continued driving may worsen the issue."
             : "Generally safe to drive short-term, but get the issue diagnosed when convenient to prevent it from becoming a bigger problem.",
-      severity: severityMap[entry.severity] || "Medium",
-      category: entry.category,
+      severity: entry ? severityMap[entry.severity] || "Medium" : "Medium",
+      category,
+      codeKind: def.codeType === "obd2" ? "obd2" : "oem",
+      oemMake: def.make,
     };
   }
 
-  const prefix = c[0];
-  const categoryLabels: Record<string, string> = {
-    P: "Powertrain",
-    B: "Body",
-    C: "Chassis",
-    U: "Network/Communication",
-  };
-  const category = categoryLabels[prefix] || "General";
+  if (lookup.parseType === "oem_hex") {
+    if (lookup.needsMake) {
+      return {
+        hasDefinition: false,
+        code: c,
+        title: "Manufacturer-specific code",
+        meaning: `"${c}" is a manufacturer-specific (OEM) fault code. Select your vehicle make below to look up a verified definition. We do not show AI-generated meanings for OEM codes.`,
+        ...genericSections,
+        severity: "Medium",
+        category: "engine",
+        codeKind: "oem",
+        oemNeedsMake: true,
+      };
+    }
+    return {
+      hasDefinition: false,
+      code: c,
+      title: "Manufacturer-specific code",
+      meaning: `We don't have a verified definition for ${c} (${make ?? "this make"}) yet. Please provide the scan tool output text or try selecting a different make. We never guess OEM code meanings with AI.`,
+      ...genericSections,
+      severity: "Medium",
+      category: "engine",
+      codeKind: "oem",
+      oemNotFound: true,
+      oemMake: make ?? undefined,
+    };
+  }
+
+  if (lookup.parseType === "obd2") {
+    return {
+      hasDefinition: false,
+      code: c,
+      title: "Unknown OBD-II code",
+      meaning: `${c} is not in our standard OBD-II database. Exact meaning can vary by vehicle. Enter your vehicle details and this code in CarCode AI to get a diagnosis tailored to your car.`,
+      ...genericSections,
+      severity: "Medium",
+      category: "engine",
+      codeKind: "obd2",
+    };
+  }
 
   return {
+    hasDefinition: false,
     code: c,
-    title: `${category} Trouble Code`,
-    meaning: `${c} is an OBD-II diagnostic trouble code in the ${category} category. Exact meaning can vary by vehicle make, model, and year. Use CarCode AI to get a detailed diagnosis for your specific vehicle.`,
-    symptoms: [
-      "Check Engine Light (CEL) or warning indicator",
-      "Reduced performance or limp mode",
-      "Rough idle or hesitation",
-      "Poor fuel economy",
-    ],
-    causes: [
-      "Faulty sensor or wiring issue",
-      "Vacuum leak or air/fuel imbalance",
-      "Ignition or fuel system problem",
-      "Mechanical issue (less common)",
-    ],
-    fixes: [
-      "Scan freeze-frame data and confirm the code",
-      "Inspect wiring, connectors, and relevant sensors",
-      "Check for intake or vacuum leaks",
-      "Test components per your vehicle's service manual",
-      "Clear the code and verify it does not return",
-    ],
-    canDrive:
-      "It depends on the specific issue. If the engine is misfiring, overheating, or running poorly, stop driving and diagnose immediately. Otherwise, drive cautiously and repair soon.",
+    title: "Unknown code format",
+    meaning: `"${c}" doesn't match a standard OBD-II code (e.g. P0300) or a manufacturer hex code (e.g. 480A12). Check the code format and try again, or describe your symptoms on the home page.`,
+    ...genericSections,
     severity: "Medium",
     category: "engine",
+    codeKind: "unknown",
   };
 }
 
 export async function generateMetadata({
   params,
+  searchParams,
 }: {
   params: Promise<{ code: string }>;
+  searchParams: Promise<{ make?: string }>;
 }): Promise<Metadata> {
   const { code: rawCode } = await params;
-  const code = normalizeCode(rawCode);
-  const d = getCodeData(code);
+  const { make } = await searchParams;
+  const code = normalizeCode(decodeURIComponent(rawCode));
+  const d = await getCodeData(code, make ?? undefined);
 
   const title = `${d.code} Code – ${d.title} | CarCode AI`;
   const description = `${d.code}: ${d.title}. Learn about symptoms, causes, and fixes. Diagnose the issue faster with CarCode AI.`;
+  const canonicalPath = make ? `/codes/${encodeURIComponent(d.code)}?make=${encodeURIComponent(make)}` : `/codes/${encodeURIComponent(d.code)}`;
 
   return {
     title,
     description,
-    alternates: { canonical: `/codes/${d.code.toLowerCase()}` },
+    alternates: { canonical: canonicalPath },
     openGraph: {
       title,
       description,
-      url: `/codes/${d.code.toLowerCase()}`,
+      url: canonicalPath,
       type: "article",
     },
   };
@@ -223,12 +287,17 @@ function FAQJsonLd({ code, title }: { code: string; title: string }) {
 
 export default async function CodePage({
   params,
+  searchParams,
 }: {
   params: Promise<{ code: string }>;
+  searchParams: Promise<{ make?: string }>;
 }) {
   const { code: rawCode } = await params;
-  const code = normalizeCode(rawCode);
-  const d = getCodeData(code);
+  const { make } = await searchParams;
+  const code = normalizeCode(decodeURIComponent(rawCode));
+  const d = await getCodeData(code, make ?? undefined);
+
+  const badgeLabel = d.codeKind === "obd2" ? "Generic OBD-II" : d.codeKind === "oem" ? "Manufacturer-specific" : "Unknown format";
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-[#0a0e1a] via-[#101829] to-[#0c1220] text-white">
@@ -246,11 +315,69 @@ export default async function CodePage({
           / <span className="text-white font-semibold">{d.code}</span>
         </nav>
 
-        <h1 className="text-3xl md:text-4xl font-bold">
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className={`rounded-lg px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${
+              d.codeKind === "obd2" ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40" : d.codeKind === "oem" ? "bg-amber-500/20 text-amber-300 border border-amber-500/40" : "bg-slate-500/20 text-slate-400 border border-slate-500/40"
+            }`}
+          >
+            {badgeLabel}
+          </span>
+          {d.oemMake && <span className="text-xs text-gray-500">Make: {d.oemMake}</span>}
+        </div>
+
+        <h1 className="text-3xl md:text-4xl font-bold mt-4">
           <span className="text-cyan-400">{d.code}</span> – {d.title}
         </h1>
 
         <p className="mt-4 text-gray-300 leading-relaxed">{d.meaning}</p>
+
+        {d.oemNeedsMake && (
+          <div className="mt-6 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+            <p className="text-sm font-medium text-amber-200 mb-3">
+              Select your vehicle make to look up a verified definition. We do not guess OEM code meanings.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {OEM_MAKE_OPTIONS.map((m) => (
+                <Link
+                  key={m}
+                  href={`/codes/${encodeURIComponent(d.code)}?make=${encodeURIComponent(m)}`}
+                  className="rounded-lg bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/20 border border-white/20 transition-colors"
+                >
+                  {m}
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {d.oemNotFound && (
+          <div className="mt-6 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+            <p className="text-sm font-medium text-amber-200">
+              We don&apos;t have a verified definition for this code yet. Please provide the scan tool output text or select your vehicle make. We never show AI-generated meanings for OEM codes.
+            </p>
+            <Link
+              className="mt-3 inline-block rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/40 transition-shadow"
+              href={`/?code=${encodeURIComponent(d.code)}`}
+            >
+              Diagnose with your vehicle details
+            </Link>
+          </div>
+        )}
+
+        {!d.hasDefinition && !d.oemNeedsMake && !d.oemNotFound && (
+          <div className="mt-6 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+            <p className="text-sm font-medium text-amber-200">
+              This code is not in our database. For an accurate diagnosis, provide your vehicle make, model, and year.
+            </p>
+            <Link
+              className="mt-3 inline-block rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/40 transition-shadow"
+              href={`/?code=${encodeURIComponent(d.code)}`}
+            >
+              Diagnose {d.code} with your vehicle details
+            </Link>
+          </div>
+        )}
 
         <div className="mt-6 flex gap-4">
           <div
@@ -309,6 +436,7 @@ export default async function CodePage({
         </section>
 
         {(() => {
+          if (d.codeKind !== "obd2") return null;
           const related = getRelatedCodes(d.code);
           if (related.length === 0) return null;
           return (

@@ -1,0 +1,38 @@
+{
+  "P0300": {
+    "code": "P0300",
+    "system": "Powertrain",
+    "standard": "OBD2",
+    "title": "Random/Multiple Cylinder Misfire Detected",
+    "description": "Random/Multiple Cylinder Misfire Detected. The PCM has detected that multiple cylinders are misfiring or that the misfire is not isolated to a single cylinder.",
+    "notes": null,
+    "source": "SAE J2012 / ISO 15031-6"
+  },
+  "P0420": {
+    "code": "P0420",
+    "system": "Powertrain",
+    "standard": "OBD2",
+    "title": "Catalyst System Efficiency Below Threshold (Bank 1)",
+    "description": "Catalyst System Efficiency Below Threshold (Bank 1). The oxygen storage capacity of the catalytic converter has fallen below the acceptable threshold for Bank 1.",
+    "notes": null,
+    "source": "SAE J2012 / ISO 15031-6"
+  },
+  "P0171": {
+    "code": "P0171",
+    "system": "Powertrain",
+    "standard": "OBD2",
+    "title": "System Too Lean (Bank 1)",
+    "description": "System Too Lean (Bank 1). The fuel trim system has reached its limit trying to add fuel; the air-fuel mixture is too lean on Bank 1.",
+    "notes": null,
+    "source": "SAE J2012 / ISO 15031-6"
+  },
+  "P0455": {
+    "code": "P0455",
+    "system": "Powertrain",
+    "standard": "OBD2",
+    "title": "Evaporative Emission System Leak Detected (Gross Leak)",
+    "description": "Evaporative Emission System Leak Detected (Gross Leak). A large leak has been detected in the evaporative emission control system (e.g. loose or missing gas cap, disconnected hose).",
+    "notes": null,
+    "source": "SAE J2012 / ISO 15031-6"
+  }
+}

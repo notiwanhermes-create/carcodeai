@@ -654,7 +654,7 @@ export default function Home() {
     setMounted(true);
   }, []);
 
-  const [tab, setTab] = useState<"diagnose" | "garage" | "service" | "codes">("diagnose");
+  const [tab, setTab] = useState<"diagnose" | "garage" | "service" | "codes">("garage");
   const [serviceVehicleFilter, setServiceVehicleFilter] = useState<string | null>(null);
   const [vehiclePickerOpen, setVehiclePickerOpen] = useState(false);
   const [garage, setGarage] = useState<Vehicle[]>([]);
@@ -1195,7 +1195,7 @@ export default function Home() {
         </div>
 
         <div className={cn("mt-4 flex items-center gap-1 rounded-2xl p-1 overflow-x-auto", cardClass)}>
-          {(["diagnose", "garage", "service", "codes"] as const).map((tabName) => (
+          {(["garage", "diagnose", "service", "codes"] as const).map((tabName) => (
             <button
               key={tabName}
               onClick={() => setTab(tabName)}

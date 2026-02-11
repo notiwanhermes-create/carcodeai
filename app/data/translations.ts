@@ -265,6 +265,15 @@ export const T: Translations = {
     de: "Marke",
     zh: "品牌",
   },
+  makeHint: {
+    en: "Type make (e.g., BMW, Land Rover) then press Enter",
+    es: "Escribe la marca (ej. BMW, Land Rover) y pulsa Enter",
+    fr: "Saisissez la marque (ex. BMW, Land Rover) puis Entrée",
+    ar: "اكتب الشركة المصنعة (مثل BMW، لاند روفر) ثم Enter",
+    pt: "Digite a marca (ex.: BMW, Land Rover) e pressione Enter",
+    de: "Marke eingeben (z. B. BMW, Land Rover) und Enter drücken",
+    zh: "输入品牌（如 BMW、路虎）后按 Enter",
+  },
   year: {
     en: "Year",
     es: "Año",

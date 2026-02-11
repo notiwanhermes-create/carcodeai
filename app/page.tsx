@@ -437,7 +437,7 @@ function LikelyCausesPanel({
     );
   }
 
-  if (!result?.causes?.length) {
+  if (!result || !("causes" in result) || !result.causes?.length) {
     return (
       <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
         <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("likelyCauses", lang)}</div>

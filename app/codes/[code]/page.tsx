@@ -164,7 +164,8 @@ async function getCodeData(code: string, make?: string | null): Promise<CodeData
   }
 
   if (lookup.parseType === "oem_hex") {
-    if (lookup.needsMake) {
+    const makeTrim = (make ?? "").trim();
+    if (!makeTrim) {
       return {
         hasDefinition: false,
         code: c,

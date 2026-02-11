@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
-import { getFeedbackRows } from "@/app/lib/adminFeedback";
+import { getFeedbackRows } from "../../lib/adminFeedback";
+
 import AdminFeedbackClient from "./AdminFeedbackClient";
 
 export const metadata = {

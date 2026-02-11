@@ -4,8 +4,7 @@ import { normalizeCode } from "../../lib/code-parse";
 import { extractDtcCodes, lookupDtc, type DtcLookupResult } from "../../lib/dtc-lookup";
 
 export const runtime = "nodejs";
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+export const dynamic = "force-dynamic";
 
 type Body = {
   code?: string;
@@ -106,7 +105,7 @@ export async function POST(req: Request) {
             found: true,
           });
         } else {
-          if (lookup.parseType === "oem_hex" && lookup.needsMake) {
+          if (lookup.parseType === "oem_hex" && !make) {
             return jsonResponse(
               {
                 error: "Manufacturer-specific code requires vehicle make. We do not guess OEM code meanings.",
@@ -216,6 +215,12 @@ Output JSON in this exact schema (all text values in ${outputLanguage}):
   ]
 }
 `;
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey?.trim()) {
+      return jsonResponse({ error: "OPENAI_API_KEY not set" }, 500);
+    }
+    const openai = new OpenAI({ apiKey: apiKey.trim() });
 
     const resp = await openai.responses.create({
       model: "gpt-4.1-mini",

@@ -37,6 +37,8 @@ export type ComboSelectProps = {
   onBlur?: () => void;
   /** For triggerType="input": keydown (e.g. Enter to confirm) */
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+  /** Called when user picks an item from the dropdown (distinct from typing) */
+  onSelect?: (value: string) => void;
 };
 
 export function ComboSelect({
@@ -56,6 +58,7 @@ export function ComboSelect({
   theme = "dark",
   onBlur,
   onKeyDown,
+  onSelect: onSelectProp,
 }: ComboSelectProps) {
   const [open, setOpen] = React.useState(false);
   const [search, setSearch] = React.useState("");
@@ -66,11 +69,15 @@ export function ComboSelect({
 
   const handleSelect = React.useCallback(
     (v: string) => {
-      onValueChange(v);
+      if (onSelectProp) {
+        onSelectProp(v);
+      } else {
+        onValueChange(v);
+      }
       setOpen(false);
       setSearch("");
     },
-    [onValueChange]
+    [onValueChange, onSelectProp]
   );
 
   const handleOpenChange = React.useCallback((next: boolean) => {

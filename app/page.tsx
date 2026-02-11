@@ -919,6 +919,7 @@ export default function Home() {
   const [gVin, setGVin] = useState("");
   const [gEngine, setGEngine] = useState("");
 
+  const [makeOptions, setMakeOptions] = useState<string[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [engineOptions, setEngineOptions] = useState<any[]>([]);
 
@@ -931,8 +932,22 @@ export default function Home() {
 
   const [vinLocked, setVinLocked] = useState(false);
 
+  const makeQ = useDebouncedValue(gMake, 150);
   const modelQ = useDebouncedValue(gModel, 200);
   const vinQ = useDebouncedValue(gVin, 250);
+
+  useEffect(() => {
+    if (!makeQ.trim() || makeQ.trim().length < 1) { setMakeOptions([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`/api/vehicles/makes?q=${encodeURIComponent(makeQ.trim())}`);
+        const d = await r.json();
+        if (!cancelled) setMakeOptions(Array.isArray(d.makes) ? d.makes : []);
+      } catch { if (!cancelled) setMakeOptions([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [makeQ]);
 
   useEffect(() => {
     if (!makeConfirmed || !gMake.trim()) {
@@ -1437,34 +1452,45 @@ export default function Home() {
                   className={cn(inputClass, "rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")}
                 />
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <input
-                      name="make"
-                      type="text"
-                      placeholder={tr("make", lang)}
-                      value={gMake}
-                      onChange={(e) => {
-                        setGMake(e.target.value);
+                  <ComboSelect
+                    name="make"
+                    value={gMake}
+                    onValueChange={(v) => {
+                      if (v !== gMake) {
                         setMakeConfirmed(false);
                         setGYear("");
                         setGModel("");
                         setGEngine("");
                         setModelOptions([]);
                         setEngineOptions([]);
-                      }}
-                      onBlur={() => { if (gMake.trim()) setMakeConfirmed(true); }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          if (gMake.trim()) setMakeConfirmed(true);
-                          (e.target as HTMLInputElement).blur();
-                        }
-                      }}
-                      className={cn(inputClass, "w-full rounded-2xl px-4 py-3 text-sm text-base transition-colors")}
-                    />
-                    <p className={cn("text-[11px]", t("text-slate-500", "text-slate-400"))}>
-                      {tr("makeHint", lang)}
-                    </p>
-                  </div>
+                      }
+                      setGMake(v);
+                    }}
+                    onSelect={(v) => {
+                      setGMake(v);
+                      setMakeConfirmed(true);
+                      setGYear("");
+                      setGModel("");
+                      setGEngine("");
+                      setModelOptions([]);
+                      setEngineOptions([]);
+                    }}
+                    options={makeOptions}
+                    placeholder={tr("make", lang)}
+                    triggerType="input"
+                    allowCustomValue
+                    filterable={false}
+                    onBlur={() => { if (gMake.trim()) setMakeConfirmed(true); }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        if (gMake.trim()) setMakeConfirmed(true);
+                        (e.target as HTMLInputElement).blur();
+                      }
+                    }}
+                    triggerClassName={cn(inputClass, "w-full rounded-2xl px-4 py-3 text-sm text-base transition-colors")}
+                    contentClassName={cn("rounded-xl shadow-xl w-[var(--radix-popover-trigger-width)]", dropdownClass)}
+                    theme={theme}
+                  />
 
                   <ComboSelect
                     name="year"

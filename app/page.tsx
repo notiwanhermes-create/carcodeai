@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, useRef } from "react";
+import * as Popover from "@radix-ui/react-popover";
 import { COMMON_CODES, CATEGORY_LABELS } from "./data/common-codes";
 import { LANGUAGES, tr, type LangCode } from "./data/translations";
 type EngineOption =
@@ -913,6 +914,7 @@ export default function Home() {
 
   const [gYear, setGYear] = useState("");
   const [gMake, setGMake] = useState("");
+  const [makeConfirmed, setMakeConfirmed] = useState(false);
   const [gModel, setGModel] = useState("");
   const [gVin, setGVin] = useState("");
   const [gEngine, setGEngine] = useState("");
@@ -1436,7 +1438,7 @@ export default function Home() {
               </div>
               <div className={cn("mt-1 ml-9 text-xs", t("text-slate-400", "text-slate-500"))}>{tr("savedLocally", lang)}</div>
 
-              <form className="mt-5 grid gap-3" onSubmit={(e) => { e.preventDefault(); addVehicle(new FormData(e.currentTarget)); (e.currentTarget as HTMLFormElement).reset(); setGYear(""); setGMake(""); setGModel(""); setGVin(""); setGEngine(""); }}>
+              <form className="mt-5 grid gap-3" onSubmit={(e) => { e.preventDefault(); addVehicle(new FormData(e.currentTarget)); (e.currentTarget as HTMLFormElement).reset(); setGYear(""); setGMake(""); setMakeConfirmed(false); setGModel(""); setGVin(""); setGEngine(""); }}>
                 <input
                   name="vin"
                   placeholder={tr("vinPlaceholder", lang)}
@@ -1451,13 +1453,15 @@ export default function Home() {
                     value={gMake}
                     onChange={(e) => {
                       setGMake(e.target.value);
+                      setMakeConfirmed(false);
                       setGYear("");
                       setGModel("");
                       setGEngine("");
                       setModelOptions([]);
                       setEngineOptions([]);
                     }}
-                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                    onBlur={() => { if (gMake.trim()) setMakeConfirmed(true); }}
+                    onKeyDown={(e) => { if (e.key === "Enter") { if (gMake.trim()) setMakeConfirmed(true); (e.target as HTMLInputElement).blur(); } }}
                     className={cn(inputClass, "w-full rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")}
                   />
 
@@ -1479,32 +1483,41 @@ export default function Home() {
                     )}
                   />
 
-                  <div className="relative">
-                    <input
-                      name="model"
-                      placeholder={tr("model", lang)}
-                      value={gModel}
-                      disabled={!gMake.trim()}
-                      aria-disabled={!gMake.trim()}
-                      onChange={(e) => { setGModel(e.target.value); setModelOpen(true); setModelHighlight(0); }}
-                      onFocus={() => { if (gMake.trim()) { setModelOpen(true); setModelHighlight(0); } }}
-                      onBlur={() => { setTimeout(() => setModelOpen(false), 150); }}
-                      onKeyDown={(e) => {
-                        if (!modelOpen || modelOptions.length === 0) return;
-                        if (e.key === "Escape") { setModelOpen(false); e.currentTarget.blur(); return; }
-                        if (e.key === "ArrowDown") { e.preventDefault(); setModelHighlight((i) => Math.min(i + 1, modelOptions.length - 1)); return; }
-                        if (e.key === "ArrowUp") { e.preventDefault(); setModelHighlight((i) => Math.max(0, i - 1)); return; }
-                        if (e.key === "Enter") { e.preventDefault(); const m = modelOptions[modelHighlight]; if (m != null) selectModel(m); }
-                      }}
-                      className={cn(
-                        inputClass,
-                        "w-full rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors",
-                        !gMake.trim() && "opacity-60 cursor-not-allowed pointer-events-none"
-                      )}
-                    />
-                    {modelOpen && modelOptions.length > 0 && (
-                      <div className={cn("absolute left-0 right-0 top-full z-[110] mt-2 max-h-[300px] overflow-y-auto rounded-xl shadow-xl", dropdownClass)} role="listbox">
-                        {modelOptions.map((m, idx) => (
+                  <Popover.Root open={modelOpen} onOpenChange={setModelOpen}>
+                    <Popover.Anchor asChild>
+                      <div className="relative w-full">
+                        <input
+                          name="model"
+                          placeholder={tr("model", lang)}
+                          value={gModel}
+                          disabled={!makeConfirmed || !gMake.trim()}
+                          aria-disabled={!makeConfirmed || !gMake.trim()}
+                          onChange={(e) => { setGModel(e.target.value); setModelOpen(true); setModelHighlight(0); }}
+                          onFocus={() => { if (makeConfirmed && gMake.trim()) { setModelOpen(true); setModelHighlight(0); } }}
+                          onBlur={() => { setTimeout(() => setModelOpen(false), 120); }}
+                          onKeyDown={(e) => {
+                            if (!modelOpen || modelOptions.length === 0) return;
+                            if (e.key === "Escape") { setModelOpen(false); e.currentTarget.blur(); return; }
+                            if (e.key === "ArrowDown") { e.preventDefault(); setModelHighlight((i) => Math.min(i + 1, modelOptions.length - 1)); return; }
+                            if (e.key === "ArrowUp") { e.preventDefault(); setModelHighlight((i) => Math.max(0, i - 1)); return; }
+                            if (e.key === "Enter") { e.preventDefault(); const m = modelOptions[modelHighlight]; if (m != null) selectModel(m); }
+                          }}
+                          className={cn(
+                            inputClass,
+                            "w-full rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors",
+                            (!makeConfirmed || !gMake.trim()) && "opacity-60 cursor-not-allowed pointer-events-none"
+                          )}
+                        />
+                      </div>
+                    </Popover.Anchor>
+                    <Popover.Portal>
+                      <Popover.Content
+                        className={cn("z-[9999] max-h-[300px] overflow-y-auto rounded-xl shadow-xl w-[var(--radix-popover-trigger-width)]", dropdownClass)}
+                        sideOffset={8}
+                        onOpenAutoFocus={(e) => e.preventDefault()}
+                        align="start"
+                      >
+                        {modelOptions.length > 0 && modelOptions.map((m, idx) => (
                           <button
                             key={`${m}-${idx}`}
                             type="button"
@@ -1517,41 +1530,50 @@ export default function Home() {
                             {m}
                           </button>
                         ))}
-                      </div>
-                    )}
-                  </div>
+                      </Popover.Content>
+                    </Popover.Portal>
+                  </Popover.Root>
 
-                  <div className="relative">
-                    <input type="hidden" name="engine" value={gEngine} />
-                    <input
-                      ref={engineInputRef}
-                      placeholder={tr("engine", lang)}
-                      value={engineLabel(gEngine)}
-                      disabled={!gMake.trim() || !gModel.trim() || !gYear.trim()}
-                      aria-disabled={!gMake.trim() || !gModel.trim() || !gYear.trim()}
-                      onChange={(e) => { setGEngine(e.target.value.trim()); setEngineOpen(true); }}
-                      onFocus={() => { if (gMake.trim() && gModel.trim() && gYear.trim()) { setEngineOpen(true); setEngineHighlight(0); } }}
-                      onBlur={() => { setTimeout(() => setEngineOpen(false), 150); }}
-                      onKeyDown={(e) => {
-                        if (!engineOpen || engineOptions.length === 0) return;
-                        if (e.key === "Escape") { setEngineOpen(false); e.currentTarget.blur(); return; }
-                        if (e.key === "ArrowDown") { e.preventDefault(); setEngineHighlight((i) => Math.min(i + 1, engineOptions.length - 1)); return; }
-                        if (e.key === "ArrowUp") { e.preventDefault(); setEngineHighlight((i) => Math.max(0, i - 1)); return; }
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          const opt = engineOptions[engineHighlight];
-                          if (opt != null) { const label = typeof opt === "string" ? opt : opt.label || opt.engine; setGEngine(label); setEngineOpen(false); }
-                        }
-                      }}
-                      className={cn(
-                        inputClass,
-                        "w-full rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors",
-                        (!gMake.trim() || !gModel.trim() || !gYear.trim()) && "opacity-60 cursor-not-allowed pointer-events-none"
-                      )}
-                    />
-                    {engineOpen && engineOptions.length > 0 && (
-                      <div className={cn("absolute left-0 right-0 top-full z-[110] mt-2 max-h-[300px] overflow-y-auto rounded-xl shadow-xl", dropdownClass)} role="listbox">
-                        {engineOptions.map((e: any, idx: number) => {
+                  <Popover.Root open={engineOpen} onOpenChange={setEngineOpen}>
+                    <Popover.Anchor asChild>
+                      <div className="relative w-full">
+                        <input type="hidden" name="engine" value={gEngine} />
+                        <input
+                          ref={engineInputRef}
+                          placeholder={tr("engine", lang)}
+                          value={engineLabel(gEngine)}
+                          disabled={!gMake.trim() || !gModel.trim() || !gYear.trim()}
+                          aria-disabled={!gMake.trim() || !gModel.trim() || !gYear.trim()}
+                          onChange={(e) => { setGEngine(e.target.value.trim()); setEngineOpen(true); }}
+                          onFocus={() => { if (gMake.trim() && gModel.trim() && gYear.trim()) { setEngineOpen(true); setEngineHighlight(0); } }}
+                          onBlur={() => { setTimeout(() => setEngineOpen(false), 120); }}
+                          onKeyDown={(e) => {
+                            if (!engineOpen || engineOptions.length === 0) return;
+                            if (e.key === "Escape") { setEngineOpen(false); e.currentTarget.blur(); return; }
+                            if (e.key === "ArrowDown") { e.preventDefault(); setEngineHighlight((i) => Math.min(i + 1, engineOptions.length - 1)); return; }
+                            if (e.key === "ArrowUp") { e.preventDefault(); setEngineHighlight((i) => Math.max(0, i - 1)); return; }
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              const opt = engineOptions[engineHighlight];
+                              if (opt != null) { const label = typeof opt === "string" ? opt : opt.label || opt.engine; setGEngine(label); setEngineOpen(false); }
+                            }
+                          }}
+                          className={cn(
+                            inputClass,
+                            "w-full rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors",
+                            (!gMake.trim() || !gModel.trim() || !gYear.trim()) && "opacity-60 cursor-not-allowed pointer-events-none"
+                          )}
+                        />
+                      </div>
+                    </Popover.Anchor>
+                    <Popover.Portal>
+                      <Popover.Content
+                        className={cn("z-[9999] max-h-[300px] overflow-y-auto rounded-xl shadow-xl w-[var(--radix-popover-trigger-width)]", dropdownClass)}
+                        sideOffset={8}
+                        onOpenAutoFocus={(e) => e.preventDefault()}
+                        align="start"
+                      >
+                        {engineOptions.length > 0 && engineOptions.map((e: any, idx: number) => {
                           const label = typeof e === "string" ? e : e.label || e.engine;
                           const displayLabel = engineLabel(String(label ?? ""));
                           const engineKey = typeof e === "string" ? `${e}-${idx}` : `${e.id || label}-${idx}`;
@@ -1570,9 +1592,9 @@ export default function Home() {
                             </button>
                           );
                         })}
-                      </div>
-                    )}
-                  </div>
+                      </Popover.Content>
+                    </Popover.Portal>
+                  </Popover.Root>
                 </div>
 
                 <button type="submit" className="mt-3 rounded-2xl bg-blue-500 text-white py-3 text-sm font-semibold shadow-lg shadow-blue-500/25 transition-all hover:bg-blue-400 hover:shadow-xl">{tr("saveToGarage", lang)}</button>

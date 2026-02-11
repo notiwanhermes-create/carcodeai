@@ -911,108 +911,54 @@ export default function Home() {
     showToast("Report downloaded!");
   }
 
-  function positionEngineDropdown() {
-    const el = engineInputRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    setEngineDropStyle({
-      position: "fixed",
-      top: r.bottom + 8,
-      left: r.left,
-      width: r.width,
-      zIndex: 9999,
-    });
-  }
-
   const [gYear, setGYear] = useState("");
   const [gMake, setGMake] = useState("");
   const [gModel, setGModel] = useState("");
   const [gVin, setGVin] = useState("");
   const [gEngine, setGEngine] = useState("");
   const engineInputRef = useRef<HTMLInputElement | null>(null);
-  const [engineDropStyle, setEngineDropStyle] = useState<React.CSSProperties>({});
 
-  const [makeOptions, setMakeOptions] = useState<string[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [engineOptions, setEngineOptions] = useState<any[]>([]);
 
-  const selectMake = (m: string) => {
-    setGMake(m);
-    setGModel("");
-    setGEngine("");
-    setModelOptions([]);
-    setEngineOptions([]);
-    setModelOpen(false);
-    setEngineOpen(false);
-    setMakeOpen(false);
-  };
-
-  const [makeOpen, setMakeOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [engineOpen, setEngineOpen] = useState(false);
+  const [modelHighlight, setModelHighlight] = useState(0);
+  const [engineHighlight, setEngineHighlight] = useState(0);
   const modelRef = useRef<HTMLInputElement | null>(null);
   const engineRef = useRef<HTMLInputElement | null>(null);
 
-  const makeDrop = useDropPosition();
   const modelDrop = useDropPosition();
   const engineDrop = useDropPosition();
 
   const [vinLocked, setVinLocked] = useState(false);
 
-  const makeQ = useDebouncedValue(gMake, 200);
+  const makeDebounced = useDebouncedValue(gMake, 400);
   const modelQ = useDebouncedValue(gModel, 200);
   const vinQ = useDebouncedValue(gVin, 250);
 
-  const makeInputRef = useRef<HTMLInputElement | null>(null);
-
-  const [makeMenuPos, setMakeMenuPos] = useState<{
-    left: number;
-    top: number;
-    width: number;
-  } | null>(null);
-
-  useEffect(() => {
-    if (!makeOpen || !makeInputRef.current) return;
-    const update = () => {
-      const r = makeInputRef.current!.getBoundingClientRect();
-      setMakeMenuPos({ left: r.left, top: r.bottom, width: r.width });
-    };
-    update();
-    window.addEventListener("scroll", update, true);
-    window.addEventListener("resize", update);
-    return () => {
-      window.removeEventListener("scroll", update, true);
-      window.removeEventListener("resize", update);
-    };
-  }, [makeOpen, makeOptions.length, gMake]);
-
   useEffect(() => {
     let cancelled = false;
     async function run() {
-      if (!makeQ.trim()) { setMakeOptions([]); return; }
-      const r = await fetch(`/api/vehicles/makes?q=${encodeURIComponent(makeQ.trim())}`);
-      const d = await r.json();
-      if (!cancelled) setMakeOptions(Array.isArray(d.makes) ? d.makes : []);
-    }
-    run().catch(() => { if (!cancelled) setMakeOptions([]); });
-    return () => { cancelled = true; };
-  }, [makeQ]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function run() {
-      if (!gMake.trim()) { setModelOptions([]); return; }
+      const make = makeDebounced.trim();
+      if (!make) {
+        setModelOptions([]);
+        return;
+      }
       const url =
-        `/api/vehicles/models?make=${encodeURIComponent(gMake.trim())}` +
+        `/api/vehicles/models?make=${encodeURIComponent(make)}` +
         (gYear.trim() ? `&year=${encodeURIComponent(gYear.trim())}` : "") +
-        `&q=${encodeURIComponent(modelQ.trim())}`;
+        (modelQ.trim() ? `&q=${encodeURIComponent(modelQ.trim())}` : "");
       const r = await fetch(url);
       const d = await r.json();
       if (!cancelled) setModelOptions(Array.isArray(d.models) ? d.models : []);
     }
     run().catch(() => { if (!cancelled) setModelOptions([]); });
     return () => { cancelled = true; };
-  }, [gMake, gYear, modelQ]);
+  }, [makeDebounced, gYear, modelQ]);
+
+  useEffect(() => { setModelHighlight(0); }, [modelOptions]);
+  useEffect(() => { setEngineHighlight(0); }, [engineOptions]);
 
   useEffect(() => {
     if (!gYear.trim() || !gMake.trim() || !gModel.trim()) { setEngineOptions([]); return; }
@@ -1034,10 +980,7 @@ export default function Home() {
           seen.add(key);
           return true;
         });
-        if (!cancelled) {
-          setEngineOptions(deduped);
-          if (deduped.length) setEngineOpen(true);
-        }
+        if (!cancelled) setEngineOptions(deduped);
       } catch { if (!cancelled) setEngineOptions([]); }
     })();
     return () => { cancelled = true; };
@@ -1068,7 +1011,6 @@ export default function Home() {
         setGMake(decoded.make);
         setGModel(decoded.model);
         setVinLocked(true);
-        setMakeOpen(false);
         setModelOpen(false);
       }
       if (!gEngine.trim() && suggestions.length > 0) {
@@ -1503,31 +1445,38 @@ export default function Home() {
                   className={cn(inputClass, "rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")}
                 />
                 <div className="grid grid-cols-2 gap-3">
-                  <div className="relative">
-                    <input
-                      name="make"
-                      placeholder={tr("make", lang)}
-                      value={gMake}
-                      onChange={(e) => { setGMake(e.target.value); setMakeOpen(true); }}
-                      onFocus={() => setMakeOpen(true)}
-                      onBlur={() => { setTimeout(() => setMakeOpen(false), 200); }}
-                      className={cn(inputClass, "w-full rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")}
-                    />
-                    {makeOpen && makeOptions.length > 0 && (
-                      <div className={cn("absolute z-[100] mt-1 max-h-48 w-full overflow-auto rounded-xl shadow-xl", dropdownClass)}>
-                        {makeOptions.map((m, idx) => (
-                          <button key={`${m}-${idx}`} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => selectMake(m)} className={cn("w-full px-4 py-2 text-left text-sm transition-colors hover:bg-blue-500 hover:text-white", t("text-slate-200", "text-slate-700"))}>{m}</button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  <input
+                    name="make"
+                    placeholder={tr("make", lang)}
+                    value={gMake}
+                    onChange={(e) => {
+                      setGMake(e.target.value);
+                      setGYear("");
+                      setGModel("");
+                      setGEngine("");
+                      setModelOptions([]);
+                      setEngineOptions([]);
+                    }}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                    className={cn(inputClass, "w-full rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")}
+                  />
 
                   <input
                     name="year"
                     placeholder={tr("year", lang)}
                     value={gYear}
-                    onChange={(e) => setGYear(e.target.value)}
-                    className={cn(inputClass, "rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")}
+                    disabled={!gMake.trim()}
+                    onChange={(e) => {
+                      setGYear(e.target.value);
+                      setGEngine("");
+                      setEngineOptions([]);
+                    }}
+                    aria-disabled={!gMake.trim()}
+                    className={cn(
+                      inputClass,
+                      "rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors",
+                      !gMake.trim() && "opacity-60 cursor-not-allowed pointer-events-none"
+                    )}
                   />
 
                   <div className="relative">
@@ -1535,15 +1484,38 @@ export default function Home() {
                       name="model"
                       placeholder={tr("model", lang)}
                       value={gModel}
-                      onChange={(e) => { setGModel(e.target.value); setModelOpen(true); }}
-                      onFocus={() => setModelOpen(true)}
-                      onBlur={() => { setTimeout(() => setModelOpen(false), 200); }}
-                      className={cn(inputClass, "w-full rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")}
+                      disabled={!gMake.trim()}
+                      aria-disabled={!gMake.trim()}
+                      onChange={(e) => { setGModel(e.target.value); setModelOpen(true); setModelHighlight(0); }}
+                      onFocus={() => { if (gMake.trim()) { setModelOpen(true); setModelHighlight(0); } }}
+                      onBlur={() => { setTimeout(() => setModelOpen(false), 150); }}
+                      onKeyDown={(e) => {
+                        if (!modelOpen || modelOptions.length === 0) return;
+                        if (e.key === "Escape") { setModelOpen(false); e.currentTarget.blur(); return; }
+                        if (e.key === "ArrowDown") { e.preventDefault(); setModelHighlight((i) => Math.min(i + 1, modelOptions.length - 1)); return; }
+                        if (e.key === "ArrowUp") { e.preventDefault(); setModelHighlight((i) => Math.max(0, i - 1)); return; }
+                        if (e.key === "Enter") { e.preventDefault(); const m = modelOptions[modelHighlight]; if (m != null) selectModel(m); }
+                      }}
+                      className={cn(
+                        inputClass,
+                        "w-full rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors",
+                        !gMake.trim() && "opacity-60 cursor-not-allowed pointer-events-none"
+                      )}
                     />
                     {modelOpen && modelOptions.length > 0 && (
-                      <div className={cn("absolute z-[100] mt-1 max-h-48 w-full overflow-auto rounded-xl shadow-xl", dropdownClass)}>
+                      <div className={cn("absolute left-0 right-0 top-full z-[110] mt-2 max-h-[300px] overflow-y-auto rounded-xl shadow-xl", dropdownClass)} role="listbox">
                         {modelOptions.map((m, idx) => (
-                          <button key={`${m}-${idx}`} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => selectModel(m)} className={cn("w-full px-4 py-2 text-left text-sm transition-colors hover:bg-blue-500 hover:text-white", t("text-slate-200", "text-slate-700"))}>{m}</button>
+                          <button
+                            key={`${m}-${idx}`}
+                            type="button"
+                            role="option"
+                            aria-selected={idx === modelHighlight}
+                            onMouseDown={(e) => { e.preventDefault(); selectModel(m); }}
+                            onMouseEnter={() => setModelHighlight(idx)}
+                            className={cn("w-full px-4 py-2 text-left text-sm transition-colors hover:bg-blue-500 hover:text-white", idx === modelHighlight && "bg-blue-500/80 text-white", t("text-slate-200", "text-slate-700"))}
+                          >
+                            {m}
+                          </button>
                         ))}
                       </div>
                     )}
@@ -1555,24 +1527,44 @@ export default function Home() {
                       ref={engineInputRef}
                       placeholder={tr("engine", lang)}
                       value={engineLabel(gEngine)}
+                      disabled={!gMake.trim() || !gModel.trim() || !gYear.trim()}
+                      aria-disabled={!gMake.trim() || !gModel.trim() || !gYear.trim()}
                       onChange={(e) => { setGEngine(e.target.value.trim()); setEngineOpen(true); }}
-                      onFocus={() => { setEngineOpen(true); }}
-                      onBlur={() => { setTimeout(() => setEngineOpen(false), 200); }}
-                      className={cn(inputClass, "w-full rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")}
+                      onFocus={() => { if (gMake.trim() && gModel.trim() && gYear.trim()) { setEngineOpen(true); setEngineHighlight(0); } }}
+                      onBlur={() => { setTimeout(() => setEngineOpen(false), 150); }}
+                      onKeyDown={(e) => {
+                        if (!engineOpen || engineOptions.length === 0) return;
+                        if (e.key === "Escape") { setEngineOpen(false); e.currentTarget.blur(); return; }
+                        if (e.key === "ArrowDown") { e.preventDefault(); setEngineHighlight((i) => Math.min(i + 1, engineOptions.length - 1)); return; }
+                        if (e.key === "ArrowUp") { e.preventDefault(); setEngineHighlight((i) => Math.max(0, i - 1)); return; }
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          const opt = engineOptions[engineHighlight];
+                          if (opt != null) { const label = typeof opt === "string" ? opt : opt.label || opt.engine; setGEngine(label); setEngineOpen(false); }
+                        }
+                      }}
+                      className={cn(
+                        inputClass,
+                        "w-full rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors",
+                        (!gMake.trim() || !gModel.trim() || !gYear.trim()) && "opacity-60 cursor-not-allowed pointer-events-none"
+                      )}
                     />
                     {engineOpen && engineOptions.length > 0 && (
-                      <div className={cn("absolute z-[100] mt-1 max-h-48 w-full overflow-auto rounded-xl shadow-xl", dropdownClass)}>
+                      <div className={cn("absolute left-0 right-0 top-full z-[110] mt-2 max-h-[300px] overflow-y-auto rounded-xl shadow-xl", dropdownClass)} role="listbox">
                         {engineOptions.map((e: any, idx: number) => {
                           const label = typeof e === "string" ? e : e.label || e.engine;
                           const displayLabel = engineLabel(String(label ?? ""));
                           const engineKey = typeof e === "string" ? `${e}-${idx}` : `${e.id || label}-${idx}`;
+                          const isHighlighted = idx === engineHighlight;
                           return (
                             <button
                               key={engineKey}
                               type="button"
-                              onMouseDown={(ev) => ev.preventDefault()}
-                              onClick={() => { setGEngine(label); setEngineOpen(false); }}
-                              className={cn("group w-full px-4 py-2 text-left text-sm transition-colors hover:bg-blue-500 hover:text-white", t("text-slate-200", "text-slate-700"))}
+                              role="option"
+                              aria-selected={isHighlighted}
+                              onMouseDown={(ev) => { ev.preventDefault(); setGEngine(label); setEngineOpen(false); }}
+                              onMouseEnter={() => setEngineHighlight(idx)}
+                              className={cn("group w-full px-4 py-2 text-left text-sm transition-colors hover:bg-blue-500 hover:text-white", isHighlighted && "bg-blue-500/80 text-white", t("text-slate-200", "text-slate-700"))}
                             >
                               <div className="font-medium">{displayLabel}</div>
                             </button>

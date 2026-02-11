@@ -121,7 +121,6 @@ export async function POST(req: Request) {
                 error: "Manufacturer-specific code not in our verified database yet.",
                 code: normalizeCode(singleCode),
                 make: make.trim() || undefined,
-                next: "Paste scan-tool description or try symptoms.",
               },
               404
             );
@@ -187,11 +186,11 @@ Rules:
 - For severity: use "high" (most likely cause), "medium" (possible cause), or "low" (less likely).
 - Do NOT include any prices or cost estimates.
 - For difficulty: use "DIY Easy" (anyone can do it), "DIY Moderate" (needs some tools/knowledge), or "Mechanic Recommended" (professional needed). Translate the difficulty label into ${outputLanguage}.
-- If a code definition is provided above, you MUST use it exactly and MUST NOT invent/replace the meaning. Your job is only to suggest likely causes, confirmation steps, and fixes—not to redefine the code.
+- Do not redefine the code. Use the provided definition exactly. If a code definition is provided above, you MUST use it exactly and MUST NOT invent or replace the meaning. Your job is only to suggest likely causes, confirmation steps, and fixes.
 `;
 
     const definitionInstruction = hasVerifiedDefinition
-      ? `Authoritative code definitions (use these exactly; do not rephrase or replace):\n${dtcDefinitionsBlock}\n\n`
+      ? `Authoritative code definition (do not redefine; use exactly):\n${dtcDefinitionsBlock}\n\nRule: Do not redefine the code. Use the provided definition exactly.\n\n`
       : "";
 
     const user = `
@@ -257,6 +256,7 @@ Output JSON in this exact schema (all text values in ${outputLanguage}):
         description: primary.description,
         source: primary.source,
       };
+      parsed.summary_title = verifiedDefinitions.map((d) => `${d.code}: ${d.title}`).join(" | ");
     }
 
     return jsonResponse(parsed, 200);

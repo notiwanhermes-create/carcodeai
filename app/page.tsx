@@ -71,7 +71,9 @@ type MaintenanceRecord = {
   vehicleId: string;
   type: string;
   date: string;
-  mileage: string;
+  mileageValue?: number;
+  mileageUnit?: "km" | "mi";
+  mileageKm?: number;
   notes: string;
 };
 
@@ -811,12 +813,25 @@ export default function Home() {
   }, [lang]);
 
   function addMaintenanceRecord(vehicleId: string, fd: FormData) {
+    const mileageUnitRaw = String(fd.get("maint_mileage_unit") || "km").toLowerCase();
+    const mileageUnit: "km" | "mi" = mileageUnitRaw === "mi" ? "mi" : "km";
+    const mileageRaw = String(fd.get("maint_mileage") || "").trim();
+    const mileageValue = mileageRaw ? Number(mileageRaw) : undefined;
+    if (mileageValue !== undefined && (!Number.isFinite(mileageValue) || mileageValue <= 0)) {
+      showToast("Mileage must be a positive number.");
+      return;
+    }
+    const mileageKm =
+      mileageValue === undefined ? undefined : mileageUnit === "mi" ? mileageValue * 1.60934 : mileageValue;
+
     const rec: MaintenanceRecord = {
       id: uid(),
       vehicleId,
       type: String(fd.get("maint_type") || "Other"),
       date: String(fd.get("maint_date") || new Date().toISOString().slice(0, 10)),
-      mileage: String(fd.get("maint_mileage") || ""),
+      mileageValue,
+      mileageUnit,
+      mileageKm,
       notes: String(fd.get("maint_notes") || ""),
     };
     setMaintenanceRecords((prev) => ({
@@ -1755,7 +1770,27 @@ export default function Home() {
                             </select>
                             <div className="grid grid-cols-2 gap-2">
                               <input name="maint_date" type="date" defaultValue={new Date().toISOString().slice(0, 10)} className={cn(inputClass, "rounded-xl px-3 py-2 text-xs transition-colors")} style={{ colorScheme: "dark" }} />
-                              <input name="maint_mileage" placeholder={tr("mileage", lang)} className={cn(inputClass, "rounded-xl px-3 py-2 text-xs transition-colors")} />
+                              <div className="flex gap-2">
+                                <input
+                                  name="maint_mileage"
+                                  inputMode="numeric"
+                                  type="number"
+                                  min={0}
+                                  step={1}
+                                  placeholder={tr("mileage", lang)}
+                                  className={cn(inputClass, "w-full rounded-xl px-3 py-2 text-xs transition-colors")}
+                                />
+                                <select
+                                  name="maint_mileage_unit"
+                                  defaultValue="km"
+                                  className={cn(inputClass, "rounded-xl px-2.5 py-2 text-xs transition-colors appearance-none")}
+                                  style={{ colorScheme: "dark" }}
+                                  aria-label="Mileage unit"
+                                >
+                                  <option value="km" className="bg-slate-800 text-slate-200">km</option>
+                                  <option value="mi" className="bg-slate-800 text-slate-200">mi</option>
+                                </select>
+                              </div>
                             </div>
                             <input name="maint_notes" placeholder={tr("notesOptional", lang)} className={cn(inputClass, "rounded-xl px-3 py-2 text-xs transition-colors")} />
                             <button type="submit" className="rounded-xl bg-emerald-500 text-white py-2 text-xs font-semibold shadow-md shadow-emerald-500/25 transition-all hover:bg-emerald-400">{tr("addRecord", lang)}</button>
@@ -1769,7 +1804,16 @@ export default function Home() {
                                     <span className={cn("font-semibold", t("text-white", "text-slate-900"))}>{mr.type}</span>
                                     <span className={cn(t("text-slate-400", "text-slate-500"))}>{mr.date}</span>
                                   </div>
-                                  {mr.mileage && <div className={cn("mt-0.5", t("text-slate-400", "text-slate-500"))}>{mr.mileage} mi</div>}
+                                  {(mr.mileageValue !== undefined || (mr as any).mileage) && (
+                                    <div className={cn("mt-0.5", t("text-slate-400", "text-slate-500"))}>
+                                      {(
+                                        mr.mileageValue !== undefined
+                                          ? mr.mileageValue
+                                          : Number(String((mr as any).mileage ?? "").replace(/,/g, "")) || 0
+                                      ).toLocaleString()}{" "}
+                                      {mr.mileageUnit || "mi"}
+                                    </div>
+                                  )}
                                   {mr.notes && <div className={cn("mt-0.5", t("text-slate-400", "text-slate-500"))}>{mr.notes}</div>}
                                 </div>
                               ))}

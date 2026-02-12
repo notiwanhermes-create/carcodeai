@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
 
-const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const CACHE_TTL_MS = 10 * 60 * 1000;
 const modelsCache = new Map<string, { list: string[]; time: number }>();
 
-/** Normalize for display/comparison: trim, lowercase */
 function normalize(s: string) {
   return s.trim().toLowerCase();
 }
 
-/** Key for matching makes: "Land Rover" / "LAND ROVER" / "Landrover" → "landrover" */
 function makeKey(s: string) {
   return s
     .trim()
@@ -24,6 +22,8 @@ function scoreModel(name: string, q: string) {
   if (n.includes(q)) return 200;
   return 0;
 }
+
+const CAR_VEHICLE_TYPE_IDS = new Set([2, 7, 10]);
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -48,16 +48,24 @@ export async function GET(request: Request) {
       const url = year
         ? `https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeYear/make/${encodeURIComponent(
             make
-          )}/modelyear/${encodeURIComponent(year)}?format=json`
-        : `https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMake/${encodeURIComponent(
+          )}/modelyear/${encodeURIComponent(year)}/vehicletype/passenger%20car?format=json`
+        : `https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeYear/make/${encodeURIComponent(
             make
-          )}?format=json`;
+          )}/vehicletype/passenger%20car?format=json`;
 
       const r = await fetch(url, { cache: "no-store" });
       if (!r.ok) return NextResponse.json({ models: [] });
 
       const data = await r.json();
-      const all: string[] = (data?.Results ?? [])
+      const results: any[] = data?.Results ?? [];
+
+      const all: string[] = results
+        .filter((x: any) => {
+          if (year) return true;
+          const vtId = x?.VehicleTypeId;
+          if (!vtId) return true;
+          return CAR_VEHICLE_TYPE_IDS.has(vtId);
+        })
         .map((x: { Model_Name?: string; ModelName?: string }) =>
           String(x?.Model_Name ?? x?.ModelName ?? "").trim()
         )

@@ -1814,8 +1814,13 @@ export default function Home() {
                                       <button
                                         type="button"
                                         onClick={() => {
-                                          if (!confirm("Delete this maintenance record?")) return;
-                                          deleteMaintenanceRecord(v.id, mr.id);
+                                          setConfirmDialog({
+                                            open: true,
+                                            title: "Delete Record",
+                                            message: "Are you sure you want to delete this maintenance record? This cannot be undone.",
+                                            confirmLabel: tr("delete", lang),
+                                            onConfirm: () => deleteMaintenanceRecord(v.id, mr.id),
+                                          });
                                         }}
                                         className={cn(
                                           "rounded-lg p-1.5 transition-all",

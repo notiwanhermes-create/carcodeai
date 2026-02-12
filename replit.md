@@ -90,7 +90,8 @@ All API routes live under `app/api/` using Next.js Route Handlers:
 - `DATABASE_URL` — PostgreSQL connection string
 - `GOOGLE_OAUTH_CLIENT_ID` — Google OAuth client ID
 - `GOOGLE_OAUTH_CLIENT_SECRET` — Google OAuth client secret
-- `NEXTAUTH_SECRET` — NextAuth session encryption secret (auto-generated if not set)
+- `AUTH_SECRET` — Auth.js / NextAuth session encryption secret (recommended). `NEXTAUTH_SECRET` also works for backwards compatibility.
+- `NEXTAUTH_URL` — Canonical site URL used by Auth.js for callback URLs (set to `https://www.<your-domain>` if you want `www` to be canonical)
 - `REPLIT_DEV_DOMAIN` / `REPLIT_DOMAINS` — Used for constructing callback URLs (auto-provided by Replit)
 
 ### Key NPM Packages

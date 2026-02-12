@@ -45,6 +45,7 @@ export async function ensureDB() {
       model TEXT NOT NULL,
       engine TEXT,
       vin TEXT,
+      nickname TEXT,
       is_active BOOLEAN DEFAULT FALSE,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
@@ -56,6 +57,7 @@ export async function ensureDB() {
       type TEXT NOT NULL,
       date TEXT NOT NULL,
       mileage TEXT,
+      cost TEXT,
       notes TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
@@ -70,6 +72,12 @@ export async function ensureDB() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
 
+  `);
+
+  // Backfill columns for older databases (CREATE TABLE IF NOT EXISTS doesn't add new columns).
+  await pool.query(`
+    ALTER TABLE garage_vehicles ADD COLUMN IF NOT EXISTS nickname TEXT;
+    ALTER TABLE maintenance_records ADD COLUMN IF NOT EXISTS cost TEXT;
   `);
   initialized = true;
 }

@@ -16,6 +16,13 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## Environment variables
+
+This app uses Auth.js / NextAuth. For a stable dev/prod setup, set:
+
+- `AUTH_SECRET` (recommended; `NEXTAUTH_SECRET` also supported)
+- `NEXTAUTH_URL` (set this to your canonical URL, e.g. `https://www.example.com`)
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

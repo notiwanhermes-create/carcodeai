@@ -4,8 +4,29 @@ import Google from "next-auth/providers/google";
 import bcrypt from "bcryptjs";
 import prisma from "./prisma";
 
+const authBaseUrl = process.env.NEXTAUTH_URL || process.env.AUTH_URL;
+
+if (!authBaseUrl && process.env.NODE_ENV === "production") {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[auth] Missing NEXTAUTH_URL/AUTH_URL in production. Set NEXTAUTH_URL to your canonical https://www.<domain> to ensure correct callback URLs."
+  );
+}
+
+const authSecret =
+  process.env.AUTH_SECRET ||
+  process.env.NEXTAUTH_SECRET ||
+  (process.env.NODE_ENV !== "production" ? "dev-only-auth-secret-change-me" : undefined);
+
+if (!process.env.AUTH_SECRET && !process.env.NEXTAUTH_SECRET && process.env.NODE_ENV !== "production") {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[auth] Using dev-only fallback secret. Set AUTH_SECRET (recommended) or NEXTAUTH_SECRET to silence this warning."
+  );
+}
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
+  secret: authSecret,
   providers: [
     Credentials({
       name: "credentials",
@@ -51,10 +72,14 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         return { id: user.id, email: user.email, name: [user.firstName, user.lastName].filter(Boolean).join(" ") || undefined, image: user.profileImage };
       },
     }),
-    Google({
-      clientId: process.env.GOOGLE_OAUTH_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
-    }),
+    ...(process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET
+      ? [
+          Google({
+            clientId: process.env.GOOGLE_OAUTH_CLIENT_ID,
+            clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+          }),
+        ]
+      : []),
   ],
   pages: {
     signIn: "/login",

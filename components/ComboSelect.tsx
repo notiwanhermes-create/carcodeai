@@ -1,8 +1,6 @@
 "use client";
 
 import * as React from "react";
-import * as Popover from "@radix-ui/react-popover";
-import { Command } from "cmdk";
 
 export type ComboSelectOption = string | { value: string; label: string };
 
@@ -21,23 +19,16 @@ export type ComboSelectProps = {
   placeholder?: string;
   disabled?: boolean;
   name?: string;
-  /** Display transform for the trigger (e.g. engine shorthand) */
   displayValue?: (value: string) => string;
-  /** Allow typing custom value (e.g. Make); use with triggerType="input" */
   allowCustomValue?: boolean;
-  /** "button" = click to open list only; "input" = type + open list (for Make) */
   triggerType?: "button" | "input";
   filterable?: boolean;
   className?: string;
   triggerClassName?: string;
   contentClassName?: string;
-  /** Theme: "dark" | "light" for list styles */
   theme?: "dark" | "light";
-  /** For triggerType="input": blur handler (e.g. confirm make) */
   onBlur?: () => void;
-  /** For triggerType="input": keydown (e.g. Enter to confirm) */
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
-  /** Called when user picks an item from the dropdown (distinct from typing) */
   onSelect?: (value: string) => void;
 };
 
@@ -52,7 +43,6 @@ export function ComboSelect({
   allowCustomValue = false,
   triggerType = "button",
   filterable = true,
-  className,
   triggerClassName,
   contentClassName,
   theme = "dark",
@@ -62,12 +52,32 @@ export function ComboSelect({
 }: ComboSelectProps) {
   const [open, setOpen] = React.useState(false);
   const [search, setSearch] = React.useState("");
-  const triggerRef = React.useRef<HTMLButtonElement | HTMLInputElement>(null);
+  const [highlightIdx, setHighlightIdx] = React.useState(0);
+  const [dropWidth, setDropWidth] = React.useState<number | undefined>();
+  const triggerRef = React.useRef<HTMLDivElement>(null);
+  const listRef = React.useRef<HTMLDivElement>(null);
 
   const display = displayValue ? displayValue(value) : value;
   const showValue = display || (allowCustomValue ? value : "");
 
-  const handleSelect = React.useCallback(
+  const filtered = React.useMemo(() => {
+    if (!filterable || !search.trim()) return options;
+    const q = search.toLowerCase();
+    return options.filter((opt) => optionLabel(opt).toLowerCase().includes(q));
+  }, [options, search, filterable]);
+
+  React.useEffect(() => {
+    if (open && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setDropWidth(rect.width);
+    }
+  }, [open]);
+
+  React.useEffect(() => {
+    setHighlightIdx(0);
+  }, [filtered.length, open]);
+
+  const doSelect = React.useCallback(
     (v: string) => {
       if (onSelectProp) {
         onSelectProp(v);
@@ -77,132 +87,173 @@ export function ComboSelect({
       setOpen(false);
       setSearch("");
     },
-    [onValueChange, onSelectProp]
+    [onValueChange, onSelectProp],
   );
 
-  const handleOpenChange = React.useCallback((next: boolean) => {
-    setOpen(next);
-    if (!next) setSearch("");
-  }, []);
+  const handleInputChange = React.useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      onValueChange(e.target.value);
+      if (!open && e.target.value.trim()) setOpen(true);
+    },
+    [onValueChange, open],
+  );
 
   const handleTriggerClick = React.useCallback(() => {
-    if (!disabled) setOpen(true);
-  }, [disabled]);
+    if (!disabled && options.length > 0) setOpen((p) => !p);
+  }, [disabled, options.length]);
 
-  const handleTriggerFocus = React.useCallback(() => {
-    if (!disabled) setOpen(true);
-  }, [disabled]);
+  const handleInputFocus = React.useCallback(() => {
+    if (!disabled && options.length > 0) setOpen(true);
+  }, [disabled, options.length]);
+
+  React.useEffect(() => {
+    if (triggerType === "input" && options.length > 0 && value.trim()) {
+      setOpen(true);
+    }
+  }, [options, triggerType, value]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    function onClickOutside(e: MouseEvent) {
+      const target = e.target as Node;
+      if (
+        triggerRef.current &&
+        !triggerRef.current.contains(target) &&
+        listRef.current &&
+        !listRef.current.contains(target)
+      ) {
+        setOpen(false);
+        setSearch("");
+      }
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [open]);
+
+  const handleListKeyDown = React.useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setHighlightIdx((i) => (i + 1) % filtered.length);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setHighlightIdx((i) => (i - 1 + filtered.length) % filtered.length);
+      } else if (e.key === "Enter" && filtered.length > 0) {
+        e.preventDefault();
+        doSelect(optionValue(filtered[highlightIdx]));
+      } else if (e.key === "Escape") {
+        setOpen(false);
+        setSearch("");
+      }
+    },
+    [filtered, highlightIdx, doSelect],
+  );
 
   const textClass = theme === "dark" ? "text-slate-200" : "text-slate-700";
   const hoverClass = "hover:bg-blue-500 hover:text-white";
   const emptyClass = theme === "dark" ? "text-slate-500" : "text-slate-400";
-
-  const baseTriggerClass = triggerClassName ?? className ?? "";
+  const highlightClass = "bg-blue-500/80 text-white";
 
   return (
-    <Popover.Root open={open} onOpenChange={handleOpenChange}>
-      <Popover.Anchor asChild>
-        {triggerType === "input" ? (
-          <div className="relative w-full pointer-events-none">
-            <input
-              style={{ pointerEvents: "auto" }}
-              ref={triggerRef as React.RefObject<HTMLInputElement>}
-              type="text"
-              name={name}
-              value={value}
-              onChange={(e) => onValueChange(e.target.value)}
-              onFocus={handleTriggerFocus}
-              onClick={handleTriggerClick}
-              onBlur={onBlur}
-              onKeyDown={onKeyDown}
-              disabled={disabled}
-              aria-disabled={disabled}
-              aria-expanded={open}
-              aria-haspopup="listbox"
-              placeholder={placeholder}
-              className={baseTriggerClass}
-            />
-          </div>
-        ) : (
-          <button
-            ref={triggerRef as React.RefObject<HTMLButtonElement>}
-            type="button"
-            disabled={disabled}
-            aria-disabled={disabled}
-            aria-expanded={open}
-            aria-haspopup="listbox"
-            onClick={handleTriggerClick}
-            onFocus={handleTriggerFocus}
-            className={baseTriggerClass}
-            style={{ pointerEvents: disabled ? undefined : "auto" }}
-          >
-            {showValue ? (
-              <span className="block truncate text-left">{showValue}</span>
-            ) : (
-              <span className={emptyClass}>{placeholder}</span>
-            )}
-          </button>
-        )}
-      </Popover.Anchor>
-      {name && triggerType === "button" && <input type="hidden" name={name} value={value} />}
-      <Popover.Portal>
-        <Popover.Content
-          className={contentClassName}
-          sideOffset={8}
-          align="start"
-          onOpenAutoFocus={(e) => e.preventDefault()}
-          onCloseAutoFocus={(e) => {
-            e.preventDefault();
-            triggerRef.current?.focus();
+    <div ref={triggerRef} className="relative" style={{ position: "relative" }}>
+      {triggerType === "input" ? (
+        <input
+          type="text"
+          name={name}
+          value={value}
+          onChange={handleInputChange}
+          onFocus={handleInputFocus}
+          onBlur={(e) => {
+            const related = e.relatedTarget as Node | null;
+            if (listRef.current && related && listRef.current.contains(related)) return;
+            setTimeout(() => {
+              onBlur?.();
+            }, 150);
           }}
-          style={{ zIndex: 9999 }}
+          onKeyDown={(e) => {
+            if (open && (e.key === "ArrowDown" || e.key === "ArrowUp" || (e.key === "Enter" && filtered.length > 0))) {
+              handleListKeyDown(e);
+              return;
+            }
+            onKeyDown?.(e);
+          }}
+          disabled={disabled}
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          placeholder={placeholder}
+          autoComplete="off"
+          className={triggerClassName}
+        />
+      ) : (
+        <button
+          type="button"
+          disabled={disabled}
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          onClick={handleTriggerClick}
+          className={triggerClassName}
         >
-          <Command
-            label="Options"
-            shouldFilter={filterable}
-            value={value}
-            onValueChange={handleSelect}
-            className="rounded-lg border-0 bg-transparent p-0"
-            loop
+          {showValue ? (
+            <span className="block truncate text-left">{showValue}</span>
+          ) : (
+            <span className={emptyClass}>{placeholder}</span>
+          )}
+        </button>
+      )}
+      {name && triggerType === "button" && (
+        <input type="hidden" name={name} value={value} />
+      )}
+      {open && filtered.length > 0 && (
+        <div
+          ref={listRef}
+          className={contentClassName}
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            marginTop: 8,
+            width: dropWidth ?? "100%",
+            zIndex: 9999,
+          }}
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          {filterable && options.length > 6 && (
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search..."
+              className="w-full rounded-t-lg border-0 bg-transparent px-3 py-2 text-sm outline-none placeholder:opacity-60"
+              autoFocus
+              onKeyDown={handleListKeyDown}
+            />
+          )}
+          <div
+            className="max-h-[300px] overflow-y-auto overflow-x-hidden rounded-b-lg p-1"
+            role="listbox"
           >
-            {filterable && options.length > 0 && (
-              <Command.Input
-                value={search}
-                onValueChange={setSearch}
-                placeholder="Search..."
-                className="w-full rounded-t-lg border-0 bg-transparent px-3 py-2 text-sm outline-none placeholder:opacity-60"
-                autoFocus
-              />
-            )}
-            <Command.List
-              className="max-h-[300px] overflow-y-auto overflow-x-hidden rounded-b-lg p-1"
-              style={{ minHeight: "40px" }}
-            >
-              <Command.Empty className="py-4 text-center text-sm opacity-60">
-                No results.
-              </Command.Empty>
-              {options.map((opt, idx) => {
-                const val = optionValue(opt);
-                const label = optionLabel(opt);
-                return (
-                  <Command.Item
-                    key={val + idx}
-                    value={val}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      handleSelect(val);
-                    }}
-                    onSelect={() => handleSelect(val)}
-                    className={`cursor-pointer rounded-md px-3 py-2 text-sm outline-none ${textClass} ${hoverClass} data-[selected=true]:bg-blue-500/80 data-[selected=true]:text-white`}
-                  >
-                    {label}
-                  </Command.Item>
-                );
-              })}
-            </Command.List>
-          </Command>
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
+            {filtered.map((opt, idx) => {
+              const val = optionValue(opt);
+              const label = optionLabel(opt);
+              return (
+                <div
+                  key={val + idx}
+                  role="option"
+                  aria-selected={idx === highlightIdx}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    doSelect(val);
+                  }}
+                  onMouseEnter={() => setHighlightIdx(idx)}
+                  className={`cursor-pointer rounded-md px-3 py-2 text-sm outline-none ${textClass} ${hoverClass} ${idx === highlightIdx ? highlightClass : ""}`}
+                >
+                  {label}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

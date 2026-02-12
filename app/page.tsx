@@ -1443,7 +1443,7 @@ export default function Home() {
               </div>
               <div className={cn("mt-1 ml-9 text-xs", t("text-slate-400", "text-slate-500"))}>{tr("savedLocally", lang)}</div>
 
-              <form className="mt-5 grid gap-3" onSubmit={(e) => { e.preventDefault(); addVehicle(new FormData(e.currentTarget)); (e.currentTarget as HTMLFormElement).reset(); setGYear(""); setGMake(""); setMakeConfirmed(false); setGModel(""); setGVin(""); setGEngine(""); }}>
+              <form className="mt-5 grid gap-3 overflow-visible" onSubmit={(e) => { e.preventDefault(); addVehicle(new FormData(e.currentTarget)); (e.currentTarget as HTMLFormElement).reset(); setGYear(""); setGMake(""); setMakeConfirmed(false); setGModel(""); setGVin(""); setGEngine(""); }}>
                 <input
                   name="vin"
                   placeholder={tr("vinPlaceholder", lang)}
@@ -1451,7 +1451,7 @@ export default function Home() {
                   onChange={(e) => setGVin(e.target.value)}
                   className={cn(inputClass, "rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")}
                 />
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 gap-3 overflow-visible">
                   <ComboSelect
                     name="make"
                     value={gMake}

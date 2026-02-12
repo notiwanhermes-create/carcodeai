@@ -6,6 +6,10 @@ import { extractDtcCodes, lookupDtc, type DtcLookupResult } from "../../lib/dtc-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const MAX_OUTPUT_TOKENS = 800; // hard cap to reduce TPM spikes
+const MAX_RETRIES = 4;
+const MAX_CONCURRENCY = 1; // prevent bursty concurrent requests
+
 type Body = {
   code?: string;
   year?: string;
@@ -43,6 +47,70 @@ function jsonResponse(body: object, status: number) {
   return Response.json(body, { status, headers: { "Content-Type": "application/json" } });
 }
 
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function jitterMs(baseMs: number) {
+  const jitter = Math.floor(Math.random() * Math.min(250, Math.max(50, baseMs * 0.1)));
+  return baseMs + jitter;
+}
+
+function toInt(x: unknown): number | null {
+  const n = typeof x === "string" ? Number(x) : typeof x === "number" ? x : NaN;
+  return Number.isFinite(n) ? Math.floor(n) : null;
+}
+
+function getRetryAfterMsFromError(err: unknown): number | null {
+  const e = err as any;
+  const hdrs = e?.headers;
+  const ra =
+    (typeof hdrs?.get === "function" ? hdrs.get("retry-after") : null) ??
+    hdrs?.["retry-after"] ??
+    hdrs?.["Retry-After"];
+  const seconds = toInt(ra);
+  if (seconds !== null && seconds >= 0) return seconds * 1000;
+  const raMs =
+    (typeof hdrs?.get === "function" ? hdrs.get("retry-after-ms") : null) ??
+    hdrs?.["retry-after-ms"] ??
+    hdrs?.["Retry-After-Ms"];
+  const ms = toInt(raMs);
+  if (ms !== null && ms >= 0) return ms;
+  return null;
+}
+
+function isRateLimit429(err: unknown): boolean {
+  const e = err as any;
+  return e?.status === 429 || e?.code === "rate_limit_exceeded" || e?.error?.code === "rate_limit_exceeded";
+}
+
+function truncate(s: string, maxChars: number) {
+  if (s.length <= maxChars) return s;
+  return s.slice(0, Math.max(0, maxChars - 1)) + "…";
+}
+
+class Semaphore {
+  private inUse = 0;
+  private queue: Array<() => void> = [];
+  constructor(private readonly max: number) {}
+  async acquire(): Promise<() => void> {
+    if (this.inUse < this.max) {
+      this.inUse++;
+      return () => this.release();
+    }
+    await new Promise<void>((resolve) => this.queue.push(resolve));
+    this.inUse++;
+    return () => this.release();
+  }
+  private release() {
+    this.inUse = Math.max(0, this.inUse - 1);
+    const next = this.queue.shift();
+    if (next) next();
+  }
+}
+
+const openAiSemaphore = new Semaphore(MAX_CONCURRENCY);
+
 /** Split code input by comma and trim; also support single OEM hex codes. */
 function parseCodeInput(raw: string): string[] {
   const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
@@ -75,7 +143,7 @@ export async function POST(req: Request) {
 
     const code = (body.code || "").trim();
     const engine = (body.engine || "").trim();
-    const symptoms = (body.symptoms || "").trim();
+    const symptoms = truncate((body.symptoms || "").trim(), 800);
     const lang = (body.lang || "en").trim();
 
     if (!code && !symptoms) {
@@ -163,57 +231,57 @@ export async function POST(req: Request) {
       complaintLine = `Symptoms: ${symptoms}`;
     }
 
+    // Budget the definition block to avoid huge prompts (TPM spikes).
+    const defsForPrompt = verifiedDefinitions.slice(0, 3).map((d) => ({
+      ...d,
+      description: truncate(d.description || "", 240),
+      title: truncate(d.title || "", 120),
+    }));
     const dtcDefinitionsBlock =
-      verifiedDefinitions.length > 0
-        ? verifiedDefinitions
-            .map((d) => `- ${d.code}: ${d.title} (${d.description || ""})`)
-            .join("\n")
+      defsForPrompt.length > 0
+        ? truncate(
+            defsForPrompt.map((d) => `- ${d.code}: ${d.title} — ${d.description}`).join("\n"),
+            1200
+          )
         : "";
 
-    const hasVerifiedDefinition = verifiedDefinitions.length > 0;
+    const hasVerifiedDefinition = defsForPrompt.length > 0;
 
-    const system = `
-You are an automotive diagnostic assistant.
-Return ONLY valid JSON. No markdown, no backticks, no extra text.
-IMPORTANT: All text values in the JSON (title, why, confirm steps, fix steps, difficulty) MUST be written in ${outputLanguage}.
-
-Rules:
-- Provide 4–6 likely causes, ranked from most to least likely.
-- Each cause must have UNIQUE confirm steps and fix steps tailored to that cause (avoid repeating generic advice).
-- Confirm steps should be things a DIY person can do.
-- Fix steps should be practical and safe.
-- Keep each bullet short (1 line).
-- For severity: use "high" (most likely cause), "medium" (possible cause), or "low" (less likely).
-- Do NOT include any prices or cost estimates.
-- For difficulty: use "DIY Easy" (anyone can do it), "DIY Moderate" (needs some tools/knowledge), or "Mechanic Recommended" (professional needed). Translate the difficulty label into ${outputLanguage}.
-- Do not redefine the code. Use the provided definition exactly. If a code definition is provided above, you MUST use it exactly and MUST NOT invent or replace the meaning. Your job is only to suggest likely causes, confirmation steps, and fixes.
-`;
+    // Keep system prompt tight to reduce input tokens.
+    const system = [
+      "You are an automotive diagnostic assistant.",
+      "Return ONLY valid JSON (no markdown/backticks/extra text).",
+      `All text values MUST be in ${outputLanguage}.`,
+      "Give 4–6 likely causes, ranked most→least likely.",
+      "Each cause must have unique confirm and fix steps (no repeated generic advice).",
+      "Confirm: DIY checks. Fix: practical + safe.",
+      "No prices/cost estimates.",
+      "severity must be: high | medium | low.",
+      `difficulty must be translated into ${outputLanguage}.`,
+      "If an authoritative code definition is provided, do NOT redefine it; use it exactly.",
+    ].join("\n");
 
     const definitionInstruction = hasVerifiedDefinition
       ? `Authoritative code definition (do not redefine; use exactly):\n${dtcDefinitionsBlock}\n\nRule: Do not redefine the code. Use the provided definition exactly.\n\n`
       : "";
 
-    const user = `
-Vehicle: ${vehicleLine}
-
-${definitionInstruction}Complaint / codes:\n${complaintLine}
-
-Output JSON in this exact schema (all text values in ${outputLanguage}):
-{
-  "vehicle": "${vehicleLine}",
-  "input": { "code": "${code}", "symptoms": "${symptoms}" },
-  "causes": [
-    {
-      "title": "string (name of the likely cause, e.g. 'Worn Spark Plugs')",
-      "why": "string (1 sentence explaining why this cause is likely)",
-      "severity": "high | medium | low",
-      "difficulty": "string (translated to ${outputLanguage})",
-      "confirm": ["string","string","string"],
-      "fix": ["string","string","string"]
-    }
-  ]
-}
-`;
+    const user = [
+      `Vehicle: ${vehicleLine}`,
+      "",
+      definitionInstruction ? definitionInstruction.trimEnd() : "",
+      `Complaint / codes:\n${truncate(complaintLine, 2000)}`,
+      "",
+      "Return JSON with this schema:",
+      "{",
+      `  "vehicle": "${vehicleLine}",`,
+      `  "input": { "code": "${truncate(code, 80)}", "symptoms": "${truncate(symptoms, 200)}" },`,
+      '  "causes": [',
+      '    { "title": "…", "why": "…", "severity": "high|medium|low", "difficulty": "…", "confirm": ["…"], "fix": ["…"] }',
+      "  ]",
+      "}",
+    ]
+      .filter(Boolean)
+      .join("\n");
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey?.trim()) {
@@ -221,47 +289,66 @@ Output JSON in this exact schema (all text values in ${outputLanguage}):
     }
     const openai = new OpenAI({ apiKey: apiKey.trim() });
 
-    const resp = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      input: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      temperature: 0.2,
-    });
+    const release = await openAiSemaphore.acquire();
+    try {
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const resp = await openai.responses.create({
+            model: "gpt-4.1-mini",
+            input: [
+              { role: "system", content: system },
+              { role: "user", content: user },
+            ],
+            temperature: 0.2,
+            max_output_tokens: MAX_OUTPUT_TOKENS,
+          });
+          const text = resp.output_text || "";
+          const parsed = safeJsonParse(text);
 
-    const text = resp.output_text || "";
-    const parsed = safeJsonParse(text);
+          if (!parsed || !parsed.causes) {
+            return jsonResponse(
+              {
+                error: "AI returned unexpected format. Try again with more symptoms.",
+                debug: text.slice(0, 500),
+              },
+              500
+            );
+          }
 
-    if (!parsed || !parsed.causes) {
-      return jsonResponse(
-        {
-          error: "AI returned unexpected format. Try again with more symptoms.",
-          debug: text.slice(0, 500),
-        },
-        500
-      );
+          if (dtcResults.length > 0) {
+            parsed.dtcLookup = dtcResults;
+            parsed.summary_title = dtcResults.map((r) => `${r.code}: ${r.title}`).join(" | ");
+          }
+
+          if (code && verifiedDefinitions.length > 0) {
+            const primary = verifiedDefinitions[0];
+            parsed.code_definition = {
+              code: primary.code,
+              title: primary.title,
+              description: primary.description,
+              source: primary.source,
+            };
+            parsed.summary_title = verifiedDefinitions.map((d) => `${d.code}: ${d.title}`).join(" | ");
+          }
+
+          return jsonResponse(parsed, 200);
+        } catch (err: unknown) {
+          lastErr = err;
+          if (!isRateLimit429(err) || attempt === MAX_RETRIES) throw err;
+          const retryAfter = getRetryAfterMsFromError(err);
+          const backoff = retryAfter ?? jitterMs(1000 * Math.pow(2, attempt));
+          await sleep(backoff);
+        }
+      }
+      // Should never hit, but keeps TS happy.
+      throw lastErr ?? new Error("Rate limited.");
+    } finally {
+      release();
     }
-
-    if (dtcResults.length > 0) {
-      parsed.dtcLookup = dtcResults;
-      parsed.summary_title = dtcResults.map((r) => `${r.code}: ${r.title}`).join(" | ");
-    }
-
-    if (code && verifiedDefinitions.length > 0) {
-      const primary = verifiedDefinitions[0];
-      parsed.code_definition = {
-        code: primary.code,
-        title: primary.title,
-        description: primary.description,
-        source: primary.source,
-      };
-      parsed.summary_title = verifiedDefinitions.map((d) => `${d.code}: ${d.title}`).join(" | ");
-    }
-
-    return jsonResponse(parsed, 200);
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Server error.";
-    return jsonResponse({ error: message }, 500);
+    const status = isRateLimit429(e) ? 429 : 500;
+    return jsonResponse({ error: message }, status);
   }
 }

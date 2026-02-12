@@ -51,20 +51,21 @@ export function ComboSelect({
   onSelect: onSelectProp,
 }: ComboSelectProps) {
   const [open, setOpen] = React.useState(false);
-  const [search, setSearch] = React.useState("");
+  const [inputText, setInputText] = React.useState("");
+  const [isTyping, setIsTyping] = React.useState(false);
   const [highlightIdx, setHighlightIdx] = React.useState(0);
   const [dropWidth, setDropWidth] = React.useState<number | undefined>();
   const triggerRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
+  const inputRef = React.useRef<HTMLInputElement>(null);
 
   const display = displayValue ? displayValue(value) : value;
-  const showValue = display || (allowCustomValue ? value : "");
 
   const filtered = React.useMemo(() => {
-    if (!filterable || !search.trim()) return options;
-    const q = search.toLowerCase();
+    const q = isTyping ? inputText.toLowerCase().trim() : "";
+    if (!q) return options;
     return options.filter((opt) => optionLabel(opt).toLowerCase().includes(q));
-  }, [options, search, filterable]);
+  }, [options, inputText, isTyping]);
 
   React.useEffect(() => {
     if (open && triggerRef.current) {
@@ -85,26 +86,34 @@ export function ComboSelect({
         onValueChange(v);
       }
       setOpen(false);
-      setSearch("");
+      setInputText("");
+      setIsTyping(false);
     },
     [onValueChange, onSelectProp],
   );
 
   const handleInputChange = React.useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      onValueChange(e.target.value);
-      if (!open && e.target.value.trim()) setOpen(true);
+      const val = e.target.value;
+      if (triggerType === "input") {
+        onValueChange(val);
+      } else {
+        setInputText(val);
+        setIsTyping(true);
+      }
+      if (!open) setOpen(true);
     },
-    [onValueChange, open],
+    [onValueChange, open, triggerType],
   );
 
-  const handleTriggerClick = React.useCallback(() => {
-    if (!disabled && options.length > 0) setOpen((p) => !p);
-  }, [disabled, options.length]);
-
-  const handleInputFocus = React.useCallback(() => {
-    if (!disabled && options.length > 0) setOpen(true);
-  }, [disabled, options.length]);
+  const handleFocus = React.useCallback(() => {
+    if (disabled) return;
+    if (triggerType !== "input") {
+      setInputText("");
+      setIsTyping(false);
+    }
+    if (options.length > 0) setOpen(true);
+  }, [disabled, options.length, triggerType]);
 
   React.useEffect(() => {
     if (triggerType === "input" && options.length > 0 && value.trim()) {
@@ -123,7 +132,8 @@ export function ComboSelect({
         !listRef.current.contains(target)
       ) {
         setOpen(false);
-        setSearch("");
+        setInputText("");
+        setIsTyping(false);
       }
     }
     document.addEventListener("mousedown", onClickOutside);
@@ -143,7 +153,8 @@ export function ComboSelect({
         doSelect(optionValue(filtered[highlightIdx]));
       } else if (e.key === "Escape") {
         setOpen(false);
-        setSearch("");
+        setInputText("");
+        setIsTyping(false);
       }
     },
     [filtered, highlightIdx, doSelect],
@@ -154,52 +165,44 @@ export function ComboSelect({
   const emptyClass = theme === "dark" ? "text-slate-500" : "text-slate-400";
   const highlightClass = "bg-blue-500/80 text-white";
 
+  const shownValue = triggerType === "input"
+    ? value
+    : (open && isTyping) ? inputText : (display || "");
+
   return (
     <div ref={triggerRef} className="relative" style={{ position: "relative" }}>
-      {triggerType === "input" ? (
-        <input
-          type="text"
-          name={name}
-          value={value}
-          onChange={handleInputChange}
-          onFocus={handleInputFocus}
-          onBlur={(e) => {
-            const related = e.relatedTarget as Node | null;
-            if (listRef.current && related && listRef.current.contains(related)) return;
-            setTimeout(() => {
-              onBlur?.();
-            }, 150);
-          }}
-          onKeyDown={(e) => {
-            if (open && (e.key === "ArrowDown" || e.key === "ArrowUp" || (e.key === "Enter" && filtered.length > 0))) {
-              handleListKeyDown(e);
-              return;
-            }
-            onKeyDown?.(e);
-          }}
-          disabled={disabled}
-          aria-expanded={open}
-          aria-haspopup="listbox"
-          placeholder={placeholder}
-          autoComplete="off"
-          className={triggerClassName}
-        />
-      ) : (
-        <button
-          type="button"
-          disabled={disabled}
-          aria-expanded={open}
-          aria-haspopup="listbox"
-          onClick={handleTriggerClick}
-          className={triggerClassName}
-        >
-          {showValue ? (
-            <span className="block truncate text-left">{showValue}</span>
-          ) : (
-            <span className={emptyClass}>{placeholder}</span>
-          )}
-        </button>
-      )}
+      <input
+        ref={inputRef}
+        type="text"
+        name={triggerType === "input" ? name : undefined}
+        value={shownValue}
+        onChange={handleInputChange}
+        onFocus={handleFocus}
+        onClick={() => { if (!disabled && options.length > 0) setOpen(true); }}
+        onBlur={(e) => {
+          const related = e.relatedTarget as Node | null;
+          if (listRef.current && related && listRef.current.contains(related)) return;
+          setTimeout(() => {
+            setIsTyping(false);
+            setInputText("");
+            onBlur?.();
+          }, 150);
+        }}
+        onKeyDown={(e) => {
+          if (open && (e.key === "ArrowDown" || e.key === "ArrowUp" || (e.key === "Enter" && filtered.length > 0))) {
+            handleListKeyDown(e);
+            return;
+          }
+          onKeyDown?.(e);
+        }}
+        disabled={disabled}
+        readOnly={triggerType === "button" && !open}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        placeholder={placeholder}
+        autoComplete="off"
+        className={triggerClassName}
+      />
       {name && triggerType === "button" && (
         <input type="hidden" name={name} value={value} />
       )}
@@ -217,18 +220,8 @@ export function ComboSelect({
           }}
           onMouseDown={(e) => e.preventDefault()}
         >
-          {filterable && options.length > 6 && (
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search..."
-              className="w-full rounded-t-lg border-0 bg-transparent px-3 py-2 text-sm outline-none placeholder:opacity-60"
-              autoFocus
-              onKeyDown={handleListKeyDown}
-            />
-          )}
           <div
-            className="max-h-[300px] overflow-y-auto overflow-x-hidden rounded-b-lg p-1"
+            className="max-h-[300px] overflow-y-auto overflow-x-hidden rounded-lg p-1"
             role="listbox"
           >
             {filtered.map((opt, idx) => {

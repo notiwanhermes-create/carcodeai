@@ -1,0 +1,83 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String?  @unique
+  passwordHash String?  @map("password_hash")
+  googleId     String?  @unique @map("google_id")
+  firstName    String?  @map("first_name")
+  lastName     String?  @map("last_name")
+  profileImage String?  @map("profile_image")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  sessions           Session[]
+  vehicles           Vehicle[]
+  maintenanceRecords MaintenanceRecord[]
+
+  @@map("users")
+}
+
+model Session {
+  sid       String   @id
+  userId    String   @map("user_id")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz()
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model Vehicle {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  year      String
+  make      String
+  model     String
+  engine    String?
+  vin       String?
+  nickname  String?
+  isActive  Boolean  @default(false) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  maintenanceRecords MaintenanceRecord[]
+
+  @@map("garage_vehicles")
+}
+
+model MaintenanceRecord {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  vehicleId   String   @map("vehicle_id")
+  serviceType String   @map("type")
+  date        String
+  odometer    String?  @map("mileage")
+  notes       String?
+  cost        String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@map("maintenance_records")
+}
+
+model Feedback {
+  id        Int      @id @default(autoincrement())
+  name      String?
+  email     String?
+  rating    Int?
+  message   String
+  page      String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  @@map("feedback")
+}

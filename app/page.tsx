@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState, useRef } from "react";
+import { useSession, signOut } from "next-auth/react";
+import Link from "next/link";
 import { ComboSelect } from "../components/ComboSelect";
 import { COMMON_CODES, CATEGORY_LABELS } from "./data/common-codes";
 import { LANGUAGES, tr, type LangCode } from "./data/translations";
@@ -247,6 +249,52 @@ function FeedbackSection({ theme, lang }: { theme: "dark" | "light"; lang: LangC
         </button>
       </div>
     </div>
+  );
+}
+
+function AuthButtons({ theme }: { theme: "dark" | "light" }) {
+  const { data: session, status } = useSession();
+  const t = (dark: string, light: string) => theme === "dark" ? dark : light;
+
+  if (status === "loading") return null;
+
+  if (session?.user) {
+    return (
+      <div className="flex items-center gap-2">
+        <Link
+          href="/dashboard"
+          className={cn(
+            "flex h-9 sm:h-10 items-center gap-1.5 px-2.5 sm:px-3 rounded-xl transition-all text-xs sm:text-sm font-medium",
+            t("border border-white/10 bg-white/10 text-slate-300 hover:bg-white/20", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100")
+          )}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <span className="hidden sm:inline">{session.user.email?.split("@")[0] || "Account"}</span>
+        </Link>
+        <button
+          onClick={() => signOut({ callbackUrl: "/" })}
+          className={cn(
+            "flex h-9 sm:h-10 items-center px-2.5 sm:px-3 rounded-xl transition-all text-xs sm:text-sm font-medium",
+            t("border border-white/10 bg-white/10 text-slate-400 hover:bg-red-500/20 hover:text-red-400", "border border-slate-200 bg-slate-50 text-slate-500 hover:bg-red-50 hover:text-red-600")
+          )}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <Link
+      href="/login"
+      className={cn(
+        "flex h-9 sm:h-10 items-center gap-1.5 px-3 sm:px-4 rounded-xl transition-all text-xs sm:text-sm font-semibold",
+        "bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/40"
+      )}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+      <span>Sign In</span>
+    </Link>
   );
 }
 
@@ -1196,6 +1244,7 @@ export default function Home() {
               )}
             </div>
 
+            <AuthButtons theme={theme} />
           </div>
         </div>
 

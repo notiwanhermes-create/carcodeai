@@ -9,7 +9,10 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@auth/prisma-adapter": "^2.11.1",
     "@next/third-parties": "^16.1.6",
+    "@prisma/adapter-pg": "^7.4.0",
+    "@prisma/client": "^7.4.0",
     "@radix-ui/react-popover": "^1.1.15",
     "@tailwindcss/typography": "^0.5.19",
     "@types/connect-pg-simple": "^7.0.3",
@@ -23,9 +26,11 @@
     "express-session": "^1.19.0",
     "memoizee": "^0.4.17",
     "next": "16.1.6",
+    "next-auth": "^5.0.0-beta.30",
     "openai": "^6.17.0",
     "passport": "^0.7.0",
     "pg": "^8.18.0",
+    "prisma": "^7.4.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-markdown": "^10.1.0",

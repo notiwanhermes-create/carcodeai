@@ -1490,7 +1490,6 @@ export default function Home() {
                 </div>
                 <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("addVehicle", lang)}</div>
               </div>
-              <div className={cn("mt-1 ml-9 text-xs", t("text-slate-400", "text-slate-500"))}>{tr("savedLocally", lang)}</div>
 
               <form className="mt-5 grid gap-3 overflow-visible" onSubmit={(e) => { e.preventDefault(); addVehicle(new FormData(e.currentTarget)); (e.currentTarget as HTMLFormElement).reset(); setGYear(""); setGMake(""); setMakeConfirmed(false); setGModel(""); setGVin(""); setGEngine(""); }}>
                 <input

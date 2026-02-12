@@ -4,20 +4,16 @@ import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { VehicleDeleteButton } from "@/components/VehicleDeleteButton";
+import { useGarageVehicles, type GarageVehicle } from "@/app/lib/useGarageVehicles";
+import { tr, type LangCode } from "@/app/data/translations";
 
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
-type Vehicle = {
-  id: string;
-  year: string;
-  make: string;
-  model: string;
-  engine?: string;
-  vin?: string;
-  nickname?: string;
-};
+type Vehicle = GarageVehicle;
 
 type MaintenanceRecord = {
   id: string;
@@ -47,10 +43,19 @@ const SERVICE_TYPES = [
 export default function DashboardClient() {
   const { data: session, status } = useSession();
   const router = useRouter();
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const lang: LangCode = "en";
+  const theme = "dark" as const;
+
+  const {
+    vehicles,
+    hydrated: vehiclesHydrated,
+    syncing: vehiclesSyncing,
+    addVehicle: addGarageVehicle,
+    deleteVehicle: deleteGarageVehicle,
+  } = useGarageVehicles({ userId: session?.user?.id });
   const [records, setRecords] = useState<MaintenanceRecord[]>([]);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [maintenanceLoading, setMaintenanceLoading] = useState(true);
   const [showAddVehicle, setShowAddVehicle] = useState(false);
   const [showAddRecord, setShowAddRecord] = useState(false);
   const [filterType, setFilterType] = useState("");
@@ -72,6 +77,14 @@ export default function DashboardClient() {
   const [recordError, setRecordError] = useState("");
   const [recordSaving, setRecordSaving] = useState(false);
 
+  const [confirmDialog, setConfirmDialog] = useState<{
+    open: boolean;
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    onConfirm: () => void | Promise<void>;
+  } | null>(null);
+
   useEffect(() => {
     if (status === "unauthenticated") {
       router.push("/login?callbackUrl=/dashboard");
@@ -80,28 +93,25 @@ export default function DashboardClient() {
 
   useEffect(() => {
     if (status === "authenticated") {
-      fetchData();
+      void fetchMaintenance();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
-  async function fetchData() {
-    setLoading(true);
+  useEffect(() => {
+    setSelectedVehicleId((prev) => {
+      if (prev && vehicles.some((v) => v.id === prev)) return prev;
+      return vehicles[0]?.id ?? null;
+    });
+  }, [vehicles]);
+
+  async function fetchMaintenance() {
+    setMaintenanceLoading(true);
     try {
-      const [vRes, mRes] = await Promise.all([fetch("/api/garage"), fetch("/api/maintenance")]);
-      if (vRes.ok) {
-        const vData = await vRes.json();
-        setVehicles(vData.vehicles || []);
-        if (!selectedVehicleId && vData.vehicles?.length > 0) {
-          setSelectedVehicleId(vData.vehicles[0].id);
-        }
-      }
-      if (mRes.ok) {
-        const mData = await mRes.json();
-        setRecords(mData.records || []);
-      }
+      const res = await fetch("/api/maintenance", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) setRecords(data.records || []);
     } finally {
-      setLoading(false);
+      setMaintenanceLoading(false);
     }
   }
 
@@ -113,25 +123,15 @@ export default function DashboardClient() {
     }
     setVehicleSaving(true);
     try {
-      const res = await fetch("/api/garage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          year: vYear,
-          make: vMake,
-          model: vModel,
-          engine: vEngine || undefined,
-          vin: vVin || undefined,
-          nickname: vNickname || undefined,
-        }),
+      const v = await addGarageVehicle({
+        year: vYear,
+        make: vMake,
+        model: vModel,
+        engine: vEngine || undefined,
+        vin: vVin || undefined,
+        nickname: vNickname || undefined,
       });
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setVehicleError(d.error || "Failed to add vehicle.");
-        return;
-      }
-      setVehicles((prev) => [d.vehicle, ...prev]);
-      setSelectedVehicleId(d.vehicle.id);
+      setSelectedVehicleId(v.id);
       setShowAddVehicle(false);
       setVYear("");
       setVMake("");
@@ -139,21 +139,25 @@ export default function DashboardClient() {
       setVEngine("");
       setVVin("");
       setVNickname("");
-    } catch {
-      setVehicleError("Failed to add vehicle.");
+    } catch (e: unknown) {
+      setVehicleError(e instanceof Error ? e.message : "Failed to add vehicle.");
     } finally {
       setVehicleSaving(false);
     }
   }
 
-  async function deleteVehicle(id: string) {
-    if (!confirm("Delete this vehicle and all its maintenance records?")) return;
-    await fetch(`/api/garage/${id}`, { method: "DELETE" });
-    setVehicles((prev) => prev.filter((v) => v.id !== id));
-    setRecords((prev) => prev.filter((r) => r.vehicleId !== id));
-    if (selectedVehicleId === id) {
-      setSelectedVehicleId(vehicles.find((v) => v.id !== id)?.id || null);
-    }
+  function requestDeleteVehicle(id: string) {
+    setConfirmDialog({
+      open: true,
+      title: tr("deleteVehicle", lang),
+      message: tr("deleteVehicleMsg", lang),
+      confirmLabel: tr("delete", lang),
+      onConfirm: async () => {
+        await deleteGarageVehicle(id);
+        setRecords((prev) => prev.filter((r) => r.vehicleId !== id));
+        setSelectedVehicleId((prev) => (prev === id ? null : prev));
+      },
+    });
   }
 
   async function addRecord() {
@@ -211,7 +215,7 @@ export default function DashboardClient() {
     return true;
   });
 
-  if (status === "loading" || loading) {
+  if (status === "loading") {
     return (
       <main className="min-h-screen bg-[#0f172a] text-slate-100 flex items-center justify-center">
         <div className="text-slate-400">Loading...</div>
@@ -225,6 +229,18 @@ export default function DashboardClient() {
 
   return (
     <main className="min-h-screen bg-[#0f172a] text-slate-100">
+      {confirmDialog && (
+        <ConfirmDialog
+          open={confirmDialog.open}
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          confirmLabel={confirmDialog.confirmLabel}
+          onConfirm={confirmDialog.onConfirm}
+          onCancel={() => setConfirmDialog(null)}
+          theme={theme}
+          lang={lang}
+        />
+      )}
       <div className="mesh-background">
         <div className="mesh-blob mesh-blob-1" />
         <div className="mesh-blob mesh-blob-2" />
@@ -336,7 +352,11 @@ export default function DashboardClient() {
               </div>
             )}
 
-            {vehicles.length === 0 && !showAddVehicle ? (
+            {!vehiclesHydrated ? (
+              <div className="glass-card rounded-2xl p-6 text-center">
+                <div className="text-slate-400 text-sm">Loading...</div>
+              </div>
+            ) : vehicles.length === 0 && !showAddVehicle ? (
               <div className="glass-card rounded-2xl p-6 text-center">
                 <div className="text-slate-400 text-sm">No vehicles yet. Add your first one!</div>
               </div>
@@ -369,28 +389,14 @@ export default function DashboardClient() {
                         </div>
                       )}
                     </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteVehicle(v.id);
-                      }}
-                      className="rounded-lg p-1.5 text-slate-500 hover:bg-red-500/10 hover:text-red-400 transition-all"
-                    >
-                      <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <path d="M3 6h18" />
-                        <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
-                        <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
-                      </svg>
-                    </button>
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <VehicleDeleteButton
+                        theme={theme}
+                        lang={lang}
+                        disabled={vehiclesSyncing}
+                        onClick={() => requestDeleteVehicle(v.id)}
+                      />
+                    </div>
                   </div>
                   <div className="mt-2 text-[10px] text-slate-500">
                     {records.filter((r) => r.vehicleId === v.id).length} maintenance records
@@ -515,7 +521,11 @@ export default function DashboardClient() {
               </div>
             )}
 
-            {filteredRecords.length === 0 ? (
+            {maintenanceLoading ? (
+              <div className="glass-card rounded-2xl p-8 text-center">
+                <div className="text-slate-400 text-sm">Loading...</div>
+              </div>
+            ) : filteredRecords.length === 0 ? (
               <div className="glass-card rounded-2xl p-8 text-center">
                 <div className="text-slate-400 text-sm">
                   {selectedVehicleId

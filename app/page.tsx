@@ -4,8 +4,11 @@ import { useEffect, useMemo, useState, useRef } from "react";
 import { useSession, signOut } from "next-auth/react";
 import Link from "next/link";
 import { ComboSelect } from "../components/ComboSelect";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { VehicleDeleteButton } from "../components/VehicleDeleteButton";
 import { COMMON_CODES, CATEGORY_LABELS } from "./data/common-codes";
 import { LANGUAGES, tr, type LangCode } from "./data/translations";
+import { useGarageVehicles } from "./lib/useGarageVehicles";
 type EngineOption =
   | string
   | {
@@ -76,32 +79,6 @@ type MaintenanceRecord = {
   mileageKm?: number;
   notes: string;
 };
-
-function ConfirmDialog({ open, title, message, confirmLabel, onConfirm, onCancel, theme, lang }: {
-  open: boolean;
-  title: string;
-  message: string;
-  confirmLabel?: string;
-  onConfirm: () => void;
-  onCancel: () => void;
-  theme: "dark" | "light";
-  lang: LangCode;
-}) {
-  if (!open) return null;
-  const t = (dark: string, light: string) => theme === "dark" ? dark : light;
-  return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center backdrop-blur-md" style={{ background: theme === "dark" ? "rgba(15,23,42,0.7)" : "rgba(255,255,255,0.7)" }}>
-      <div className={cn("w-full max-w-sm rounded-3xl p-6 animate-scale-in", t("glass-card-strong", "bg-white border border-slate-200 shadow-xl"))}>
-        <div className={cn("text-base font-semibold", t("text-white", "text-slate-900"))}>{title}</div>
-        <div className={cn("mt-2 text-sm", t("text-slate-400", "text-slate-600"))}>{message}</div>
-        <div className="mt-6 flex items-center justify-end gap-3">
-          <button onClick={onCancel} className={cn("rounded-xl px-4 py-2 text-sm font-semibold transition-all", t("border border-white/10 bg-white/10 text-slate-300 hover:bg-white/20", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"))}>{tr("cancel", lang)}</button>
-          <button onClick={onConfirm} className="rounded-xl bg-red-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-red-500/25 transition-all hover:bg-red-400">{confirmLabel || tr("confirm", lang)}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function FeedbackSection({ theme, lang }: { theme: "dark" | "light"; lang: LangCode }) {
   const t = (dark: string, light: string) => theme === "dark" ? dark : light;
@@ -699,6 +676,7 @@ function Toast({ message, visible }: { message: string; visible: boolean }) {
 
 
 export default function Home() {
+  const { data: session } = useSession();
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     setMounted(true);
@@ -707,8 +685,14 @@ export default function Home() {
   const [tab, setTab] = useState<"diagnose" | "garage" | "service" | "codes">("garage");
   const [serviceVehicleFilter, setServiceVehicleFilter] = useState<string | null>(null);
   const [vehiclePickerOpen, setVehiclePickerOpen] = useState(false);
-  const [garage, setGarage] = useState<Vehicle[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const {
+    vehicles: garage,
+    activeId,
+    setActiveId,
+    syncing: garageSyncing,
+    addVehicle: addGarageVehicle,
+    deleteVehicle: deleteGarageVehicle,
+  } = useGarageVehicles({ userId: session?.user?.id });
 
 
   const theme = "dark" as const;
@@ -720,7 +704,7 @@ export default function Home() {
   const [toastMsg, setToastMsg] = useState("");
   const [toastVisible, setToastVisible] = useState(false);
 
-  const [confirmDialog, setConfirmDialog] = useState<{open:boolean, title:string, message:string, confirmLabel?:string, onConfirm:()=>void} | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{open:boolean, title:string, message:string, confirmLabel?:string, onConfirm:()=>void | Promise<void>} | null>(null);
 
   const [maintenanceRecords, setMaintenanceRecords] = useState<Record<string, MaintenanceRecord[]>>({});
 
@@ -758,14 +742,6 @@ export default function Home() {
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem("carcode_garage_v1");
-      if (raw) {
-        const parsed = JSON.parse(raw) as { garage: Vehicle[]; activeId: string | null };
-        setGarage(parsed.garage || []);
-        setActiveId(parsed.activeId || (parsed.garage?.[0]?.id ?? null));
-      }
-    } catch {}
-    try {
       const rawMaint = localStorage.getItem("carcode_maintenance_v1");
       if (rawMaint) {
         setMaintenanceRecords(JSON.parse(rawMaint));
@@ -793,12 +769,6 @@ export default function Home() {
 
     return () => window.removeEventListener("beforeinstallprompt", handleInstall);
   }, []);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem("carcode_garage_v1", JSON.stringify({ garage, activeId }));
-    } catch {}
-  }, [garage, activeId]);
 
   useEffect(() => {
     try {
@@ -848,7 +818,7 @@ export default function Home() {
     }));
   }
 
-  function addVehicle(fd: FormData) {
+  async function addVehicle(fd: FormData) {
     const year = String(fd.get("year") || "").trim();
     const make = String(fd.get("make") || "").trim();
     const model = String(fd.get("model") || "").trim();
@@ -857,26 +827,29 @@ export default function Home() {
 
     if (!year || !make || !model) return;
 
-    const v: Vehicle = {
-      id: uid(),
-      year,
-      make,
-      model,
-      engine: engine || undefined,
-      vin: vin || undefined,
-    };
-
-    setGarage((prev) => [v, ...prev]);
-    setActiveId(v.id);
-    setTab("diagnose");
+    try {
+      await addGarageVehicle({
+        year,
+        make,
+        model,
+        engine: engine || undefined,
+        vin: vin || undefined,
+      });
+      setTab("diagnose");
+    } catch (e: unknown) {
+      showToast(e instanceof Error ? e.message : "Failed to save vehicle.");
+    }
   }
 
-  function removeVehicle(id: string) {
-    setGarage((prev) => prev.filter((v) => v.id !== id));
-    if (activeId === id) {
-      const next = garage.find((v) => v.id !== id)?.id ?? null;
-      setActiveId(next);
-    }
+  async function removeVehicle(id: string) {
+    await deleteGarageVehicle(id);
+    setMaintenanceRecords((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setServiceVehicleFilter((prev) => (prev === id ? null : prev));
   }
 
   async function runDiagnostic(fd: FormData) {
@@ -1153,7 +1126,7 @@ export default function Home() {
           title={confirmDialog.title}
           message={confirmDialog.message}
           confirmLabel={confirmDialog.confirmLabel}
-          onConfirm={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}
+          onConfirm={confirmDialog.onConfirm}
           onCancel={() => setConfirmDialog(null)}
           theme={theme}
           lang={lang}
@@ -1676,7 +1649,20 @@ export default function Home() {
                           </div>
                           <div className="flex shrink-0 items-center gap-1.5">
                             <button onClick={() => setActiveId(v.id)} className={cn("rounded-xl px-3 py-1.5 text-xs font-semibold transition-all", isActive ? "bg-blue-500 text-white shadow-sm shadow-blue-500/30" : t("border border-white/10 bg-white/5 text-slate-300 hover:border-blue-400/30 hover:text-blue-300", "border border-slate-200 bg-slate-50 text-slate-600 hover:border-blue-300 hover:text-blue-600"))}>{isActive ? tr("active", lang) : tr("setActive", lang)}</button>
-                            <button onClick={() => setConfirmDialog({ open: true, title: tr("deleteVehicle", lang), message: tr("deleteVehicleMsg", lang), confirmLabel: tr("delete", lang), onConfirm: () => removeVehicle(v.id) })} className={cn("rounded-xl px-2 py-1.5 text-xs transition-colors", t("text-slate-500 hover:text-red-400", "text-slate-400 hover:text-red-500"))}>{tr("delete", lang)}</button>
+                            <VehicleDeleteButton
+                              theme={theme}
+                              lang={lang}
+                              disabled={garageSyncing}
+                              onClick={() =>
+                                setConfirmDialog({
+                                  open: true,
+                                  title: tr("deleteVehicle", lang),
+                                  message: tr("deleteVehicleMsg", lang),
+                                  confirmLabel: tr("delete", lang),
+                                  onConfirm: () => removeVehicle(v.id),
+                                })
+                              }
+                            />
                           </div>
                         </div>
                       </div>

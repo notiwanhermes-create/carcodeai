@@ -95,15 +95,14 @@
      left: pos ? pos.left : undefined,
      width: pos ? pos.width : undefined,
      zIndex,
-     maxHeight: 240,
-     overflowY: "auto",
-     WebkitOverflowScrolling: "touch",
-     // ensure background is transparent by default; styling via className preferred
-     background: "transparent",
+    // Let the inner dropdown list handle scrolling/max-height.
+    // Keeping the portal wrapper non-scrollable avoids “double scrollbars”.
+    overflow: "visible",
+    pointerEvents: "auto",
    };
  
    return createPortal(
-     <div ref={containerRef} className={className} style={style} onMouseDown={(e) => e.stopPropagation()}>
+    <div ref={containerRef} className={className} style={style} onMouseDown={(e) => e.preventDefault()}>
        {children}
      </div>,
      portalRootRef.current

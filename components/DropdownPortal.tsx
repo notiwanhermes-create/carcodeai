@@ -18,8 +18,8 @@ export default function DropdownPortal({ anchorRef, open, onClose, children, cla
   const portalRootRef = React.useRef<HTMLDivElement | null>(null);
   const [, forceR] = React.useState(0);
 
-  // create portal root
-  React.useEffect(() => {
+  // create portal root early using layout effect so it's available before paint
+  React.useLayoutEffect(() => {
     const root = document.createElement("div");
     portalRootRef.current = root;
     document.body.appendChild(root);
@@ -46,15 +46,15 @@ export default function DropdownPortal({ anchorRef, open, onClose, children, cla
     });
   }, [anchorRef]);
 
-  // Reposition on open, scroll, resize
-  React.useEffect(() => {
+  // Reposition on open, scroll, resize (use layout to avoid flicker)
+  React.useLayoutEffect(() => {
     if (!open) return;
     updatePos();
     const onScroll = () => updatePos();
     const onResize = () => updatePos();
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onResize);
-    // force re-render every so often to handle some mobile oddities
+    // force re-render periodically to handle some mobile/browser quirks
     const tick = setInterval(() => forceR((n) => n + 1), 1000);
     return () => {
       window.removeEventListener("scroll", onScroll, true);

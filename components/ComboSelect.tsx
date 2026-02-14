@@ -233,8 +233,8 @@ export function ComboSelect({
         <input type="hidden" name={name} value={value} />
       )}
       {open && filtered.length > 0 && (
-        <DropdownPortal
-          anchorRef={inputRef}
+      <DropdownPortal
+          anchorRef={triggerRef}
           open={open}
           onClose={() => {
             setOpen(false);

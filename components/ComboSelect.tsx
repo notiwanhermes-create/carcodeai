@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import DropdownPortal from "./DropdownPortal";
+import AutocompleteDropdownPortal from "./AutocompleteDropdownPortal";
 
 export type ComboSelectOption = string | { value: string; label: string };
 
@@ -233,7 +233,7 @@ export function ComboSelect({
         <input type="hidden" name={name} value={value} />
       )}
       {open && filtered.length > 0 && (
-      <DropdownPortal
+        <AutocompleteDropdownPortal
           anchorRef={triggerRef}
           open={open}
           onClose={() => {
@@ -242,7 +242,6 @@ export function ComboSelect({
             setIsTyping(false);
           }}
           className={contentClassName}
-          zIndex={2147483647}
         >
           <div
             ref={listRef}
@@ -255,7 +254,7 @@ export function ComboSelect({
             }}
           >
             <div
-              className="max-h-[300px] overflow-y-auto overflow-x-hidden rounded-lg p-1"
+              className="max-h-[240px] overflow-y-auto overflow-x-hidden rounded-lg p-1"
               role="listbox"
             >
               {filtered.map((opt, idx) => {
@@ -280,7 +279,7 @@ export function ComboSelect({
               })}
             </div>
           </div>
-        </DropdownPortal>
+        </AutocompleteDropdownPortal>
       )}
     </div>
   );

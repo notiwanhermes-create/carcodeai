@@ -836,7 +836,17 @@ export default function Home() {
       try {
         const r = await fetch(`/api/vehicles/makes?q=${encodeURIComponent(makeQ.trim())}`);
         const d = await r.json();
-        if (!cancelled) setMakeOptions(Array.isArray(d.makes) ? d.makes : []);
+        if (cancelled) return;
+        const raw = Array.isArray(d.makes) ? d.makes : [];
+        // API may return either strings or objects like { id, name }
+        const names = raw
+          .map((m: any) =>
+            typeof m === "string"
+              ? m
+              : String(m?.name ?? m?.MakeName ?? m?.Make_Name ?? "").trim()
+          )
+          .filter(Boolean);
+        setMakeOptions(names);
       } catch { if (!cancelled) setMakeOptions([]); }
     })();
     return () => { cancelled = true; };

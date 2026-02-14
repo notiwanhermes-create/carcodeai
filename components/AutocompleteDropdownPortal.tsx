@@ -20,20 +20,20 @@
    className,
    zIndex = 99999,
  }: Props) {
-   const portalRootRef = React.useRef<HTMLDivElement | null>(null);
+   const [portalEl, setPortalEl] = React.useState<HTMLDivElement | null>(null);
    const containerRef = React.useRef<HTMLDivElement | null>(null);
    const [pos, setPos] = React.useState<{ top: number; left: number; width: number } | null>(null);
  
    // create portal root synchronously before paint
    React.useLayoutEffect(() => {
      const root = document.createElement("div");
-     portalRootRef.current = root;
      document.body.appendChild(root);
+     setPortalEl(root);
      return () => {
-       if (portalRootRef.current && portalRootRef.current.parentNode) {
-         portalRootRef.current.parentNode.removeChild(portalRootRef.current);
+       setPortalEl(null);
+       if (root.parentNode) {
+         root.parentNode.removeChild(root);
        }
-       portalRootRef.current = null;
      };
    }, []);
  
@@ -77,17 +77,15 @@
      function onKey(e: KeyboardEvent) {
        if (e.key === "Escape") onClose();
      }
-     document.addEventListener("mousedown", onOutside, true);
-     document.addEventListener("touchstart", onOutside, true);
+     document.addEventListener("pointerdown", onOutside, true);
      document.addEventListener("keydown", onKey);
      return () => {
-       document.removeEventListener("mousedown", onOutside, true);
-       document.removeEventListener("touchstart", onOutside, true);
+       document.removeEventListener("pointerdown", onOutside, true);
        document.removeEventListener("keydown", onKey);
      };
    }, [open, onClose, anchorRef]);
  
-   if (!portalRootRef.current || !open) return null;
+   if (!portalEl || !open) return null;
  
    const style: React.CSSProperties = {
      position: "fixed",
@@ -105,7 +103,7 @@
     <div ref={containerRef} className={className} style={style} onMouseDown={(e) => e.preventDefault()}>
        {children}
      </div>,
-     portalRootRef.current
+     portalEl
    );
  }
 

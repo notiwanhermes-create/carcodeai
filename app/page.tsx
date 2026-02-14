@@ -1957,8 +1957,7 @@ export default function Home() {
             </div>
           </div>
         )}
-        {/* Feedback Section */}
-        <FeedbackSection theme={theme} lang={lang} />
+        {/* Feedback is now a global widget */}
 
         {showInstallBanner && installPrompt && (
           <div className={cn("mt-6 rounded-2xl px-4 py-3 flex items-center gap-3", t("bg-blue-500/10 border border-blue-500/20", "bg-blue-50 border border-blue-200"))}>

@@ -1,4 +1,4 @@
-"use client";
+ "use client";
 
 import React from "react";
 import { createPortal } from "react-dom";
@@ -38,17 +38,12 @@ export default function DropdownPortal({ anchorRef, open, onClose, children, cla
     const el = anchorRef?.current;
     if (!el) return setPos(null);
     const r = el.getBoundingClientRect();
-    // use viewport coordinates (client) and position fixed in portal so we avoid clipping issues
+    // position relative to document using scroll offsets (per requirements)
     setPos({
-      top: r.bottom,
-      left: r.left,
+      top: r.bottom + window.scrollY,
+      left: r.left + window.scrollX,
       width: r.width,
     });
-    // debug output to help diagnose positioning issues
-    try {
-      // eslint-disable-next-line no-console
-      console.debug("[DropdownPortal] anchor rect:", { top: r.top, left: r.left, bottom: r.bottom, right: r.right, width: r.width, height: r.height });
-    } catch {}
   }, [anchorRef]);
 
   // Reposition on open, scroll, resize (use layout to avoid flicker)
@@ -96,26 +91,22 @@ export default function DropdownPortal({ anchorRef, open, onClose, children, cla
   if (!open) return null;
 
   const containerStyle: React.CSSProperties = {
-    position: "fixed",
+    position: "absolute",
     top: pos ? pos.top : undefined,
     left: pos ? pos.left : undefined,
     width: pos ? pos.width : undefined,
     zIndex,
     pointerEvents: "auto",
+    maxHeight: 240,
+    overflowY: "auto",
     ...style,
-  };
-  // Add a faint debug outline so it's visible during testing (remove after debugging)
-  const debugStyle: React.CSSProperties = {
-    outline: "2px solid rgba(255,0,0,0.9)",
-    backgroundColor: "rgba(255,0,0,0.02)",
-    boxSizing: "border-box",
   };
 
   return createPortal(
     <div
       ref={containerRef}
       className={className}
-      style={{ ...containerStyle, ...debugStyle }}
+      style={containerStyle}
       // prevent accidental blur on click inside
       onMouseDown={(e) => e.preventDefault()}
     >

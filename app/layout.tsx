@@ -2,10 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
-import dynamic from "next/dynamic";
-
-// load client component dynamically to avoid SSR issues
-const FeedbackWidget = dynamic(() => import("../components/FeedbackWidget"), { ssr: false });
+import FeedbackWidget from "../components/FeedbackWidget";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",

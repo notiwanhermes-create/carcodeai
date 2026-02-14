@@ -707,6 +707,10 @@ export default function Home() {
   const [confirmDialog, setConfirmDialog] = useState<{open:boolean, title:string, message:string, confirmLabel?:string, onConfirm:()=>void | Promise<void>} | null>(null);
 
   const [maintenanceRecords, setMaintenanceRecords] = useState<Record<string, MaintenanceRecord[]>>({});
+  const maintenanceStorageKey = session?.user?.id
+    ? `carcode_maintenance_v1:user:${session.user.id}`
+    : "carcode_maintenance_v1:anon";
+  const prevMaintenanceStorageKey = useRef<string>(maintenanceStorageKey);
 
   const [codesSearch, setCodesSearch] = useState("");
   const [codesCategory, setCodesCategory] = useState<string | null>(null);
@@ -742,7 +746,15 @@ export default function Home() {
 
   useEffect(() => {
     try {
-      const rawMaint = localStorage.getItem("carcode_maintenance_v1");
+      // Clear previous account's cached maintenance on user change/sign-out (privacy).
+      if (prevMaintenanceStorageKey.current !== maintenanceStorageKey) {
+        try {
+          localStorage.removeItem(prevMaintenanceStorageKey.current);
+        } catch {}
+        prevMaintenanceStorageKey.current = maintenanceStorageKey;
+        setMaintenanceRecords({});
+      }
+      const rawMaint = localStorage.getItem(maintenanceStorageKey);
       if (rawMaint) {
         setMaintenanceRecords(JSON.parse(rawMaint));
       }
@@ -768,13 +780,13 @@ export default function Home() {
 
 
     return () => window.removeEventListener("beforeinstallprompt", handleInstall);
-  }, []);
+  }, [maintenanceStorageKey]);
 
   useEffect(() => {
     try {
-      localStorage.setItem("carcode_maintenance_v1", JSON.stringify(maintenanceRecords));
+      localStorage.setItem(maintenanceStorageKey, JSON.stringify(maintenanceRecords));
     } catch {}
-  }, [maintenanceRecords]);
+  }, [maintenanceRecords, maintenanceStorageKey]);
 
   useEffect(() => {
     try {

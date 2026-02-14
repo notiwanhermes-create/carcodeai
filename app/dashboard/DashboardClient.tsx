@@ -58,7 +58,6 @@ export default function DashboardClient() {
   const [maintenanceLoading, setMaintenanceLoading] = useState(true);
   const [showAddVehicle, setShowAddVehicle] = useState(false);
   const [showAddRecord, setShowAddRecord] = useState(false);
-  const [filterType, setFilterType] = useState("");
 
   const [vYear, setVYear] = useState("");
   const [vMake, setVMake] = useState("");
@@ -211,7 +210,6 @@ export default function DashboardClient() {
 
   const filteredRecords = records.filter((r) => {
     if (selectedVehicleId && r.vehicleId !== selectedVehicleId) return false;
-    if (filterType && r.serviceType !== filterType) return false;
     return true;
   });
 
@@ -419,18 +417,6 @@ export default function DashboardClient() {
                 )}
               </h2>
               <div className="flex items-center gap-2">
-                <select
-                  value={filterType}
-                  onChange={(e) => setFilterType(e.target.value)}
-                  className="glass-input rounded-xl px-3 py-2 text-xs"
-                >
-                  <option value="">All types</option>
-                  {SERVICE_TYPES.map((st) => (
-                    <option key={st} value={st}>
-                      {st}
-                    </option>
-                  ))}
-                </select>
                 <button
                   onClick={() => setShowAddRecord(!showAddRecord)}
                   disabled={!selectedVehicleId}

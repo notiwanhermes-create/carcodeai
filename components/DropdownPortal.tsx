@@ -66,7 +66,8 @@ export default function DropdownPortal({ anchorRef, open, onClose, children, cla
   // Outside click & ESC to close
   React.useEffect(() => {
     if (!open) return;
-    function onDocMouse(e: MouseEvent) {
+    // Use Event for pointer/touch so the same handler can be added for both mouse and touch listeners
+    function onDocPointer(e: Event) {
       const t = e.target as Node | null;
       if (!t) return;
       if (anchorRef?.current && anchorRef.current.contains(t)) return;
@@ -76,12 +77,12 @@ export default function DropdownPortal({ anchorRef, open, onClose, children, cla
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") onClose();
     }
-    document.addEventListener("mousedown", onDocMouse);
-    document.addEventListener("touchstart", onDocMouse);
+    document.addEventListener("mousedown", onDocPointer);
+    document.addEventListener("touchstart", onDocPointer);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onDocMouse);
-      document.removeEventListener("touchstart", onDocMouse);
+      document.removeEventListener("mousedown", onDocPointer);
+      document.removeEventListener("touchstart", onDocPointer);
       document.removeEventListener("keydown", onKey);
     };
   }, [open, onClose, anchorRef]);

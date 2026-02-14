@@ -38,10 +38,10 @@ export default function DropdownPortal({ anchorRef, open, onClose, children, cla
     const el = anchorRef?.current;
     if (!el) return setPos(null);
     const r = el.getBoundingClientRect();
+    // use viewport coordinates (client) and position fixed in portal so we avoid clipping issues
     setPos({
-      // position absolute relative to document, account for page scroll
-      top: r.bottom + window.scrollY,
-      left: r.left + window.scrollX,
+      top: r.bottom,
+      left: r.left,
       width: r.width,
     });
   }, [anchorRef]);
@@ -91,7 +91,7 @@ export default function DropdownPortal({ anchorRef, open, onClose, children, cla
   if (!open) return null;
 
   const containerStyle: React.CSSProperties = {
-    position: "absolute",
+    position: "fixed",
     top: pos ? pos.top : undefined,
     left: pos ? pos.left : undefined,
     width: pos ? pos.width : undefined,

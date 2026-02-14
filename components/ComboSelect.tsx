@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { createPortal } from "react-dom";
+import DropdownPortal from "./DropdownPortal";
 
 export type ComboSelectOption = string | { value: string; label: string };
 
@@ -57,7 +57,6 @@ export function ComboSelect({
   const [highlightIdx, setHighlightIdx] = React.useState(0);
   const [dropWidth, setDropWidth] = React.useState<number | undefined>();
   const [dropPos, setDropPos] = React.useState<{ top: number; left: number } | null>(null);
-  const portalRef = React.useRef<HTMLDivElement | null>(null);
   const triggerRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -99,25 +98,7 @@ export function ComboSelect({
     };
   }, [open]);
 
-  React.useEffect(() => {
-    if (typeof document === "undefined") return;
-    const el = document.createElement("div");
-    // Create a full-viewport fixed portal container so the dropdown isn't clipped
-    el.style.position = "fixed";
-    el.style.top = "0";
-    el.style.left = "0";
-    el.style.width = "100%";
-    el.style.height = "100%";
-    el.style.pointerEvents = "none";
-    portalRef.current = el;
-    document.body.appendChild(el);
-    return () => {
-      if (portalRef.current && portalRef.current.parentNode) {
-        portalRef.current.parentNode.removeChild(portalRef.current);
-      }
-      portalRef.current = null;
-    };
-  }, []);
+  // no-op: DropdownPortal manages portal root
 
   React.useEffect(() => {
     setHighlightIdx(0);
@@ -251,51 +232,55 @@ export function ComboSelect({
       {name && triggerType === "button" && (
         <input type="hidden" name={name} value={value} />
       )}
-      {open && filtered.length > 0 && portalRef.current && createPortal(
-        <div
-          ref={listRef}
-          className={contentClassName}
-          style={{
-            position: "fixed",
-            top: dropPos ? dropPos.top : undefined,
-            left: dropPos ? dropPos.left : undefined,
-            marginTop: 0,
-            width: dropWidth ?? "100%",
-            zIndex: 2147483647,
-            pointerEvents: "auto",
-            WebkitOverflowScrolling: "touch",
-            willChange: "transform",
-            transform: "translateZ(0)",
+      {open && filtered.length > 0 && (
+        <DropdownPortal
+          anchorRef={inputRef}
+          open={open}
+          onClose={() => {
+            setOpen(false);
+            setInputText("");
+            setIsTyping(false);
           }}
-          onMouseDown={(e) => e.preventDefault()}
+          className={contentClassName}
+          zIndex={2147483647}
         >
           <div
-            className="max-h-[300px] overflow-y-auto overflow-x-hidden rounded-lg p-1"
-            role="listbox"
+            ref={listRef}
+            style={{
+              marginTop: 0,
+              width: dropWidth ?? "100%",
+              WebkitOverflowScrolling: "touch",
+              willChange: "transform",
+              transform: "translateZ(0)",
+            }}
           >
-            {filtered.map((opt, idx) => {
-              const val = optionValue(opt);
-              const label = optionLabel(opt);
-              return (
-                <div
-                  key={val + idx}
-                  role="option"
-                  aria-selected={idx === highlightIdx}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    doSelect(val);
-                  }}
-                  onMouseEnter={() => setHighlightIdx(idx)}
-                  className={`cursor-pointer rounded-md px-3 py-2 text-sm outline-none ${textClass} ${hoverClass} ${idx === highlightIdx ? highlightClass : ""}`}
-                >
-                  {label}
-                </div>
-              );
-            })}
+            <div
+              className="max-h-[300px] overflow-y-auto overflow-x-hidden rounded-lg p-1"
+              role="listbox"
+            >
+              {filtered.map((opt, idx) => {
+                const val = optionValue(opt);
+                const label = optionLabel(opt);
+                return (
+                  <div
+                    key={val + idx}
+                    role="option"
+                    aria-selected={idx === highlightIdx}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      doSelect(val);
+                    }}
+                    onMouseEnter={() => setHighlightIdx(idx)}
+                    className={`cursor-pointer rounded-md px-3 py-2 text-sm outline-none ${textClass} ${hoverClass} ${idx === highlightIdx ? highlightClass : ""}`}
+                  >
+                    {label}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        </div>,
-        portalRef.current
+        </DropdownPortal>
       )}
     </div>
   );

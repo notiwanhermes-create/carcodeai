@@ -114,7 +114,7 @@ export default function FeedbackWidget() {
                         onClick={() => setRating(star === rating ? 0 : star)}
                         className={cn("p-0.5 transition-transform rounded", (hoverRating || rating) >= star ? "bg-yellow-400" : "bg-white/5")}
                       >
-                        <svg width="28" height="28" viewBox="0 0 24 24" fill={(hoverRating || rating) >= star ? "#fbbf24" : "none"} stroke={(hoverRating || rating) >= star ? "#fbbf24" : "#94a3b8"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill={(hoverRating || rating) >= star ? "#fbbf24" : "none"} stroke={(hoverRating || rating) >= star ? "#ffffff" : "#94a3b8"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
                         </svg>
                       </button>

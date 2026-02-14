@@ -44,6 +44,11 @@ export default function DropdownPortal({ anchorRef, open, onClose, children, cla
       left: r.left,
       width: r.width,
     });
+    // debug output to help diagnose positioning issues
+    try {
+      // eslint-disable-next-line no-console
+      console.debug("[DropdownPortal] anchor rect:", { top: r.top, left: r.left, bottom: r.bottom, right: r.right, width: r.width, height: r.height });
+    } catch {}
   }, [anchorRef]);
 
   // Reposition on open, scroll, resize (use layout to avoid flicker)
@@ -99,12 +104,18 @@ export default function DropdownPortal({ anchorRef, open, onClose, children, cla
     pointerEvents: "auto",
     ...style,
   };
+  // Add a faint debug outline so it's visible during testing (remove after debugging)
+  const debugStyle: React.CSSProperties = {
+    outline: "2px solid rgba(255,0,0,0.9)",
+    backgroundColor: "rgba(255,0,0,0.02)",
+    boxSizing: "border-box",
+  };
 
   return createPortal(
     <div
       ref={containerRef}
       className={className}
-      style={containerStyle}
+      style={{ ...containerStyle, ...debugStyle }}
       // prevent accidental blur on click inside
       onMouseDown={(e) => e.preventDefault()}
     >

@@ -254,7 +254,8 @@ export function ComboSelect({
             }}
           >
             <div
-              className="max-h-[240px] overflow-y-auto overflow-x-hidden rounded-lg p-1"
+              className="overflow-x-hidden rounded-lg p-1"
+              style={{ maxHeight: 240, overflowY: "auto" }}
               role="listbox"
             >
               {filtered.map((opt, idx) => {

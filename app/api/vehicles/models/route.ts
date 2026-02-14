@@ -29,13 +29,15 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const makeRaw = (searchParams.get("make") ?? "").trim();
   const make = makeRaw;
+  const makeIdRaw = (searchParams.get("makeId") ?? "").trim();
+  const makeId = makeIdRaw ? Number(makeIdRaw) : undefined;
   const year = (searchParams.get("year") ?? "").trim();
   const qRaw = (searchParams.get("q") ?? "").trim();
   const q = normalize(qRaw);
 
-  if (!make) return NextResponse.json({ models: [] });
+  if (!make && !makeId) return NextResponse.json({ models: [] });
 
-  const cacheKey = `${makeKey(make)}|${year}`;
+  const cacheKey = makeId ? `makeId:${makeId}|${year}` : `${makeKey(make)}|${year}`;
 
   try {
     let unique: string[];
@@ -45,13 +47,24 @@ export async function GET(request: Request) {
     if (cached && now - cached.time < CACHE_TTL_MS) {
       unique = cached.list;
     } else {
-      const url = year
-        ? `https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeYear/make/${encodeURIComponent(
-            make
-          )}/modelyear/${encodeURIComponent(year)}/vehicletype/passenger%20car?format=json`
-        : `https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeYear/make/${encodeURIComponent(
-            make
-          )}/vehicletype/passenger%20car?format=json`;
+      let url: string;
+      if (makeId) {
+        url = year
+          ? `https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeIdYear/makeId/${encodeURIComponent(
+              String(makeId)
+            )}/modelyear/${encodeURIComponent(year)}?format=json`
+          : `https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeId/makeId/${encodeURIComponent(
+              String(makeId)
+            )}?format=json`;
+      } else {
+        url = year
+          ? `https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeYear/make/${encodeURIComponent(
+              make
+            )}/modelyear/${encodeURIComponent(year)}/vehicletype/passenger%20car?format=json`
+          : `https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeYear/make/${encodeURIComponent(
+              make
+            )}/vehicletype/passenger%20car?format=json`;
+      }
 
       const r = await fetch(url, { cache: "no-store" });
       if (!r.ok) return NextResponse.json({ models: [] });

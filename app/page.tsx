@@ -37,6 +37,7 @@ type Vehicle = {
   engine?: string;
   nickname?: string;
   vin?: string;
+  makeId?: number;
 };
 
 type Cause = {
@@ -682,6 +683,8 @@ export default function Home() {
     setMounted(true);
   }, []);
 
+  const { data: session, status } = useSession();
+
   const [tab, setTab] = useState<"diagnose" | "garage" | "service" | "codes">("garage");
   const [serviceVehicleFilter, setServiceVehicleFilter] = useState<string | null>(null);
   const [vehiclePickerOpen, setVehiclePickerOpen] = useState(false);
@@ -745,6 +748,7 @@ export default function Home() {
 
 
   useEffect(() => {
+<<<<<<< HEAD
     try {
       // Clear previous account's cached maintenance on user change/sign-out (privacy).
       if (prevMaintenanceStorageKey.current !== maintenanceStorageKey) {
@@ -769,17 +773,98 @@ export default function Home() {
       if (savedLang && LANGUAGES.some(l => l.code === savedLang)) setLang(savedLang);
     } catch {}
 
+=======
+>>>>>>> 17ff8ad (fix(vehicles): expand makes with Make_ID, support makeId in models route, store makeId in UI; dropdown portal improvements)
     const isMobile = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+
     const handleInstall = (e: Event) => {
       e.preventDefault();
       setInstallPrompt(e);
-      const dismissed = localStorage.getItem("carcode_install_dismissed");
-      if (!dismissed && isMobile) setShowInstallBanner(true);
+      try {
+        const dismissed = localStorage.getItem("carcode_install_dismissed");
+        if (!dismissed && isMobile) setShowInstallBanner(true);
+      } catch {}
     };
     window.addEventListener("beforeinstallprompt", handleInstall);
 
+    (async () => {
+      try {
+        // If authenticated, prefer server-backed data (DB via API)
+        if (session?.user?.id) {
+          try {
+            const [vRes, mRes] = await Promise.all([fetch("/api/garage"), fetch("/api/maintenance")]);
+            if (vRes.ok) {
+              const dv = await vRes.json();
+              setGarage(dv.vehicles || []);
+              setActiveId((dv.vehicles && dv.vehicles[0]?.id) ?? null);
+            }
+            if (mRes.ok) {
+              const dm = await mRes.json();
+              const recs = dm.records || [];
+              const map: Record<string, MaintenanceRecord[]> = {};
+              for (const r of recs) {
+                const entry: MaintenanceRecord = {
+                  id: r.id,
+                  vehicleId: r.vehicleId,
+                  type: r.serviceType,
+                  date: r.date,
+                  mileage: r.odometer || "",
+                  notes: r.notes || "",
+                };
+                map[r.vehicleId] = map[r.vehicleId] || [];
+                map[r.vehicleId].push(entry);
+              }
+              setMaintenanceRecords(map);
+            }
+          } catch {
+            // fallback to namespaced localStorage if API fails
+            try {
+              const raw = localStorage.getItem(`carcode_garage_v1:${session.user.id}`);
+              if (raw) {
+                const parsed = JSON.parse(raw) as { garage: Vehicle[]; activeId: string | null };
+                setGarage(parsed.garage || []);
+                setActiveId(parsed.activeId || (parsed.garage?.[0]?.id ?? null));
+              }
+            } catch {}
+            try {
+              const rawMaint = localStorage.getItem(`carcode_maintenance_v1:${session.user.id}`);
+              if (rawMaint) {
+                setMaintenanceRecords(JSON.parse(rawMaint));
+              }
+            } catch {}
+          }
+        } else {
+          // not authenticated: load guest-scoped localStorage
+          try {
+            const raw = localStorage.getItem("carcode_garage_v1");
+            if (raw) {
+              const parsed = JSON.parse(raw) as { garage: Vehicle[]; activeId: string | null };
+              setGarage(parsed.garage || []);
+              setActiveId(parsed.activeId || (parsed.garage?.[0]?.id ?? null));
+            }
+          } catch {}
+          try {
+            const rawMaint = localStorage.getItem("carcode_maintenance_v1");
+            if (rawMaint) {
+              setMaintenanceRecords(JSON.parse(rawMaint));
+            }
+          } catch {}
+        }
+
+        try {
+          if (!localStorage.getItem("carcode_onboarded_v1")) {
+            setShowOnboarding(true);
+          }
+        } catch {}
+        try {
+          const savedLang = localStorage.getItem("carcode_lang") as LangCode;
+          if (savedLang && LANGUAGES.some(l => l.code === savedLang)) setLang(savedLang);
+        } catch {}
+      } catch {}
+    })();
 
     return () => window.removeEventListener("beforeinstallprompt", handleInstall);
+<<<<<<< HEAD
   }, [maintenanceStorageKey]);
 
   useEffect(() => {
@@ -787,12 +872,44 @@ export default function Home() {
       localStorage.setItem(maintenanceStorageKey, JSON.stringify(maintenanceRecords));
     } catch {}
   }, [maintenanceRecords, maintenanceStorageKey]);
+=======
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    try {
+      const key = session?.user?.id ? `carcode_garage_v1:${session.user.id}` : "carcode_garage_v1";
+      localStorage.setItem(key, JSON.stringify({ garage, activeId }));
+    } catch {}
+  }, [garage, activeId]);
+
+  useEffect(() => {
+    try {
+      const key = session?.user?.id ? `carcode_maintenance_v1:${session.user.id}` : "carcode_maintenance_v1";
+      localStorage.setItem(key, JSON.stringify(maintenanceRecords));
+    } catch {}
+  }, [maintenanceRecords]);
+>>>>>>> 17ff8ad (fix(vehicles): expand makes with Make_ID, support makeId in models route, store makeId in UI; dropdown portal improvements)
 
   useEffect(() => {
     try {
       localStorage.setItem("carcode_lang", lang);
     } catch {}
   }, [lang]);
+
+  // Clear namespaced localStorage on sign-out to avoid cross-account leaks
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      try {
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const k = localStorage.key(i);
+          if (!k) continue;
+          if (k.startsWith("carcode_garage_v1") || k.startsWith("carcode_maintenance_v1")) {
+            localStorage.removeItem(k);
+          }
+        }
+      } catch {}
+    }
+  }, [status]);
 
   function addMaintenanceRecord(vehicleId: string, fd: FormData) {
     const mileageUnitRaw = String(fd.get("maint_mileage_unit") || "km").toLowerCase();
@@ -833,12 +950,14 @@ export default function Home() {
   async function addVehicle(fd: FormData) {
     const year = String(fd.get("year") || "").trim();
     const make = String(fd.get("make") || "").trim();
+    const makeId = Number(fd.get("makeId") || "") || undefined;
     const model = String(fd.get("model") || "").trim();
     const engine = String(fd.get("engine") || "").trim();
     const vin = String(fd.get("vin") || "").trim();
 
     if (!year || !make || !model) return;
 
+<<<<<<< HEAD
     try {
       await addGarageVehicle({
         year,
@@ -851,6 +970,21 @@ export default function Home() {
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : "Failed to save vehicle.");
     }
+=======
+    const v: Vehicle = {
+      id: uid(),
+      year,
+      make,
+      makeId,
+      model,
+      engine: engine || undefined,
+      vin: vin || undefined,
+    };
+
+    setGarage((prev) => [v, ...prev]);
+    setActiveId(v.id);
+    setTab("diagnose");
+>>>>>>> 17ff8ad (fix(vehicles): expand makes with Make_ID, support makeId in models route, store makeId in UI; dropdown portal improvements)
   }
 
   async function removeVehicle(id: string) {
@@ -969,12 +1103,13 @@ export default function Home() {
 
   const [gYear, setGYear] = useState("");
   const [gMake, setGMake] = useState("");
+  const [gMakeId, setGMakeId] = useState<number | null>(null);
   const [makeConfirmed, setMakeConfirmed] = useState(false);
   const [gModel, setGModel] = useState("");
   const [gVin, setGVin] = useState("");
   const [gEngine, setGEngine] = useState("");
 
-  const [makeOptions, setMakeOptions] = useState<string[]>([]);
+  const [makeOptions, setMakeOptions] = useState<any[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [engineOptions, setEngineOptions] = useState<any[]>([]);
 
@@ -998,22 +1133,27 @@ export default function Home() {
       try {
         const r = await fetch(`/api/vehicles/makes?q=${encodeURIComponent(makeQ.trim())}`);
         const d = await r.json();
-        if (!cancelled) setMakeOptions(Array.isArray(d.makes) ? d.makes : []);
+        if (!cancelled) {
+          // d.makes => [{id, name}]
+          const items = Array.isArray(d.makes)
+            ? d.makes.map((m: any) => ({ value: String(m.name), label: String(m.name), id: m.id }))
+            : [];
+          setMakeOptions(items);
+        }
       } catch { if (!cancelled) setMakeOptions([]); }
     })();
     return () => { cancelled = true; };
   }, [makeQ]);
 
   useEffect(() => {
-    if (!makeConfirmed || !gMake.trim()) {
+    if (!makeConfirmed || !gMakeId) {
       setModelOptions([]);
       return;
     }
     let cancelled = false;
     async function run() {
-      const make = gMake.trim();
       const url =
-        `/api/vehicles/models?make=${encodeURIComponent(make)}` +
+        `/api/vehicles/models?makeId=${encodeURIComponent(String(gMakeId))}` +
         (gYear.trim() ? `&year=${encodeURIComponent(gYear.trim())}` : "") +
         (modelQ.trim() ? `&q=${encodeURIComponent(modelQ.trim())}` : "");
       const r = await fetch(url);
@@ -1022,7 +1162,7 @@ export default function Home() {
     }
     run().catch(() => { if (!cancelled) setModelOptions([]); });
     return () => { cancelled = true; };
-  }, [makeConfirmed, gMake, gYear, modelQ]);
+  }, [makeConfirmed, gMakeId, gYear, modelQ]);
 
   useEffect(() => {
     if (!gYear.trim() || !gMake.trim() || !gModel.trim()) { setEngineOptions([]); return; }
@@ -1498,7 +1638,8 @@ export default function Home() {
                 <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("addVehicle", lang)}</div>
               </div>
 
-              <form className="mt-5 grid gap-3 overflow-visible" onSubmit={(e) => { e.preventDefault(); addVehicle(new FormData(e.currentTarget)); (e.currentTarget as HTMLFormElement).reset(); setGYear(""); setGMake(""); setMakeConfirmed(false); setGModel(""); setGVin(""); setGEngine(""); }}>
+              <form className="mt-5 grid gap-3 overflow-visible" onSubmit={(e) => { e.preventDefault(); addVehicle(new FormData(e.currentTarget)); (e.currentTarget as HTMLFormElement).reset(); setGYear(""); setGMake(""); setGMakeId(null); setMakeConfirmed(false); setGModel(""); setGVin(""); setGEngine(""); }}>
+                <input type="hidden" name="makeId" value={gMakeId ?? ""} />
                 <input
                   name="vin"
                   placeholder={tr("vinPlaceholder", lang)}
@@ -1513,6 +1654,7 @@ export default function Home() {
                     onValueChange={(v) => {
                       if (v !== gMake) {
                         setMakeConfirmed(false);
+                        setGMakeId(null);
                         setGYear("");
                         setGModel("");
                         setGEngine("");
@@ -1522,7 +1664,10 @@ export default function Home() {
                       setGMake(v);
                     }}
                     onSelect={(v) => {
+                      // find selected option by value to retrieve id
+                      const opt = makeOptions.find((x: any) => String(x.value) === String(v));
                       setGMake(v);
+                      setGMakeId(opt?.id ?? null);
                       setMakeConfirmed(true);
                       setGYear("");
                       setGModel("");

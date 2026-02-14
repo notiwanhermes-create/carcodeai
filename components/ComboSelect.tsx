@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 
 export type ComboSelectOption = string | { value: string; label: string };
 
@@ -55,6 +56,8 @@ export function ComboSelect({
   const [isTyping, setIsTyping] = React.useState(false);
   const [highlightIdx, setHighlightIdx] = React.useState(0);
   const [dropWidth, setDropWidth] = React.useState<number | undefined>();
+  const [dropPos, setDropPos] = React.useState<{ top: number; left: number } | null>(null);
+  const portalRef = React.useRef<HTMLDivElement | null>(null);
   const triggerRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -73,6 +76,48 @@ export function ComboSelect({
       setDropWidth(rect.width);
     }
   }, [open]);
+
+  React.useEffect(() => {
+    if (!open || !triggerRef.current) {
+      setDropPos(null);
+      return;
+    }
+    function updatePos() {
+      const rect = triggerRef.current!.getBoundingClientRect();
+      setDropPos({
+        top: rect.bottom + window.scrollY + 8,
+        left: rect.left + window.scrollX,
+      });
+      setDropWidth(rect.width);
+    }
+    updatePos();
+    window.addEventListener("resize", updatePos);
+    window.addEventListener("scroll", updatePos, true);
+    return () => {
+      window.removeEventListener("resize", updatePos);
+      window.removeEventListener("scroll", updatePos, true);
+    };
+  }, [open]);
+
+  React.useEffect(() => {
+    if (typeof document === "undefined") return;
+    const el = document.createElement("div");
+    // Create a full-viewport fixed portal container so the dropdown isn't clipped
+    el.style.position = "fixed";
+    el.style.top = "0";
+    el.style.left = "0";
+    el.style.width = "100%";
+    el.style.height = "100%";
+    el.style.pointerEvents = "none";
+    portalRef.current = el;
+    document.body.appendChild(el);
+    return () => {
+      if (portalRef.current && portalRef.current.parentNode) {
+        portalRef.current.parentNode.removeChild(portalRef.current);
+      }
+      portalRef.current = null;
+    };
+  }, []);
 
   React.useEffect(() => {
     setHighlightIdx(0);
@@ -206,17 +251,21 @@ export function ComboSelect({
       {name && triggerType === "button" && (
         <input type="hidden" name={name} value={value} />
       )}
-      {open && filtered.length > 0 && (
+      {open && filtered.length > 0 && portalRef.current && createPortal(
         <div
           ref={listRef}
           className={contentClassName}
           style={{
-            position: "absolute",
-            top: "100%",
-            left: 0,
-            marginTop: 8,
+            position: "fixed",
+            top: dropPos ? dropPos.top : undefined,
+            left: dropPos ? dropPos.left : undefined,
+            marginTop: 0,
             width: dropWidth ?? "100%",
-            zIndex: 9999,
+            zIndex: 2147483647,
+            pointerEvents: "auto",
+            WebkitOverflowScrolling: "touch",
+            willChange: "transform",
+            transform: "translateZ(0)",
           }}
           onMouseDown={(e) => e.preventDefault()}
         >
@@ -245,7 +294,8 @@ export function ComboSelect({
               );
             })}
           </div>
-        </div>
+        </div>,
+        portalRef.current
       )}
     </div>
   );

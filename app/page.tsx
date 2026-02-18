@@ -1655,7 +1655,7 @@ export default function Home() {
 
 
     return () => window.removeEventListener("beforeinstallprompt", handleInstall);
-  }, [diagnosisStorageKey, maintenanceStorageKey]);
+  }, []);
 
   useEffect(() => {
     try {

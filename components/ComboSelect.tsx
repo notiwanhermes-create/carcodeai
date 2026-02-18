@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import AutocompleteDropdownPortal from "./AutocompleteDropdownPortal";
 
 export type ComboSelectOption = string | { value: string; label: string };
 
@@ -55,6 +56,7 @@ export function ComboSelect({
   const [isTyping, setIsTyping] = React.useState(false);
   const [highlightIdx, setHighlightIdx] = React.useState(0);
   const [dropWidth, setDropWidth] = React.useState<number | undefined>();
+  const [dropPos, setDropPos] = React.useState<{ top: number; left: number } | null>(null);
   const triggerRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -73,6 +75,30 @@ export function ComboSelect({
       setDropWidth(rect.width);
     }
   }, [open]);
+
+  React.useEffect(() => {
+    if (!open || !triggerRef.current) {
+      setDropPos(null);
+      return;
+    }
+    function updatePos() {
+      const rect = triggerRef.current!.getBoundingClientRect();
+      setDropPos({
+        top: rect.bottom + window.scrollY + 8,
+        left: rect.left + window.scrollX,
+      });
+      setDropWidth(rect.width);
+    }
+    updatePos();
+    window.addEventListener("resize", updatePos);
+    window.addEventListener("scroll", updatePos, true);
+    return () => {
+      window.removeEventListener("resize", updatePos);
+      window.removeEventListener("scroll", updatePos, true);
+    };
+  }, [open]);
+
+  // AutocompleteDropdownPortal manages its own portal root
 
   React.useEffect(() => {
     setHighlightIdx(0);
@@ -207,45 +233,54 @@ export function ComboSelect({
         <input type="hidden" name={name} value={value} />
       )}
       {open && filtered.length > 0 && (
-        <div
-          ref={listRef}
-          className={contentClassName}
-          style={{
-            position: "absolute",
-            top: "100%",
-            left: 0,
-            marginTop: 8,
-            width: dropWidth ?? "100%",
-            zIndex: 9999,
+        <AutocompleteDropdownPortal
+          anchorRef={triggerRef}
+          open={open}
+          onClose={() => {
+            setOpen(false);
+            setInputText("");
+            setIsTyping(false);
           }}
-          onMouseDown={(e) => e.preventDefault()}
+          className={contentClassName}
         >
           <div
-            className="max-h-[300px] overflow-y-auto overflow-x-hidden rounded-lg p-1"
-            role="listbox"
+            ref={listRef}
+            style={{
+              marginTop: 0,
+              width: dropWidth ?? "100%",
+              WebkitOverflowScrolling: "touch",
+              willChange: "transform",
+              transform: "translateZ(0)",
+            }}
           >
-            {filtered.map((opt, idx) => {
-              const val = optionValue(opt);
-              const label = optionLabel(opt);
-              return (
-                <div
-                  key={val + idx}
-                  role="option"
-                  aria-selected={idx === highlightIdx}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    doSelect(val);
-                  }}
-                  onMouseEnter={() => setHighlightIdx(idx)}
-                  className={`cursor-pointer rounded-md px-3 py-2 text-sm outline-none ${textClass} ${hoverClass} ${idx === highlightIdx ? highlightClass : ""}`}
-                >
-                  {label}
-                </div>
-              );
-            })}
+            <div
+              className="overflow-x-hidden rounded-lg p-1"
+              style={{ maxHeight: 240, overflowY: "auto" }}
+              role="listbox"
+            >
+              {filtered.map((opt, idx) => {
+                const val = optionValue(opt);
+                const label = optionLabel(opt);
+                return (
+                  <div
+                    key={val + idx}
+                    role="option"
+                    aria-selected={idx === highlightIdx}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      doSelect(val);
+                    }}
+                    onMouseEnter={() => setHighlightIdx(idx)}
+                    className={`cursor-pointer rounded-md px-3 py-2 text-sm outline-none ${textClass} ${hoverClass} ${idx === highlightIdx ? highlightClass : ""}`}
+                  >
+                    {label}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        </div>
+        </AutocompleteDropdownPortal>
       )}
     </div>
   );

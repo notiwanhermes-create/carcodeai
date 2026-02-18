@@ -16,7 +16,7 @@ function useDebounced<T>(value: T, delay = 200) {
 // returns a list of matching makes (brands)
 export function useMakeSuggestions(makeQuery: string) {
   const q = useDebounced(makeQuery, 200);
-  const [makes, setMakes] = React.useState<string[]>([]);
+  const [makes, setMakes] = React.useState<{ id: number; name: string }[]>([]);
 
   React.useEffect(() => {
     // if user hasn't typed anything, clear suggestions
@@ -27,26 +27,29 @@ export function useMakeSuggestions(makeQuery: string) {
 
     fetch(`/api/vehicles/makes?q=${encodeURIComponent(q)}`)
       .then((r) => r.json())
-      .then((data) => setMakes(Array.isArray(data.makes) ? data.makes : []))
+      .then((data) => {
+        const items = Array.isArray(data.makes) ? data.makes : [];
+        setMakes(items);
+      })
       .catch(() => setMakes([]));
   }, [q]);
 
   return makes;
 }
 
-// returns a list of matching models for a selected make (+ optional year)
-export function useModelSuggestions(make: string, year: string, modelQuery: string) {
+// returns a list of matching models for a selected makeId (+ optional year)
+export function useModelSuggestions(makeId: number | string | null | undefined, year: string, modelQuery: string) {
   const q = useDebounced(modelQuery, 200);
   const [models, setModels] = React.useState<string[]>([]);
 
   React.useEffect(() => {
-    if (!make.trim()) {
+    if (!makeId) {
       setModels([]);
       return;
     }
 
     const url =
-      `/api/vehicles/models?make=${encodeURIComponent(make)}` +
+      `/api/vehicles/models?makeId=${encodeURIComponent(String(makeId))}` +
       (year.trim() ? `&year=${encodeURIComponent(year.trim())}` : "") +
       `&q=${encodeURIComponent(q)}`;
 
@@ -54,7 +57,7 @@ export function useModelSuggestions(make: string, year: string, modelQuery: stri
       .then((r) => r.json())
       .then((data) => setModels(Array.isArray(data.models) ? data.models : []))
       .catch(() => setModels([]));
-  }, [make, year, q]);
+  }, [makeId, year, q]);
 
   return models;
 }

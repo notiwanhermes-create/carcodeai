@@ -875,16 +875,19 @@ function LikelyCausesPanel({
   const [guideFixMode, setGuideFixMode] = useState(false);
   const [confirmedFix, setConfirmedFix] = useState<DiagnosisSession["confirmedFix"] | null>(null);
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [refineHighlight, setRefineHighlight] = useState(false);
   const refineRef = useRef<HTMLDivElement | null>(null);
   const t = (dark: string, light: string) => theme === "dark" ? dark : light;
 
   function handleGuideMeClick() {
     setGuideMode((v) => !v);
+    setRefineHighlight(true);
     // If Refine diagnosis is ever hidden/collapsed, expand it here before scrolling.
     refineRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     setTimeout(() => {
       refineRef.current?.querySelector<HTMLButtonElement>("[data-refine-first]")?.focus();
     }, 150);
+    setTimeout(() => setRefineHighlight(false), 2500);
   }
 
   if (result && "noDefinition" in result && result.noDefinition) {
@@ -1285,7 +1288,16 @@ function LikelyCausesPanel({
         </div>
       </div>
 
-      <div ref={refineRef} id="refine-diagnosis" className={cn("rounded-3xl p-6", t("glass-card", "bg-white border border-slate-200 shadow-sm"))}>
+      <div
+        ref={refineRef}
+        id="refine-diagnosis"
+        className={cn(
+          "rounded-3xl p-6 transition-all duration-300",
+          t("glass-card", "bg-white border border-slate-200 shadow-sm"),
+          refineHighlight && "ring-2 ring-cyan-400/60 shadow-[0_0_0_6px_rgba(34,211,238,0.12)]",
+          refineHighlight && t("bg-white/10", "bg-cyan-50/80")
+        )}
+      >
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("refineDiagnosis", lang)}</div>

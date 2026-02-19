@@ -875,19 +875,19 @@ function LikelyCausesPanel({
   const [guideFixMode, setGuideFixMode] = useState(false);
   const [confirmedFix, setConfirmedFix] = useState<DiagnosisSession["confirmedFix"] | null>(null);
   const [exportingPdf, setExportingPdf] = useState(false);
-  const [refineHighlight, setRefineHighlight] = useState(false);
+  const [guideHighlight, setGuideHighlight] = useState(false);
   const refineRef = useRef<HTMLDivElement | null>(null);
   const t = (dark: string, light: string) => theme === "dark" ? dark : light;
 
   function handleGuideMeClick() {
     setGuideMode((v) => !v);
-    setRefineHighlight(true);
+    setGuideHighlight(true);
     // If Refine diagnosis is ever hidden/collapsed, expand it here before scrolling.
     refineRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     setTimeout(() => {
       refineRef.current?.querySelector<HTMLButtonElement>("[data-refine-first]")?.focus();
     }, 150);
-    setTimeout(() => setRefineHighlight(false), 2500);
+    setTimeout(() => setGuideHighlight(false), 2500);
   }
 
   if (result && "noDefinition" in result && result.noDefinition) {
@@ -1292,10 +1292,8 @@ function LikelyCausesPanel({
         ref={refineRef}
         id="refine-diagnosis"
         className={cn(
-          "rounded-3xl p-6 transition-all duration-300",
-          t("glass-card", "bg-white border border-slate-200 shadow-sm"),
-          refineHighlight && "ring-2 ring-cyan-400/60 shadow-[0_0_0_6px_rgba(34,211,238,0.12)]",
-          refineHighlight && t("bg-white/10", "bg-cyan-50/80")
+          "rounded-3xl p-6",
+          t("glass-card", "bg-white border border-slate-200 shadow-sm")
         )}
       >
         <div className="flex items-start justify-between gap-3">
@@ -1343,7 +1341,14 @@ function LikelyCausesPanel({
       </div>
 
       {guideMode && (
-        <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
+        <div
+          className={cn(
+            "rounded-3xl p-6 transition-all duration-300",
+            t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"),
+            guideHighlight && "ring-2 ring-cyan-400/60 shadow-[0_0_0_6px_rgba(34,211,238,0.12)]",
+            guideHighlight && t("bg-white/10", "bg-cyan-50/80")
+          )}
+        >
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("guideMe", lang)}</div>

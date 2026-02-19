@@ -79,7 +79,7 @@ type MaintenanceRecord = {
   mileageKm?: number;
   notes: string;
 };
- 
+
 type DiagnosisUrgency = "Drive" | "Caution" | "Stop";
 type ConfidenceLabel = "High" | "Med" | "Low";
 
@@ -190,6 +190,156 @@ type DiagnosisSession = {
   confirmedFix?: { causeId: string; causeTitle: string; fix: string };
 };
 
+function FeedbackSection({ theme, lang }: { theme: "dark" | "light"; lang: LangCode }) {
+  const t = (dark: string, light: string) => theme === "dark" ? dark : light;
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [message, setMessage] = useState("");
+  const [rating, setRating] = useState(0);
+  const [hoverRating, setHoverRating] = useState(0);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleSubmit = async () => {
+    if (!message.trim()) {
+      setError("Please enter your feedback");
+      return;
+    }
+    setSending(true);
+    setError("");
+    try {
+      const res = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim(),
+          rating: rating || undefined,
+          message: message.trim(),
+          pageUrl: typeof window !== "undefined" ? window.location.href : undefined,
+        }),
+      });
+      let errorMessage = "Something went wrong";
+      if (!res.ok) {
+        try {
+          const d = await res.json();
+          if (typeof d?.error === "string") errorMessage = d.error;
+        } catch {
+          errorMessage = res.status >= 500
+            ? "Unable to send feedback right now. Please try again later."
+            : "Something went wrong. Please try again.";
+        }
+        throw new Error(errorMessage);
+      }
+      setSent(true);
+      setName("");
+      setEmail("");
+      setMessage("");
+      setRating(0);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Something went wrong");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  if (sent) {
+    return (
+      <div className="mt-10">
+        <div className={cn("rounded-2xl p-6 text-center", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
+          <div className="text-3xl mb-3">&#10003;</div>
+          <div className={cn("text-lg font-semibold", t("text-white", "text-slate-900"))}>Thank you for your feedback!</div>
+          <p className={cn("mt-2 text-sm", t("text-slate-400", "text-slate-600"))}>We appreciate you taking the time to help us improve CarCode AI.</p>
+          <button onClick={() => setSent(false)} className="mt-4 text-sm text-cyan-400 hover:text-cyan-300 transition-colors">Send more feedback</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-10">
+      <div className={cn("rounded-2xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
+        <div className="flex items-center gap-3 mb-4">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+          <h3 className={cn("text-lg font-semibold", t("text-white", "text-slate-900"))}>Share Your Feedback</h3>
+        </div>
+        <p className={cn("text-sm mb-5", t("text-slate-400", "text-slate-600"))}>Help us improve CarCode AI. Tell us what you like, what could be better, or suggest new features.</p>
+
+        <div className="mb-4">
+          <label className={cn("block text-xs font-medium mb-1.5", t("text-slate-300", "text-slate-700"))}>How would you rate your experience?</label>
+          <div className="flex gap-1">
+            {[1, 2, 3, 4, 5].map((star) => (
+              <button
+                key={star}
+                type="button"
+                onMouseEnter={() => setHoverRating(star)}
+                onMouseLeave={() => setHoverRating(0)}
+                onClick={() => setRating(star === rating ? 0 : star)}
+                className="p-0.5 transition-transform hover:scale-110"
+              >
+                <svg width="28" height="28" viewBox="0 0 24 24" fill={(hoverRating || rating) >= star ? "#fbbf24" : "none"} stroke={(hoverRating || rating) >= star ? "#fbbf24" : theme === "dark" ? "#475569" : "#94a3b8"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                </svg>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+          <div>
+            <label className={cn("block text-xs font-medium mb-1.5", t("text-slate-300", "text-slate-700"))}>Name <span className={cn("font-normal", t("text-slate-500", "text-slate-400"))}>(optional)</span></label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Your name"
+              className={cn("w-full rounded-xl px-3 py-2.5 text-sm transition-all", t("glass-input", "bg-slate-50 border border-slate-200 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none"))}
+            />
+          </div>
+          <div>
+            <label className={cn("block text-xs font-medium mb-1.5", t("text-slate-300", "text-slate-700"))}>Email <span className={cn("font-normal", t("text-slate-500", "text-slate-400"))}>(optional)</span></label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="your@email.com"
+              className={cn("w-full rounded-xl px-3 py-2.5 text-sm transition-all", t("glass-input", "bg-slate-50 border border-slate-200 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none"))}
+            />
+          </div>
+        </div>
+
+        <div className="mb-4">
+          <label className={cn("block text-xs font-medium mb-1.5", t("text-slate-300", "text-slate-700"))}>Your Feedback <span className="text-red-400">*</span></label>
+          <textarea
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder="What do you think about CarCode AI? Any suggestions for improvement?"
+            rows={4}
+            maxLength={2000}
+            className={cn("w-full rounded-xl px-3 py-2.5 text-sm transition-all resize-none", t("glass-input", "bg-slate-50 border border-slate-200 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none"))}
+          />
+          <div className={cn("text-xs mt-1 text-right", t("text-slate-500", "text-slate-400"))}>{message.length}/2000</div>
+        </div>
+
+        {error && <div className="mb-3 text-sm text-red-400">{error}</div>}
+
+        <button
+          onClick={handleSubmit}
+          disabled={sending || !message.trim()}
+          className={cn(
+            "w-full rounded-xl py-3 text-sm font-semibold transition-all",
+            sending || !message.trim()
+              ? t("bg-white/5 text-slate-500 cursor-not-allowed", "bg-slate-100 text-slate-400 cursor-not-allowed")
+              : "bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-500/20 hover:shadow-cyan-500/40"
+          )}
+        >
+          {sending ? "Sending..." : "Send Feedback"}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function AuthButtons({ theme }: { theme: "dark" | "light" }) {
   const { data: session, status } = useSession();
@@ -718,7 +868,7 @@ function LikelyCausesPanel({
   lang: LangCode;
 }) {
   const [openCauseId, setOpenCauseId] = useState<string | null>(null);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [refineAnswers, setRefineAnswers] = useState<Record<string, string>>({});
   const [guideMode, setGuideMode] = useState(false);
   const [guideCauseIdx, setGuideCauseIdx] = useState(0);
   const [guideStepIdx, setGuideStepIdx] = useState(0);
@@ -760,61 +910,83 @@ function LikelyCausesPanel({
     return (result.causes || []).map((c, idx) => ({ c, id: stableCauseId(c.title, idx), originalIdx: idx }));
   }, [result.causes]);
 
-  const refineStorageKey = vehicleId && (code != null || symptoms != null)
-    ? `carcode-refine-${vehicleId}-${String(code ?? "").trim()}-${String(symptoms ?? "").trim()}`
-    : null;
-
   useEffect(() => {
+    setRefineAnswers({});
     setOpenCauseId(null);
     setGuideMode(false);
     setGuideCauseIdx(0);
     setGuideStepIdx(0);
     setGuideFixMode(false);
     setConfirmedFix(null);
-    if (refineStorageKey && typeof localStorage !== "undefined") {
-      try {
-        const raw = localStorage.getItem(refineStorageKey);
-        const parsed = raw ? JSON.parse(raw) : null;
-        setAnswers(typeof parsed === "object" && parsed !== null ? parsed : {});
-      } catch {
-        setAnswers({});
-      }
-    } else {
-      setAnswers({});
-    }
-  }, [result, refineStorageKey]);
+  }, [result]);
 
+  // Debug step: verify refineAnswers updates trigger.
   useEffect(() => {
-    if (refineStorageKey && Object.keys(answers).length > 0 && typeof localStorage !== "undefined") {
-      try {
-        localStorage.setItem(refineStorageKey, JSON.stringify(answers));
-      } catch {
-        // ignore
-      }
+    // temporary logging per request; keep dev-only to avoid noisy prod logs
+    if (process.env.NODE_ENV !== "production") {
+      // eslint-disable-next-line no-console
+      console.log("refineAnswers changed", refineAnswers);
     }
-  }, [refineStorageKey, answers]);
+  }, [refineAnswers]);
 
-  const enriched = useMemo(() => {
-    const baseScored = causesWithId.map(({ c, id, originalIdx }) => {
-      const baseScore = scoreCause(c, { code, symptoms, answers: {} });
-      const { delta, reason } = getRefineRuleScore(c.title, answers);
-      const score = baseScore + delta;
-      return { c, id, originalIdx, score, refineReason: reason };
+  const allDomains = useMemo(() => {
+    const d = new Set<Domain>();
+    for (const x of causesWithId.slice(0, 3)) domainsForCause(x.c, code, symptoms).forEach((dd) => d.add(dd));
+    return Array.from(d);
+  }, [causesWithId, code, symptoms]);
+
+  const followUps = useMemo(() => buildFollowUpQuestions(allDomains, code, symptoms), [allDomains, code, symptoms]);
+
+  const baselineById = useMemo(() => {
+    // Baseline confidence computed from original causes with no refine answers.
+    const scored = causesWithId.map(({ c, id }) => ({
+      id,
+      score: scoreCause(c, { code, symptoms, answers: {} }),
+    }));
+    const sum = scored.reduce((acc, x) => acc + x.score, 0);
+    const m = new Map<string, { pct: number; label: ConfidenceLabel }>();
+    scored.forEach((x) => {
+      const conf = confidenceFromScore(x.score, sum);
+      m.set(x.id, conf);
     });
-    const sorted = baseScored.sort((a, b) => b.score - a.score || a.originalIdx - b.originalIdx);
+    return m;
+  }, [causesWithId, code, symptoms]);
+
+  const hasRefinements = useMemo(() => Object.keys(refineAnswers).length > 0, [refineAnswers]);
+
+  const rankedCauses = useMemo(() => {
+    // Debug step: verify rerank path runs after refineAnswers changes.
+    if (process.env.NODE_ENV !== "production") {
+      // eslint-disable-next-line no-console
+      console.log("reranking causes from refineAnswers", refineAnswers);
+    }
+    // Recompute ranked causes from original causes + refineAnswers.
+    const scored = causesWithId.map(({ c, id, originalIdx }) => ({
+      c,
+      id,
+      originalIdx,
+      score: scoreCause(c, { code, symptoms, answers: refineAnswers }),
+    }));
+
+    // Reset must restore original order.
+    const sorted = [...scored].sort((a, b) => {
+      if (!hasRefinements) return a.originalIdx - b.originalIdx;
+      return b.score - a.score || a.originalIdx - b.originalIdx;
+    });
+
     const sum = sorted.reduce((acc, x) => acc + x.score, 0);
 
-    return sorted.map(({ c, id, score, refineReason }) => {
+    return sorted.map(({ c, id, score }) => {
       const conf = confidenceFromScore(score, sum);
       const est = estimateForCause(c);
       return {
         ...c,
         id,
         score,
-        refineReason: refineReason ?? undefined,
         confidencePct: conf.pct,
         confidenceLabel: conf.label,
-        whyLikely: buildWhyLikely(c, { code, symptoms, vehicle, answers }),
+        confidenceDeltaPct: hasRefinements ? conf.pct - (baselineById.get(id)?.pct ?? conf.pct) : 0,
+        whyLikely: buildWhyLikely(c, { code, symptoms, vehicle, answers: refineAnswers }),
         urgency: urgencyForCause(c, { symptoms }),
         partsCost: est.partsCost,
         laborHours: est.laborHours,
@@ -822,7 +994,12 @@ function LikelyCausesPanel({
         tools: est.tools,
       };
     });
-  }, [answers, causesWithId, code, symptoms, vehicle]);
+  }, [baselineById, causesWithId, code, hasRefinements, refineAnswers, symptoms, vehicle]);
+
+  const quickChecks = useMemo(
+    () => buildQuickChecks(rankedCauses.slice(0, 3).map((c) => ({ c, id: c.id })), { code, symptoms }),
+    [rankedCauses, code, symptoms]
+  );
 
   function urgencyPill(u: DiagnosisUrgency) {
     if (u === "Stop") return { label: "Stop", cls: t("bg-red-500/15 text-red-300 border-red-500/30", "bg-red-50 text-red-700 border-red-200"), dot: "bg-red-400" };
@@ -842,7 +1019,7 @@ function LikelyCausesPanel({
 
   function buildSession(): DiagnosisSession | null {
     if (!vehicleId || !vehicle) return null;
-    const finalRankedCauses: DiagnosisCauseSnapshot[] = enriched.map((c) => ({
+    const finalRankedCauses: DiagnosisCauseSnapshot[] = rankedCauses.map((c) => ({
       id: c.id,
       title: c.title,
       confidencePct: c.confidencePct,
@@ -865,7 +1042,7 @@ function LikelyCausesPanel({
       code: code?.trim() || undefined,
       symptoms: symptoms?.trim() || undefined,
       vehicle: { year: vehicle.year, make: vehicle.make, model: vehicle.model, engine: vehicle.engine },
-      followUpAnswers: answers,
+      followUpAnswers: refineAnswers,
       finalRankedCauses,
       confirmedFix: confirmedFix || undefined,
     };
@@ -934,7 +1111,7 @@ function LikelyCausesPanel({
 
       doc.save(`carcode-diagnosis-${Date.now()}.pdf`);
     } catch {
-      // If PDF generation fails, silently ignore (user can still download text).
+      // ignore
     } finally {
       setExportingPdf(false);
     }
@@ -943,8 +1120,8 @@ function LikelyCausesPanel({
   return (
     <div className="space-y-4">
       <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div className="flex-1 min-w-0">
             <div className={cn("text-[11px] font-medium", t("text-slate-400", "text-slate-500"))}>DIAGNOSTIC SUMMARY</div>
             {result?.dtcLookup && result.dtcLookup.length > 0 ? (
               <div className="mt-2 space-y-2">
@@ -974,7 +1151,7 @@ function LikelyCausesPanel({
                 <div className={cn("text-2xl font-semibold tracking-tight", t("text-white", "text-slate-900"))}>
                   {result?.summary_title || tr("likelyCauses", lang)}
                 </div>
-                {Object.keys(answers).length > 0 && (
+                {Object.keys(refineAnswers).length > 0 && (
                   <span className={cn("rounded-full px-2.5 py-0.5 text-[11px] font-medium", t("bg-blue-500/20 text-blue-300 border border-blue-500/30", "bg-blue-50 text-blue-700 border border-blue-200"))}>
                     {tr("updatedBasedOnAnswers", lang)}
                   </span>
@@ -985,7 +1162,7 @@ function LikelyCausesPanel({
               Tap a cause to see how to confirm it and how to fix it.
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-start gap-2 md:justify-end min-w-0">
             <button
               type="button"
               onClick={handleGuideMeClick}
@@ -1070,12 +1247,43 @@ function LikelyCausesPanel({
         </div>
       </div>
 
-      {answers.checkEngineLight === "flashing" && (
+      {refineAnswers.checkEngineLight === "flashing" && (
         <div className={cn("rounded-3xl p-4", t("bg-amber-500/15 border border-amber-500/30", "bg-amber-50 border border-amber-200"))}>
           <div className={cn("text-sm font-semibold", t("text-amber-200", "text-amber-800"))}>⚠ Flashing check engine light</div>
           <p className={cn("mt-1 text-xs", t("text-amber-300/90", "text-amber-700"))}>A flashing light often indicates a severe misfire. Reduce load and consider having the vehicle checked soon.</p>
         </div>
       )}
+
+      <div className={cn("rounded-3xl p-6", t("glass-card", "bg-white border border-slate-200 shadow-sm"))}>
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("startHere", lang)}</div>
+            <div className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>Three fastest checks (5–10 min each) based on your top causes.</div>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          {quickChecks.map((qc) => (
+            <div key={qc.id} className={cn("rounded-2xl p-4", t("border border-white/10 bg-white/5", "border border-slate-200 bg-slate-50"))}>
+              <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>{qc.title}</div>
+              <div className={cn("mt-1 text-[11px]", t("text-slate-400", "text-slate-500"))}>{qc.eta}</div>
+              <ol className={cn("mt-3 space-y-2 text-sm", t("text-slate-300", "text-slate-600"))}>
+                {qc.steps.slice(0, 2).map((s, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className={cn("mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-lg text-[11px] font-bold", t("bg-blue-500/20 text-blue-300", "bg-blue-100 text-blue-700"))}>{i + 1}</span>
+                    <span className="min-w-0">{s}</span>
+                  </li>
+                ))}
+              </ol>
+              <div className={cn("mt-3 text-[11px] leading-relaxed", t("text-slate-400", "text-slate-500"))}>
+                <div className="font-semibold">If OK:</div>
+                <div>{qc.meaningPass}</div>
+                <div className="mt-2 font-semibold">If not:</div>
+                <div>{qc.meaningFail}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
 
       <div ref={refineRef} id="refine-diagnosis" className={cn("rounded-3xl p-6", t("glass-card", "bg-white border border-slate-200 shadow-sm"))}>
         <div className="flex items-start justify-between gap-3">
@@ -1085,26 +1293,26 @@ function LikelyCausesPanel({
           </div>
           <button
             type="button"
-            onClick={() => setAnswers({})}
+            onClick={() => setRefineAnswers({})}
             className={cn("rounded-xl px-3 py-2 text-xs font-semibold transition-all", t("border border-white/10 bg-white/10 text-slate-300 hover:bg-white/20", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"))}
           >
             Reset
           </button>
         </div>
         <div className="mt-4 grid gap-4 md:grid-cols-2">
-          {REFINE_QUESTIONS.map((fq) => (
+          {followUps.map((fq) => (
             <div key={fq.id} className={cn("rounded-2xl p-4", t("border border-white/10 bg-white/5", "border border-slate-200 bg-slate-50"))}>
               <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>{fq.prompt}</div>
               <div className="mt-3 flex flex-wrap gap-2">
                 {fq.options.map((opt) => {
-                  const selected = answers[fq.id] === opt.id;
-                  const isFirstOption = fq.id === REFINE_QUESTIONS[0].id && opt.id === REFINE_QUESTIONS[0].options[0].id;
+                  const selected = refineAnswers[fq.id] === opt.id;
+                  const isFirstOption = followUps[0] && fq.id === followUps[0].id && opt.id === followUps[0].options[0]?.id;
                   return (
                     <button
                       key={opt.id}
                       type="button"
                       {...(isFirstOption ? { "data-refine-first": true } : {})}
-                      onClick={() => setAnswers((prev) => ({ ...prev, [fq.id]: opt.id }))}
+                      onClick={() => setRefineAnswers((prev) => ({ ...prev, [fq.id]: opt.id }))}
                       className={cn(
                         "rounded-full px-3 py-1.5 text-[11px] font-medium transition-all",
                         selected
@@ -1138,10 +1346,10 @@ function LikelyCausesPanel({
             </button>
           </div>
 
-          {enriched.length > 0 && (
+          {rankedCauses.length > 0 && (
             <div className="mt-5">
               {(() => {
-                const cause = enriched[Math.min(guideCauseIdx, enriched.length - 1)];
+                const cause = rankedCauses[Math.min(guideCauseIdx, rankedCauses.length - 1)];
                 const tests = (cause.confirm || []).length ? (cause.confirm || []) : ["Do a basic visual inspection related to this cause (loose connectors, leaks, abnormal noises)."];
                 const step = tests[Math.min(guideStepIdx, tests.length - 1)];
                 return (
@@ -1149,7 +1357,7 @@ function LikelyCausesPanel({
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className={cn("text-xs font-semibold", t("text-slate-300", "text-slate-600"))}>
-                          Step {Math.min(guideStepIdx + 1, tests.length)} of {tests.length} • Cause {Math.min(guideCauseIdx + 1, enriched.length)} of {enriched.length}
+                          Step {Math.min(guideStepIdx + 1, tests.length)} of {tests.length} • Cause {Math.min(guideCauseIdx + 1, rankedCauses.length)} of {rankedCauses.length}
                         </div>
                         <div className={cn("mt-1 text-sm font-semibold", t("text-white", "text-slate-900"))}>{cause.title}</div>
                         {!guideFixMode ? (
@@ -1193,7 +1401,7 @@ function LikelyCausesPanel({
                                 if (guideStepIdx + 1 < tests.length) {
                                   setGuideStepIdx(guideStepIdx + 1);
                                 } else {
-                                  setGuideCauseIdx((i) => Math.min(i + 1, enriched.length - 1));
+                                  setGuideCauseIdx((i) => Math.min(i + 1, rankedCauses.length - 1));
                                   setGuideStepIdx(0);
                                 }
                               }}
@@ -1215,7 +1423,7 @@ function LikelyCausesPanel({
                               type="button"
                               onClick={() => {
                                 setGuideFixMode(false);
-                                setGuideCauseIdx((i) => Math.min(i + 1, enriched.length - 1));
+                                setGuideCauseIdx((i) => Math.min(i + 1, rankedCauses.length - 1));
                                 setGuideStepIdx(0);
                               }}
                               className={cn("rounded-xl px-3 py-2 text-xs font-semibold transition-all", t("border border-white/10 bg-white/10 text-slate-300 hover:bg-white/20", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"))}
@@ -1242,14 +1450,16 @@ function LikelyCausesPanel({
       )}
 
       <div className="space-y-3">
-        {enriched.map((c, idx) => {
+        {rankedCauses.map((c, idx) => {
           const isOpen = openCauseId === c.id;
           const severityConfig = {
             high: { label: tr("mostLikely", lang), bg: t("bg-red-500/15 text-red-300 border-red-500/30", "bg-red-50 text-red-600 border-red-200"), dot: "bg-red-400" },
             medium: { label: tr("possible", lang), bg: t("bg-yellow-500/15 text-yellow-300 border-yellow-500/30", "bg-yellow-50 text-yellow-600 border-yellow-200"), dot: "bg-yellow-400" },
             low: { label: tr("lessLikely", lang), bg: t("bg-slate-500/15 text-slate-300 border-slate-500/30", "bg-slate-100 text-slate-500 border-slate-200"), dot: "bg-slate-400" },
           };
-          const sev = severityConfig[c.severity || "medium"];
+          // Use rank to determine visible tier tags so re-ranking is obvious.
+          const rankTier = idx === 0 ? "high" : idx <= 2 ? "medium" : "low";
+          const sev = severityConfig[rankTier];
           const diffConfig: Record<string, { icon: React.ReactNode; color: string }> = {
             "DIY Easy": { icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>, color: t("text-emerald-400", "text-emerald-600") },
             "DIY Moderate": { icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>, color: t("text-yellow-400", "text-yellow-600") },
@@ -1280,6 +1490,19 @@ function LikelyCausesPanel({
                         <span className={cn("h-1.5 w-1.5 rounded-full", confPill(c).dot)} />
                         {tr("confidence", lang)} {confPill(c).label}
                       </span>
+                      {hasRefinements && typeof (c as any).confidenceDeltaPct === "number" && (c as any).confidenceDeltaPct !== 0 && (
+                        <span
+                          className={cn(
+                            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold",
+                            (c as any).confidenceDeltaPct > 0
+                              ? t("bg-emerald-500/15 text-emerald-300 border-emerald-500/30", "bg-emerald-50 text-emerald-700 border-emerald-200")
+                              : t("bg-red-500/15 text-red-300 border-red-500/30", "bg-red-50 text-red-700 border-red-200")
+                          )}
+                        >
+                          {(c as any).confidenceDeltaPct > 0 ? "+" : ""}
+                          {(c as any).confidenceDeltaPct}%
+                        </span>
+                      )}
                       <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold", urgencyPill(c.urgency).cls)}>
                         <span className={cn("h-1.5 w-1.5 rounded-full", urgencyPill(c.urgency).dot)} />
                         {tr("urgency", lang)} {urgencyPill(c.urgency).label}
@@ -1307,11 +1530,6 @@ function LikelyCausesPanel({
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     <div className={cn("rounded-2xl p-4", t("border border-white/10 bg-white/5", "border border-slate-200 bg-slate-50"))}>
                       <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>{tr("whyLikely", lang)}</div>
-                      {(c as { refineReason?: string }).refineReason && (
-                        <div className={cn("mt-2 rounded-xl px-3 py-2 text-xs", t("bg-blue-500/10 text-blue-300 border border-blue-500/20", "bg-blue-50 text-blue-700 border border-blue-200"))}>
-                          {tr("whyMoved", lang)}: {(c as { refineReason?: string }).refineReason}
-                        </div>
-                      )}
                       <ul className={cn("mt-2 space-y-2 text-sm", t("text-slate-300", "text-slate-600"))}>
                         {(c.whyLikely || []).map((w: string, i: number) => (
                           <li key={i} className="flex items-start gap-2">
@@ -1450,12 +1668,11 @@ export default function Home() {
 
   const [maintenanceRecords, setMaintenanceRecords] = useState<Record<string, MaintenanceRecord[]>>({});
 
-  const diagnosisStorageKey = useMemo(() => {
-    const uid = session?.user?.id ? String(session.user.id).trim() : "";
-    return uid ? `carcode_diagnosis_sessions_v1:user:${uid}` : "carcode_diagnosis_sessions_v1:anon";
-  }, [session?.user?.id]);
-  const prevDiagnosisKey = useRef<string>(diagnosisStorageKey);
   const [diagnosisSessions, setDiagnosisSessions] = useState<Record<string, DiagnosisSession[]>>({});
+  const diagnosisStorageKey = session?.user?.id
+    ? `carcode_diagnosis_sessions_v1:user:${session.user.id}`
+    : "carcode_diagnosis_sessions_v1:anon";
+  const prevDiagnosisStorageKey = useRef<string>(diagnosisStorageKey);
 
   const [codesSearch, setCodesSearch] = useState("");
   const [codesCategory, setCodesCategory] = useState<string | null>(null);
@@ -1498,6 +1715,21 @@ export default function Home() {
     } catch {}
     // Diagnosis sessions are loaded in a dedicated effect (keyed by user/anon).
     try {
+      // Clear previous account's cached diagnosis sessions on user change/sign-out (privacy).
+      if (prevDiagnosisStorageKey.current !== diagnosisStorageKey) {
+        try {
+          localStorage.removeItem(prevDiagnosisStorageKey.current);
+        } catch {}
+        prevDiagnosisStorageKey.current = diagnosisStorageKey;
+        setDiagnosisSessions({});
+      }
+      const rawDiag = localStorage.getItem(diagnosisStorageKey);
+      if (rawDiag) {
+        const parsed = JSON.parse(rawDiag);
+        setDiagnosisSessions(parsed && typeof parsed === "object" ? parsed : {});
+      }
+    } catch {}
+    try {
       if (!localStorage.getItem("carcode_onboarded_v1")) {
         setShowOnboarding(true);
       }
@@ -1523,9 +1755,9 @@ export default function Home() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     // Clear previous account's cached sessions on user change/sign-out (privacy).
-    if (prevDiagnosisKey.current !== diagnosisStorageKey) {
-      try { window.localStorage.removeItem(prevDiagnosisKey.current); } catch {}
-      prevDiagnosisKey.current = diagnosisStorageKey;
+    if (prevDiagnosisStorageKey.current !== diagnosisStorageKey) {
+      try { window.localStorage.removeItem(prevDiagnosisStorageKey.current); } catch {}
+      prevDiagnosisStorageKey.current = diagnosisStorageKey;
     }
     try {
       const raw = window.localStorage.getItem(diagnosisStorageKey);
@@ -1552,12 +1784,6 @@ export default function Home() {
     } catch {}
   }, [diagnosisSessions, diagnosisStorageKey]);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem("carcode_lang", lang);
-    } catch {}
-  }, [lang]);
-
   function saveDiagnosisSession(sessionToSave: DiagnosisSession) {
     if (!sessionToSave?.vehicleId) return;
     setDiagnosisSessions((prev) => ({
@@ -1574,6 +1800,12 @@ export default function Home() {
       [vehicleId]: (prev[vehicleId] || []).filter((s) => s.id !== sessionId),
     }));
   }
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("carcode_lang", lang);
+    } catch {}
+  }, [lang]);
 
   function addMaintenanceRecord(vehicleId: string, fd: FormData) {
     const mileageUnitRaw = String(fd.get("maint_mileage_unit") || "km").toLowerCase();

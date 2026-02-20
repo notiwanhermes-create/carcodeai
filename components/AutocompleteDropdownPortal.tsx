@@ -99,11 +99,11 @@
     pointerEvents: "auto",
    };
  
-   return createPortal(
-    <div ref={containerRef} className={className} style={style} onMouseDown={(e) => e.preventDefault()}>
+  return createPortal(
+    <div ref={containerRef} className={className} style={{ ...style, isolation: "isolate" as const }} onMouseDown={(e) => e.preventDefault()}>
        {children}
-     </div>,
-     portalEl
-   );
+    </div>,
+    portalEl
+  );
  }
 

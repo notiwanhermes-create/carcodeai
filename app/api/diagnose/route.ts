@@ -27,19 +27,50 @@ type CodeDefinitionPayload = {
   source: string | null;
 };
 
+/** Strip markdown code fences so we can parse JSON that the model wrapped in ```json ... ``` */
+function stripJsonFences(raw: string): string {
+  let s = raw.trim();
+  const jsonBlock = /^```(?:json)?\s*([\s\S]*?)```\s*$/i;
+  const m = s.match(jsonBlock);
+  if (m) s = m[1].trim();
+  return s;
+}
+
 function safeJsonParse(text: string) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(text.slice(start, end + 1));
-      } catch {}
+  for (const candidate of [text, stripJsonFences(text)]) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      const start = candidate.indexOf("{");
+      const end = candidate.lastIndexOf("}");
+      if (start >= 0 && end > start) {
+        try {
+          return JSON.parse(candidate.slice(start, end + 1));
+        } catch {}
+      }
     }
-    return null;
   }
+  return null;
+}
+
+/** Ensure parsed has a valid causes array; normalize items so each has title, why, severity, difficulty, confirm, fix. */
+function normalizeParsedResponse(parsed: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!parsed || typeof parsed !== "object") return null;
+  let causes = parsed.causes;
+  if (!Array.isArray(causes) || causes.length === 0) return null;
+  const normalized = causes.map((c: any) => {
+    if (!c || typeof c !== "object") return null;
+    return {
+      title: typeof c.title === "string" ? c.title : "Possible cause",
+      why: typeof c.why === "string" ? c.why : "",
+      severity: ["high", "medium", "low"].includes(c.severity) ? c.severity : "medium",
+      difficulty: typeof c.difficulty === "string" ? c.difficulty : "DIY Moderate",
+      confirm: Array.isArray(c.confirm) ? c.confirm.filter((x: unknown) => typeof x === "string") : [],
+      fix: Array.isArray(c.fix) ? c.fix.filter((x: unknown) => typeof x === "string") : [],
+    };
+  }).filter(Boolean);
+  if (normalized.length === 0) return null;
+  return { ...parsed, causes: normalized };
 }
 
 /** Always return JSON (no HTML). */
@@ -247,10 +278,9 @@ export async function POST(req: Request) {
 
     const hasVerifiedDefinition = defsForPrompt.length > 0;
 
-    // Keep system prompt tight to reduce input tokens.
-    const system = [
+    const systemBase = [
       "You are an automotive diagnostic assistant.",
-      "Return ONLY valid JSON (no markdown/backticks/extra text).",
+      "Respond with a single JSON object only. No markdown, no code fences, no explanation before or after.",
       `All text values MUST be in ${outputLanguage}.`,
       "Give 4–6 likely causes, ranked most→least likely.",
       "Each cause must have unique confirm and fix steps (no repeated generic advice).",
@@ -294,6 +324,9 @@ export async function POST(req: Request) {
       let lastErr: unknown = null;
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
+          const system = attempt > 0
+            ? systemBase + "\n\nCritical: Your entire response must be exactly one JSON object. Start with { and end with }. No ``` or other formatting."
+            : systemBase;
           const resp = await openai.responses.create({
             model: "gpt-4.1-mini",
             input: [
@@ -304,12 +337,17 @@ export async function POST(req: Request) {
             max_output_tokens: MAX_OUTPUT_TOKENS,
           });
           const text = resp.output_text || "";
-          const parsed = safeJsonParse(text);
+          const rawParsed = safeJsonParse(text);
+          const parsed = normalizeParsedResponse(rawParsed as Record<string, unknown> | null);
 
           if (!parsed || !parsed.causes) {
+            if (attempt < MAX_RETRIES) {
+              await sleep(jitterMs(400 * (attempt + 1)));
+              continue;
+            }
             return jsonResponse(
               {
-                error: "AI returned unexpected format. Try again with more symptoms.",
+                error: "The diagnosis didn’t come back in the right format. Please try again or add a bit more detail (e.g. when the noise happens, where it seems to come from).",
                 debug: text.slice(0, 500),
               },
               500

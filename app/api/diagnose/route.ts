@@ -229,7 +229,7 @@ export async function POST(req: Request) {
               {
                 error: "OBD-II code not in our database. We do not invent code meanings.",
                 code: normalizeCode(singleCode),
-                next: "Try symptoms or check our /codes page.",
+                next: "Try symptoms or describe the issue.",
               },
               404
             );

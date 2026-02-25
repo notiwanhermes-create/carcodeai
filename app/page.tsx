@@ -2162,24 +2162,21 @@ export default function Home() {
           {activeVehicle ? (
             <div className={cn("flex flex-wrap items-center justify-between gap-3 rounded-2xl px-4 sm:px-5 py-4 overflow-visible", cardStrongClass)}>
               <div className="flex items-center gap-3 min-w-0">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-500/20 overflow-hidden">
+                <div className="h-10 w-10 shrink-0 rounded-full bg-white/10 flex items-center justify-center overflow-hidden">
                   {(() => {
-                    // eslint-disable-next-line no-console -- temporary: confirm make value for logo mapping
-                    console.log("active make:", activeVehicle?.make);
                     const logoSrc = getMakeLogo(activeVehicle.make);
                     if (logoSrc) {
                       return (
                         <img
                           src={logoSrc}
-                          alt={`${activeVehicle.make} logo`}
-                          width={32}
-                          height={32}
-                          className="h-9 w-9 object-contain"
+                          alt=""
+                          className="h-7 w-7 object-contain"
+                          draggable={false}
                         />
                       );
                     }
                     return (
-                      <span className={cn("text-sm font-bold", t("text-blue-300", "text-blue-600"))}>
+                      <span className="text-sm font-semibold text-white/80">
                         {(activeVehicle?.make ?? "?")[0]}
                       </span>
                     );

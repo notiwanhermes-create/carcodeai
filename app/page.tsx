@@ -3,12 +3,13 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useSession, signOut } from "next-auth/react";
 import Link from "next/link";
+import Image from "next/image";
 import { ComboSelect } from "../components/ComboSelect";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { VehicleDeleteButton } from "../components/VehicleDeleteButton";
 import { LANGUAGES, tr, type LangCode } from "./data/translations";
 import { useGarageVehicles } from "./lib/useGarageVehicles";
-import { getMakeLogo } from "./lib/make-logos";
+import { MAKE_LOGOS } from "./lib/make-logos";
 type EngineOption =
   | string
   | {
@@ -2163,21 +2164,28 @@ export default function Home() {
               <div className="flex items-center gap-3 min-w-0">
                 <div className="h-10 w-10 shrink-0 rounded-full bg-white/10 flex items-center justify-center overflow-hidden">
                   {(() => {
-                    const logoSrc = getMakeLogo(activeVehicle.make);
-                    const makeLetter = (activeVehicle?.make ?? "?")[0];
+                    const makeKey = (activeVehicle?.make ?? "").trim().toLowerCase();
+                    const keyWithHyphens = makeKey.replace(/\s+/g, "-");
+                    const logoSrc = MAKE_LOGOS[keyWithHyphens] ?? MAKE_LOGOS[makeKey] ?? null;
+                    // eslint-disable-next-line no-console -- debug: if logoSrc is null, mapping key is missing or make string differs
+                    console.log("make:", activeVehicle?.make, "makeKey:", makeKey, "logoSrc:", logoSrc);
                     if (logoSrc) {
                       return (
-                        <MakeLogoImg
-                          src={logoSrc}
-                          alt=""
-                          fallbackLetter={makeLetter}
-                          theme={theme}
-                        />
+                        <div className="relative h-7 w-7">
+                          <Image
+                            src={logoSrc}
+                            alt={`${activeVehicle?.make ?? "Vehicle"} logo`}
+                            fill
+                            className="object-contain"
+                            sizes="28px"
+                            priority
+                          />
+                        </div>
                       );
                     }
                     return (
-                      <span className="text-sm font-semibold text-white/80">
-                        {makeLetter}
+                      <span className="text-sm font-semibold text-white/90">
+                        {(activeVehicle?.make ?? "?")[0].toUpperCase()}
                       </span>
                     );
                   })()}

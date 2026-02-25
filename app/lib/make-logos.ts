@@ -1,16 +1,10 @@
 /**
  * Maps vehicle make (lowercase key) to logo path under /public.
- * Add files to public/make-logos/ (e.g. bmw.svg or bmw.png).
- * Inline SVGs (data URLs) are used for makes that must show without a network request.
+ * Add files to public/make-logos/ (e.g. bmw.png). Verify in browser: http://localhost:3000/make-logos/bmw.png
+ * BMW uses bmw.svg until you add public/make-logos/bmw.png.
  */
-const BMW_LOGO_INLINE =
-  "data:image/svg+xml," +
-  encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="14" stroke="#fff" stroke-width="1.5" fill="rgba(255,255,255,0.08)"/><text x="16" y="21" text-anchor="middle" fill="#93c5fd" font-size="14" font-weight="700" font-family="system-ui,sans-serif">B</text></svg>'
-  );
-
 export const MAKE_LOGOS: Record<string, string> = {
-  bmw: BMW_LOGO_INLINE,
+  bmw: "/make-logos/bmw.svg",
   audi: "/make-logos/audi.svg",
   mercedes: "/make-logos/mercedes.svg",
   "mercedes-benz": "/make-logos/mercedes.svg",

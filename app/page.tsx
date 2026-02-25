@@ -40,6 +40,33 @@ type Vehicle = {
   vin?: string;
 };
 
+/** Renders logo img; on load error shows letter so we never get blank block. */
+function ActiveVehicleLogo({
+  logoSrc,
+  make,
+}: { logoSrc: string | null; make: string }) {
+  const [imgFailed, setImgFailed] = useState(false);
+  if (!logoSrc || imgFailed) {
+    return (
+      <span className="text-sm font-semibold text-white/90">
+        {(make || "?")[0].toUpperCase()}
+      </span>
+    );
+  }
+  return (
+    <img
+      src={`${logoSrc}?v=2`}
+      alt={`${make} logo`}
+      className="h-7 w-7 object-contain"
+      onError={(e) => {
+        console.log("LOGO FAILED:", logoSrc);
+        (e.currentTarget as HTMLImageElement).style.display = "none";
+        setImgFailed(true);
+      }}
+    />
+  );
+}
+
 type Cause = {
   title: string;
   why?: string;
@@ -2164,29 +2191,23 @@ export default function Home() {
               <div className="flex items-center gap-3 min-w-0">
                 <div className="h-10 w-10 shrink-0 rounded-full bg-white/10 flex items-center justify-center overflow-hidden">
                   {(() => {
-                    const makeKey = (activeVehicle?.make ?? "").trim().toLowerCase();
+                    // eslint-disable-next-line no-console -- debug: ensure make is resolved and logoSrc is correct
+                    console.log("[ACTIVE VEHICLE]", activeVehicle);
+                    console.log("[MAKE RAW]", activeVehicle?.make, (activeVehicle as { vehicle?: { make?: string } })?.vehicle?.make, (activeVehicle as { label?: string })?.label, (activeVehicle as { name?: string })?.name);
+                    const make =
+                      activeVehicle?.make ??
+                      (activeVehicle as { vehicle?: { make?: string } })?.vehicle?.make ??
+                      (typeof (activeVehicle as { label?: string })?.label === "string"
+                        ? (activeVehicle as { label: string }).label.split(" ")[1]
+                        : "") ??
+                      "";
+                    const makeKey = make.trim().toLowerCase();
                     const keyWithHyphens = makeKey.replace(/\s+/g, "-");
-                    const logoSrc = MAKE_LOGOS[keyWithHyphens] ?? MAKE_LOGOS[makeKey] ?? null;
-                    // eslint-disable-next-line no-console -- debug: if logoSrc is null, mapping key is missing or make string differs
-                    console.log("make:", activeVehicle?.make, "makeKey:", makeKey, "logoSrc:", logoSrc);
-                    if (logoSrc) {
-                      return (
-                        <div className="relative h-7 w-7">
-                          <Image
-                            src={logoSrc}
-                            alt={`${activeVehicle?.make ?? "Vehicle"} logo`}
-                            fill
-                            className="object-contain"
-                            sizes="28px"
-                            priority
-                          />
-                        </div>
-                      );
-                    }
+                    const logoSrc = makeKey
+                      ? (MAKE_LOGOS[keyWithHyphens] ?? MAKE_LOGOS[makeKey] ?? `/make-logos/${makeKey}.png`)
+                      : null;
                     return (
-                      <span className="text-sm font-semibold text-white/90">
-                        {(activeVehicle?.make ?? "?")[0].toUpperCase()}
-                      </span>
+                      <ActiveVehicleLogo logoSrc={logoSrc} make={make} />
                     );
                   })()}
                 </div>

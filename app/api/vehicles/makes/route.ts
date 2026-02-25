@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
 
-const VEHICLE_TYPES = [
-  "passenger%20car",
-  "multipurpose%20passenger%20vehicle%20(MPV)",
-  "truck",
-] as const;
-
 const CACHE_TTL_MS = 15 * 60 * 1000;
 let cache: { items: { id: number; name: string }[]; time: number } | null = null;
+
+/** Popular makes to pin at top when no search query (case-insensitive match). */
+const POPULAR_MAKES = [
+  "Toyota", "Honda", "Ford", "Chevrolet", "Nissan", "BMW", "Mercedes-Benz",
+  "Volkswagen", "Hyundai", "Kia", "Jeep", "GMC", "Ram", "Subaru", "Mazda",
+  "Audi", "Lexus", "Dodge", "Cadillac", "Tesla",
+].map((n) => n.toLowerCase());
 
 function normalize(s: string) {
   return s.trim().toLowerCase();
@@ -22,48 +23,49 @@ function scoreMake(name: string, q: string) {
   return 0;
 }
 
-async function fetchMakesForType(type: string) {
-  const url = `https://vpic.nhtsa.dot.gov/api/vehicles/GetMakesForVehicleType/${type}?format=json`;
+async function fetchAllMakesFromNHTSA(): Promise<{ id: number; name: string }[]> {
+  const url = "https://vpic.nhtsa.dot.gov/api/vehicles/GetAllMakes?format=json";
   const r = await fetch(url, { cache: "no-store" });
   if (!r.ok) return [];
   const data = await r.json();
-
-  // NHTSA commonly returns MakeId/MakeName (sometimes Make_ID/Make_Name)
-  const items: { id: number; name: string }[] = (data?.Results ?? [])
+  const results: any[] = data?.Results ?? [];
+  return results
     .map((x: any) => ({
       id: Number(x?.MakeId ?? x?.Make_ID ?? 0),
       name: String(x?.MakeName ?? x?.Make_Name ?? "").trim(),
     }))
-    .filter((x: any) => x.id > 0 && x.name);
-
-  return items;
+    .filter((x) => x.id > 0 && x.name);
 }
 
-async function getAllMakes() {
+async function getAllMakes(): Promise<{ id: number; name: string }[]> {
   const now = Date.now();
   if (cache && now - cache.time < CACHE_TTL_MS) return cache.items;
 
-  const lists = await Promise.all(VEHICLE_TYPES.map((t) => fetchMakesForType(t)));
-  const merged = lists.flat();
-
-  // de-dupe by id (best) fallback by normalized name
+  const all = await fetchAllMakesFromNHTSA();
   const byId = new Map<number, { id: number; name: string }>();
-  const byName = new Map<string, { id: number; name: string }>();
-
-  for (const m of merged) {
+  for (const m of all) {
     if (m.id && !byId.has(m.id)) byId.set(m.id, m);
-    else if (!m.id) {
-      const key = normalize(m.name);
-      if (!byName.has(key)) byName.set(key, m);
-    }
   }
-
-  const unique = Array.from(byId.values())
-    .concat(Array.from(byName.values()))
-    .sort((a, b) => a.name.localeCompare(b.name));
-
+  const unique = Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
   cache = { items: unique, time: now };
   return unique;
+}
+
+function pinPopularAtTop(items: { id: number; name: string }[]): { id: number; name: string }[] {
+  const popular: { id: number; name: string }[] = [];
+  const rest: { id: number; name: string }[] = [];
+  const seen = new Set<string>();
+  for (const m of items) {
+    const key = normalize(m.name);
+    if (POPULAR_MAKES.includes(key) && !seen.has(key)) {
+      popular.push(m);
+      seen.add(key);
+    } else {
+      rest.push(m);
+    }
+  }
+  popular.sort((a, b) => a.name.localeCompare(b.name));
+  return [...popular, ...rest];
 }
 
 export async function GET(request: Request) {
@@ -75,9 +77,8 @@ export async function GET(request: Request) {
     const all = await getAllMakes();
 
     if (!q) {
-      // keep response backwards compatible if UI expects strings:
-      // return NextResponse.json({ makes: all.map(m => m.name) });
-      return NextResponse.json({ makes: all }); // [{id,name}]
+      const withPopularFirst = pinPopularAtTop(all);
+      return NextResponse.json({ makes: withPopularFirst });
     }
 
     const ranked = all

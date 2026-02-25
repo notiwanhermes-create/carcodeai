@@ -1,10 +1,10 @@
 /**
  * Maps vehicle make (lowercase key) to logo path under /public.
- * Add files to public/make-logos/ (e.g. bmw.png). Verify in browser: http://localhost:3000/make-logos/bmw.png
- * BMW uses bmw.svg until you add public/make-logos/bmw.png.
+ * Files live at project ROOT: public/make-logos/ (e.g. public/make-logos/bmw.png).
+ * In app use src="/make-logos/bmw.png" (no "public/" prefix). Verify: http://localhost:3000/make-logos/bmw.png
  */
 export const MAKE_LOGOS: Record<string, string> = {
-  bmw: "/make-logos/bmw.svg",
+  bmw: "/make-logos/bmw.png",
   audi: "/make-logos/audi.svg",
   mercedes: "/make-logos/mercedes.svg",
   "mercedes-benz": "/make-logos/mercedes.svg",

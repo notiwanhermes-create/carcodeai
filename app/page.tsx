@@ -83,7 +83,7 @@ type MaintenanceRecord = {
 type DiagnosisUrgency = "Drive" | "Caution" | "Stop";
 type ConfidenceLabel = "High" | "Med" | "Low";
 
-/** Renders make logo image; on load error shows fallback letter so all brands show something. */
+/** Renders make logo image; on load error shows fallback letter so no broken image icon. */
 function MakeLogoImg({
   src,
   alt,
@@ -91,10 +91,10 @@ function MakeLogoImg({
   theme,
 }: { src: string; alt: string; fallbackLetter: string | null; theme: "dark" | "light" }) {
   const [failed, setFailed] = useState(false);
-  if (failed && fallbackLetter) {
+  if (failed) {
     return (
-      <span className={cn("text-sm font-bold", theme === "dark" ? "text-blue-300" : "text-blue-600")}>
-        {fallbackLetter}
+      <span className={cn("text-sm font-semibold", theme === "dark" ? "text-white/80" : "text-slate-600")}>
+        {fallbackLetter ?? "?"}
       </span>
     );
   }
@@ -102,9 +102,8 @@ function MakeLogoImg({
     <img
       src={src}
       alt={alt}
-      width={36}
-      height={36}
-      className="h-9 w-9 object-contain"
+      className="h-7 w-7 object-contain"
+      draggable={false}
       onError={() => setFailed(true)}
     />
   );
@@ -2165,19 +2164,20 @@ export default function Home() {
                 <div className="h-10 w-10 shrink-0 rounded-full bg-white/10 flex items-center justify-center overflow-hidden">
                   {(() => {
                     const logoSrc = getMakeLogo(activeVehicle.make);
+                    const makeLetter = (activeVehicle?.make ?? "?")[0];
                     if (logoSrc) {
                       return (
-                        <img
+                        <MakeLogoImg
                           src={logoSrc}
                           alt=""
-                          className="h-7 w-7 object-contain"
-                          draggable={false}
+                          fallbackLetter={makeLetter}
+                          theme={theme}
                         />
                       );
                     }
                     return (
                       <span className="text-sm font-semibold text-white/80">
-                        {(activeVehicle?.make ?? "?")[0]}
+                        {makeLetter}
                       </span>
                     );
                   })()}

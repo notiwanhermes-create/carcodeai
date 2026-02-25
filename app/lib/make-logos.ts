@@ -1,9 +1,9 @@
 /**
  * Maps vehicle make (lowercase key) to logo path under /public.
- * File must be at public/make-logos/<key>.png (e.g. public/make-logos/bmw.png).
+ * Add files to public/make-logos/ (e.g. bmw.svg or bmw.png).
  */
 export const MAKE_LOGOS: Record<string, string> = {
-  bmw: "/make-logos/bmw.png",
+  bmw: "/make-logos/bmw.svg",
   audi: "/make-logos/audi.svg",
   mercedes: "/make-logos/mercedes.svg",
   "mercedes-benz": "/make-logos/mercedes.svg",

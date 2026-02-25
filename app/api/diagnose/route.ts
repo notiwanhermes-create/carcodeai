@@ -84,6 +84,25 @@ function isRateLimit429(err: unknown): boolean {
   return e?.status === 429 || e?.code === "rate_limit_exceeded" || e?.error?.code === "rate_limit_exceeded";
 }
 
+/** Extract plain text from OpenAI Responses API result (handles output_text or output[] items). */
+function getResponseText(resp: { output_text?: string | null; output?: unknown[] }): string {
+  if (typeof resp.output_text === "string" && resp.output_text.trim()) return resp.output_text.trim();
+  if (Array.isArray(resp.output)) {
+    const parts: string[] = [];
+    for (const item of resp.output) {
+      const o = item as { type?: string; content?: unknown };
+      if (o?.type === "message" && Array.isArray(o.content)) {
+        for (const block of o.content) {
+          const b = block as { type?: string; text?: string };
+          if (b?.type === "output_text" && typeof b.text === "string") parts.push(b.text);
+        }
+      }
+    }
+    if (parts.length > 0) return parts.join("\n").trim();
+  }
+  return "";
+}
+
 function truncate(s: string, maxChars: number) {
   if (s.length <= maxChars) return s;
   return s.slice(0, Math.max(0, maxChars - 1)) + "…";
@@ -303,7 +322,7 @@ export async function POST(req: Request) {
             temperature: 0.2,
             max_output_tokens: MAX_OUTPUT_TOKENS,
           });
-          const text = resp.output_text || "";
+          const text = getResponseText(resp as { output_text?: string | null; output?: unknown[] });
           const parsed = safeJsonParse(text);
 
           if (!parsed || !parsed.causes) {
@@ -349,6 +368,11 @@ export async function POST(req: Request) {
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Server error.";
     const status = isRateLimit429(e) ? 429 : 500;
-    return jsonResponse({ error: message }, status);
+    // Log so Vercel/server logs show the real cause (e.g. OPENAI_API_KEY, DATABASE_URL, API errors).
+    console.error("[POST /api/diagnose]", message, e instanceof Error ? e.name : "");
+    const payload: { error: string; code?: string } = { error: message };
+    if (message.includes("OPENAI_API_KEY")) payload.code = "OPENAI_API_KEY";
+    else if (message.includes("DATABASE_URL")) payload.code = "DATABASE_URL";
+    return jsonResponse(payload, status);
   }
 }

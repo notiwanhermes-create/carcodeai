@@ -3,12 +3,14 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useSession, signOut } from "next-auth/react";
 import Link from "next/link";
+import Image from "next/image";
 import { ComboSelect } from "../components/ComboSelect";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { VehicleDeleteButton } from "../components/VehicleDeleteButton";
 import { COMMON_CODES, CATEGORY_LABELS } from "./data/common-codes";
 import { LANGUAGES, tr, type LangCode } from "./data/translations";
 import { useGarageVehicles } from "./lib/useGarageVehicles";
+import { getMakeLogo } from "./lib/make-logos";
 type EngineOption =
   | string
   | {
@@ -2329,13 +2331,27 @@ export default function Home() {
           {activeVehicle ? (
             <div className={cn("flex flex-wrap items-center justify-between gap-3 rounded-2xl px-4 sm:px-5 py-4 overflow-visible", cardStrongClass)}>
               <div className="flex items-center gap-3 min-w-0">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-500/20">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M7 17m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
-                    <path d="M17 17m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
-                    <path d="M5 17H3v-4l2-5h9l4 5h1a2 2 0 0 1 2 2v2h-2" />
-                    <path d="M9 17h6" />
-                  </svg>
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-500/20 overflow-hidden">
+                  {(() => {
+                    const logoSrc = getMakeLogo(activeVehicle.make);
+                    return logoSrc ? (
+                      <Image
+                        src={logoSrc}
+                        alt={`${activeVehicle.make} logo`}
+                        width={36}
+                        height={36}
+                        className="object-contain"
+                        priority
+                      />
+                    ) : (
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M7 17m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+                        <path d="M17 17m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
+                        <path d="M5 17H3v-4l2-5h9l4 5h1a2 2 0 0 1 2 2v2h-2" />
+                        <path d="M9 17h6" />
+                      </svg>
+                    );
+                  })()}
                 </div>
                 <div className="min-w-0">
                   <div className={cn("text-[10px] font-semibold uppercase tracking-wider", t("text-blue-400", "text-blue-600"))}>{tr("activeVehicle", lang)}</div>

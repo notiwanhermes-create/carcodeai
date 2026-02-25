@@ -2164,33 +2164,24 @@ export default function Home() {
               <div className="flex items-center gap-3 min-w-0">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-500/20 overflow-hidden">
                   {(() => {
+                    // eslint-disable-next-line no-console -- temporary: confirm make value for logo mapping
+                    console.log("active make:", activeVehicle?.make);
                     const logoSrc = getMakeLogo(activeVehicle.make);
-                    const makeName = (activeVehicle.make || "").trim();
-                    const initial = makeName ? makeName[0].toUpperCase() : null;
                     if (logoSrc) {
                       return (
-                        <MakeLogoImg
+                        <img
                           src={logoSrc}
                           alt={`${activeVehicle.make} logo`}
-                          fallbackLetter={initial}
-                          theme={theme}
+                          width={32}
+                          height={32}
+                          className="h-9 w-9 object-contain"
                         />
                       );
                     }
-                    if (initial) {
-                      return (
-                        <span className={cn("text-sm font-bold", t("text-blue-300", "text-blue-600"))}>
-                          {initial}
-                        </span>
-                      );
-                    }
                     return (
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M7 17m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
-                        <path d="M17 17m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
-                        <path d="M5 17H3v-4l2-5h9l4 5h1a2 2 0 0 1 2 2v2h-2" />
-                        <path d="M9 17h6" />
-                      </svg>
+                      <span className={cn("text-sm font-bold", t("text-blue-300", "text-blue-600"))}>
+                        {(activeVehicle?.make ?? "?")[0]}
+                      </span>
                     );
                   })()}
                 </div>

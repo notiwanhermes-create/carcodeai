@@ -1,9 +1,9 @@
 /**
  * Maps vehicle make (lowercase key) to logo path under /public.
- * Add or replace files in /public/make-logos/ (e.g. bmw.png, audi.svg).
+ * File must be at public/make-logos/<key>.png (e.g. public/make-logos/bmw.png).
  */
 export const MAKE_LOGOS: Record<string, string> = {
-  bmw: "/make-logos/bmw.svg",
+  bmw: "/make-logos/bmw.png",
   audi: "/make-logos/audi.svg",
   mercedes: "/make-logos/mercedes.svg",
   "mercedes-benz": "/make-logos/mercedes.svg",
@@ -38,9 +38,10 @@ export const MAKE_LOGOS: Record<string, string> = {
   bentley: "/make-logos/bentley.svg",
 };
 
+/** Normalize make to lookup key (trim + lowercase; spaces → hyphens for "mercedes-benz"). */
 export function getMakeLogo(make?: string): string | null {
   if (!make) return null;
-  const raw = make.trim().toLowerCase();
-  const keyWithHyphens = raw.replace(/\s+/g, "-");
-  return MAKE_LOGOS[keyWithHyphens] ?? MAKE_LOGOS[raw] ?? null;
+  const makeKey = make.trim().toLowerCase();
+  const keyWithHyphens = makeKey.replace(/\s+/g, "-");
+  return MAKE_LOGOS[keyWithHyphens] ?? MAKE_LOGOS[makeKey] ?? null;
 }

@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useSession, signOut } from "next-auth/react";
 import Link from "next/link";
-import Image from "next/image";
 import { ComboSelect } from "../components/ComboSelect";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { VehicleDeleteButton } from "../components/VehicleDeleteButton";
@@ -83,6 +82,33 @@ type MaintenanceRecord = {
 
 type DiagnosisUrgency = "Drive" | "Caution" | "Stop";
 type ConfidenceLabel = "High" | "Med" | "Low";
+
+/** Renders make logo image; on load error shows fallback letter so all brands show something. */
+function MakeLogoImg({
+  src,
+  alt,
+  fallbackLetter,
+  theme,
+}: { src: string; alt: string; fallbackLetter: string | null; theme: "dark" | "light" }) {
+  const [failed, setFailed] = useState(false);
+  if (failed && fallbackLetter) {
+    return (
+      <span className={cn("text-sm font-bold", theme === "dark" ? "text-blue-300" : "text-blue-600")}>
+        {fallbackLetter}
+      </span>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt={alt}
+      width={36}
+      height={36}
+      className="h-9 w-9 object-contain"
+      onError={() => setFailed(true)}
+    />
+  );
+}
 
 type FollowUpQuestionOption = { id: string; label: string };
 type FollowUpQuestion = { id: string; prompt: string; options: FollowUpQuestionOption[] };
@@ -2139,16 +2165,26 @@ export default function Home() {
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-500/20 overflow-hidden">
                   {(() => {
                     const logoSrc = getMakeLogo(activeVehicle.make);
-                    return logoSrc ? (
-                      <Image
-                        src={logoSrc}
-                        alt={`${activeVehicle.make} logo`}
-                        width={36}
-                        height={36}
-                        className="object-contain"
-                        priority
-                      />
-                    ) : (
+                    const makeName = (activeVehicle.make || "").trim();
+                    const initial = makeName ? makeName[0].toUpperCase() : null;
+                    if (logoSrc) {
+                      return (
+                        <MakeLogoImg
+                          src={logoSrc}
+                          alt={`${activeVehicle.make} logo`}
+                          fallbackLetter={initial}
+                          theme={theme}
+                        />
+                      );
+                    }
+                    if (initial) {
+                      return (
+                        <span className={cn("text-sm font-bold", t("text-blue-300", "text-blue-600"))}>
+                          {initial}
+                        </span>
+                      );
+                    }
+                    return (
                       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M7 17m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />
                         <path d="M17 17m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" />

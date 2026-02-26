@@ -55,7 +55,7 @@ function ActiveVehicleLogo({
   }
   return (
     <img
-      src={`${logoSrc}?v=2`}
+      src={`${logoSrc}?v=3`}
       alt={`${make} logo`}
       className="h-7 w-7 object-contain"
       onError={(e) => {
@@ -2190,6 +2190,13 @@ export default function Home() {
             <div className={cn("flex flex-wrap items-center justify-between gap-3 rounded-2xl px-4 sm:px-5 py-4 overflow-visible", cardStrongClass)}>
               <div className="flex items-center gap-3 min-w-0">
                 <div className="h-10 w-10 shrink-0 rounded-full bg-white/10 flex items-center justify-center overflow-hidden">
+                  {/* Temporary: verify BMW logo dimensions (remove when done debugging) */}
+                  <img
+                    src="/make-logos/bmw.png?v=3"
+                    alt=""
+                    onLoad={(e) => console.log("BMW logo size:", e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
+                    className="hidden"
+                  />
                   {(() => {
                     // eslint-disable-next-line no-console -- debug: ensure make is resolved and logoSrc is correct
                     console.log("[ACTIVE VEHICLE]", activeVehicle);

@@ -2194,12 +2194,11 @@ export default function Home() {
                     // eslint-disable-next-line no-console -- debug: ensure make is resolved and logoSrc is correct
                     console.log("[ACTIVE VEHICLE]", activeVehicle);
                     console.log("[MAKE RAW]", activeVehicle?.make, (activeVehicle as { vehicle?: { make?: string } })?.vehicle?.make, (activeVehicle as { label?: string })?.label, (activeVehicle as { name?: string })?.name);
+                    const labelRaw = (activeVehicle as { label?: string })?.label;
                     const make =
                       activeVehicle?.make ??
                       (activeVehicle as { vehicle?: { make?: string } })?.vehicle?.make ??
-                      (typeof (activeVehicle as { label?: string })?.label === "string"
-                        ? (activeVehicle as { label: string }).label.split(" ")[1]
-                        : "") ??
+                      (typeof labelRaw === "string" ? labelRaw.split(" ")[1] ?? "" : "") ??
                       "";
                     const makeKey = make.trim().toLowerCase();
                     const keyWithHyphens = makeKey.replace(/\s+/g, "-");

@@ -9,7 +9,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { VehicleDeleteButton } from "../components/VehicleDeleteButton";
 import { LANGUAGES, tr, type LangCode } from "./data/translations";
 import { useGarageVehicles } from "./lib/useGarageVehicles";
-import { MAKE_LOGOS } from "./lib/make-logos";
+import { MAKE_LOGOS, BMW_LOGO } from "./lib/make-logos";
 type EngineOption =
   | string
   | {
@@ -2190,17 +2190,7 @@ export default function Home() {
             <div className={cn("flex flex-wrap items-center justify-between gap-3 rounded-2xl px-4 sm:px-5 py-4 overflow-visible", cardStrongClass)}>
               <div className="flex items-center gap-3 min-w-0">
                 <div className="h-10 w-10 shrink-0 rounded-full bg-white/10 flex items-center justify-center overflow-hidden">
-                  {/* Temporary: verify BMW logo dimensions (remove when done debugging) */}
-                  <img
-                    src="/make-logos/bmw.png?v=3"
-                    alt=""
-                    onLoad={(e) => console.log("BMW logo size:", e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
-                    className="hidden"
-                  />
                   {(() => {
-                    // eslint-disable-next-line no-console -- debug: ensure make is resolved and logoSrc is correct
-                    console.log("[ACTIVE VEHICLE]", activeVehicle);
-                    console.log("[MAKE RAW]", activeVehicle?.make, (activeVehicle as { vehicle?: { make?: string } })?.vehicle?.make, (activeVehicle as { label?: string })?.label, (activeVehicle as { name?: string })?.name);
                     const labelRaw = (activeVehicle as { label?: string })?.label;
                     const make =
                       activeVehicle?.make ??
@@ -2210,8 +2200,17 @@ export default function Home() {
                     const makeKey = make.trim().toLowerCase();
                     const keyWithHyphens = makeKey.replace(/\s+/g, "-");
                     const logoSrc = makeKey
-                      ? (MAKE_LOGOS[keyWithHyphens] ?? MAKE_LOGOS[makeKey] ?? `/make-logos/${makeKey}.png`)
+                      ? (MAKE_LOGOS[keyWithHyphens] ?? MAKE_LOGOS[makeKey] ?? `/make-logos/${makeKey}.svg`)
                       : null;
+                    if (makeKey === "bmw") {
+                      return (
+                        <img
+                          src={BMW_LOGO}
+                          alt="BMW logo"
+                          className="h-7 w-7 object-contain"
+                        />
+                      );
+                    }
                     return (
                       <ActiveVehicleLogo logoSrc={logoSrc} make={make} />
                     );

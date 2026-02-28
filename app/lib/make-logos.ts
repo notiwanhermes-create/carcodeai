@@ -2,8 +2,10 @@
  * Maps vehicle make (lowercase key) to logo path under /public.
  * Use 256x256+ PNG or SVG. Verify in prod: https://www.carcodeai.com/make-logos/bmw.svg
  */
+export const BMW_LOGO = "/make-logos/bmw.svg" as const;
+
 export const MAKE_LOGOS: Record<string, string> = {
-  bmw: "/make-logos/bmw.svg",
+  bmw: BMW_LOGO,
   audi: "/make-logos/audi.svg",
   mercedes: "/make-logos/mercedes.svg",
   "mercedes-benz": "/make-logos/mercedes.svg",

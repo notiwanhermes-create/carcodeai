@@ -1,4 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
-  <circle cx="128" cy="128" r="112" stroke="#e2e8f0" stroke-width="12" fill="rgba(255,255,255,0.08)"/>
-  <circle cx="128" cy="128" r="48" fill="#94a3b8"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Outer blue ring (Bavarian blue #003478) -->
+  <circle cx="128" cy="128" r="120" fill="#003478"/>
+  <circle cx="128" cy="128" r="96" fill="#fff"/>
+  <!-- Four quadrants: blue on top-left and bottom-right, white on top-right and bottom-left -->
+  <path fill="#003478" d="M128 128 L32 128 A 96 96 0 0 1 128 32 Z"/>
+  <path fill="#003478" d="M128 128 L224 128 A 96 96 0 0 1 128 224 Z"/>
 </svg>

@@ -1,49 +1,43 @@
 /**
- * Maps vehicle make (lowercase key) to logo path under /public.
- * Use 256x256+ PNG or SVG. Verify in prod: https://www.carcodeai.com/make-logos/bmw.svg
+ * Normalize vehicle make for logo lookup. Aliases map to canonical keys
+ * that match filenames in /public/make-logos/{key}.svg
  */
-export const BMW_LOGO = "/make-logos/bmw.svg" as const;
-
-export const MAKE_LOGOS: Record<string, string> = {
-  bmw: BMW_LOGO,
-  audi: "/make-logos/audi.svg",
-  mercedes: "/make-logos/mercedes.svg",
-  "mercedes-benz": "/make-logos/mercedes.svg",
-  toyota: "/make-logos/toyota.svg",
-  honda: "/make-logos/honda.svg",
-  ford: "/make-logos/ford.svg",
-  chevrolet: "/make-logos/chevrolet.svg",
-  nissan: "/make-logos/nissan.svg",
-  volkswagen: "/make-logos/volkswagen.svg",
-  vw: "/make-logos/volkswagen.svg",
-  hyundai: "/make-logos/hyundai.svg",
-  kia: "/make-logos/kia.svg",
-  mazda: "/make-logos/mazda.svg",
-  subaru: "/make-logos/subaru.svg",
-  jeep: "/make-logos/jeep.svg",
-  ram: "/make-logos/ram.svg",
-  gmc: "/make-logos/gmc.svg",
-  lexus: "/make-logos/lexus.svg",
-  acura: "/make-logos/acura.svg",
-  infiniti: "/make-logos/infiniti.svg",
-  cadillac: "/make-logos/cadillac.svg",
-  buick: "/make-logos/buick.svg",
-  chrysler: "/make-logos/chrysler.svg",
-  dodge: "/make-logos/dodge.svg",
-  volvo: "/make-logos/volvo.svg",
-  "land rover": "/make-logos/land-rover.svg",
-  landrover: "/make-logos/land-rover.svg",
-  jaguar: "/make-logos/jaguar.svg",
-  porsche: "/make-logos/porsche.svg",
-  mini: "/make-logos/mini.svg",
-  bently: "/make-logos/bentley.svg",
-  bentley: "/make-logos/bentley.svg",
+export const MAKE_ALIASES: Record<string, string> = {
+  mercedes: "mercedes-benz",
+  "mercedes benz": "mercedes-benz",
+  "mercedes-benz": "mercedes-benz",
+  vw: "volkswagen",
+  "land rover": "land-rover",
+  landrover: "land-rover",
+  "range rover": "land-rover",
+  chevy: "chevrolet",
+  bently: "bentley",
 };
 
-/** Normalize make to lookup key (trim + lowercase; spaces → hyphens for "mercedes-benz"). */
+/** Filename stems (no extension) for logo files in /public/make-logos/{key}.svg */
+const MAKES_WITH_LOGOS = new Set([
+  "acura", "audi", "bentley", "bmw", "buick", "cadillac", "chevrolet", "chrysler",
+  "dodge", "ford", "gmc", "honda", "hyundai", "infiniti", "jaguar", "jeep", "kia",
+  "land-rover", "lexus", "lincoln", "mazda", "mercedes", "mini", "mitsubishi",
+  "nissan", "porsche", "ram", "subaru", "tesla", "toyota", "volkswagen", "volvo",
+]);
+
+export function normalizeMake(make?: string): string {
+  const raw = (make ?? "").trim().toLowerCase();
+  if (!raw) return "";
+  const withHyphens = raw.replace(/\s+/g, "-");
+  return MAKE_ALIASES[raw] ?? MAKE_ALIASES[withHyphens] ?? withHyphens;
+}
+
+/**
+ * Returns the logo path for the make, or null if no logo file exists.
+ * Uses .svg assets in /public/make-logos/
+ */
 export function getMakeLogo(make?: string): string | null {
-  if (!make) return null;
-  const makeKey = make.trim().toLowerCase();
-  const keyWithHyphens = makeKey.replace(/\s+/g, "-");
-  return MAKE_LOGOS[keyWithHyphens] ?? MAKE_LOGOS[makeKey] ?? null;
+  const key = normalizeMake(make);
+  if (!key) return null;
+  // mercedes-benz and mercedes both use mercedes.svg
+  const fileKey = key === "mercedes-benz" ? "mercedes" : key;
+  if (!MAKES_WITH_LOGOS.has(fileKey)) return null;
+  return `/make-logos/${fileKey}.svg`;
 }

@@ -9,7 +9,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { VehicleDeleteButton } from "../components/VehicleDeleteButton";
 import { LANGUAGES, tr, type LangCode } from "./data/translations";
 import { useGarageVehicles } from "./lib/useGarageVehicles";
-import { MAKE_LOGOS, BMW_LOGO } from "./lib/make-logos";
+import { getMakeLogo } from "./lib/make-logos";
 type EngineOption =
   | string
   | {
@@ -39,33 +39,6 @@ type Vehicle = {
   nickname?: string;
   vin?: string;
 };
-
-/** Renders logo img; on load error shows letter so we never get blank block. */
-function ActiveVehicleLogo({
-  logoSrc,
-  make,
-}: { logoSrc: string | null; make: string }) {
-  const [imgFailed, setImgFailed] = useState(false);
-  if (!logoSrc || imgFailed) {
-    return (
-      <span className="text-sm font-semibold text-white/90">
-        {(make || "?")[0].toUpperCase()}
-      </span>
-    );
-  }
-  return (
-    <img
-      src={`${logoSrc}?v=3`}
-      alt={`${make} logo`}
-      className="h-7 w-7 object-contain"
-      onError={(e) => {
-        console.log("LOGO FAILED:", logoSrc);
-        (e.currentTarget as HTMLImageElement).style.display = "none";
-        setImgFailed(true);
-      }}
-    />
-  );
-}
 
 type Cause = {
   title: string;
@@ -2189,7 +2162,7 @@ export default function Home() {
           {activeVehicle ? (
             <div className={cn("flex flex-wrap items-center justify-between gap-3 rounded-2xl px-4 sm:px-5 py-4 overflow-visible", cardStrongClass)}>
               <div className="flex items-center gap-3 min-w-0">
-                <div className="h-10 w-10 shrink-0 rounded-full bg-white/10 flex items-center justify-center overflow-hidden">
+                <div className="h-10 w-10 shrink-0 rounded-full bg-white/10 flex items-center justify-center overflow-hidden relative">
                   {(() => {
                     const labelRaw = (activeVehicle as { label?: string })?.label;
                     const make =
@@ -2197,22 +2170,33 @@ export default function Home() {
                       (activeVehicle as { vehicle?: { make?: string } })?.vehicle?.make ??
                       (typeof labelRaw === "string" ? labelRaw.split(" ")[1] ?? "" : "") ??
                       "";
-                    const makeKey = make.trim().toLowerCase();
-                    const keyWithHyphens = makeKey.replace(/\s+/g, "-");
-                    const logoSrc = makeKey
-                      ? (MAKE_LOGOS[keyWithHyphens] ?? MAKE_LOGOS[makeKey] ?? `/make-logos/${makeKey}.svg`)
-                      : null;
-                    if (makeKey === "bmw") {
-                      return (
-                        <img
-                          src={BMW_LOGO}
-                          alt="BMW logo"
-                          className="h-7 w-7 object-contain"
-                        />
-                      );
-                    }
+                    const logoSrc = getMakeLogo(make);
                     return (
-                      <ActiveVehicleLogo logoSrc={logoSrc} make={make} />
+                      <>
+                        {logoSrc ? (
+                          <img
+                            src={logoSrc}
+                            alt={`${make} logo`}
+                            className="h-7 w-7 object-contain"
+                            onError={(e) => {
+                              e.currentTarget.style.display = "none";
+                              const fallback = e.currentTarget.parentElement?.querySelector("[data-make-fallback]") as HTMLElement | null;
+                              if (fallback) fallback.style.display = "flex";
+                            }}
+                            onLoad={(e) => {
+                              e.currentTarget.style.display = "block";
+                              const fallback = e.currentTarget.parentElement?.querySelector("[data-make-fallback]") as HTMLElement | null;
+                              if (fallback) fallback.style.display = "none";
+                            }}
+                          />
+                        ) : null}
+                        <span
+                          data-make-fallback
+                          className={`absolute inset-0 h-full w-full flex items-center justify-center text-sm font-semibold text-white/90 ${logoSrc ? "hidden" : ""}`}
+                        >
+                          {(make || "?")[0].toUpperCase()}
+                        </span>
+                      </>
                     );
                   })()}
                 </div>

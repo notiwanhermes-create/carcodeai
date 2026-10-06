@@ -52,7 +52,7 @@ export default function DashboardClient() {
     syncing: vehiclesSyncing,
     addVehicle: addGarageVehicle,
     deleteVehicle: deleteGarageVehicle,
-  } = useGarageVehicles({ userId: session?.user?.id });
+  } = useGarageVehicles({ userId: session?.user?.id, ready: status !== "loading" });
   const [records, setRecords] = useState<MaintenanceRecord[]>([]);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [maintenanceLoading, setMaintenanceLoading] = useState(true);

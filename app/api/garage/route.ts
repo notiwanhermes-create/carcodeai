@@ -35,11 +35,33 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
-  const body = await req.json();
-  const { year, make, model, engine, vin, nickname } = body;
+  const body = await req.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return NextResponse.json({ error: "Invalid request." }, { status: 400 });
+  }
+
+  // Every field is free text from the browser: require strings and cap lengths.
+  const LIMITS = { year: 4, make: 60, model: 60, engine: 100, vin: 17, nickname: 60 } as const;
+  const fields: Record<keyof typeof LIMITS, string> = { year: "", make: "", model: "", engine: "", vin: "", nickname: "" };
+  for (const key of Object.keys(LIMITS) as Array<keyof typeof LIMITS>) {
+    const raw = (body as Record<string, unknown>)[key];
+    if (raw === undefined || raw === null) continue;
+    if (typeof raw !== "string" && typeof raw !== "number") {
+      return NextResponse.json({ error: "Invalid vehicle details." }, { status: 400 });
+    }
+    const value = String(raw).trim();
+    if (value.length > LIMITS[key]) {
+      return NextResponse.json({ error: `${key[0].toUpperCase()}${key.slice(1)} is too long (max ${LIMITS[key]} characters).` }, { status: 400 });
+    }
+    fields[key] = value;
+  }
+  const { year, make, model, engine, vin, nickname } = fields;
 
   if (!year || !make || !model) {
     return NextResponse.json({ error: "Year, make, and model are required." }, { status: 400 });
+  }
+  if (!/^\d{4}$/.test(year)) {
+    return NextResponse.json({ error: "Year must be a 4-digit year." }, { status: 400 });
   }
 
   const vehicle = await prisma.vehicle.create({

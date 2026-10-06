@@ -24,10 +24,6 @@ type EngineOption =
       source?: string;
     };
 
-function engineLabel(raw: string): string {
-  return raw.split(" - ")[0].split("•")[0].split("|")[0].split("(")[0].trim();
-}
-
 import * as ReactDOM from "react-dom";
 
 type Vehicle = {
@@ -212,6 +208,22 @@ type DiagnosisSession = {
   finalRankedCauses: DiagnosisCauseSnapshot[];
   confirmedFix?: { causeId: string; causeTitle: string; fix: string };
 };
+
+const MAINTENANCE_STORAGE_KEY = "carcode_maintenance_v1";
+const DIAGNOSIS_ANON_STORAGE_KEY = "carcode_diagnosis_sessions_v1:anon";
+
+/** Saved diagnoses for one storage key, or an empty object if missing/unreadable. */
+function readDiagnosisSessions(key: string): Record<string, DiagnosisSession[]> {
+  try {
+    const raw = window.localStorage.getItem(key);
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, DiagnosisSession[]>)
+      : {};
+  } catch {
+    return {};
+  }
+}
 
 function AuthButtons({ theme }: { theme: "dark" | "light" }) {
   const { data: session, status } = useSession();
@@ -1380,7 +1392,9 @@ function Toast({ message, visible }: { message: string; visible: boolean }) {
 
 
 export default function Home() {
-  const { data: session } = useSession();
+  const { data: session, status: sessionStatus } = useSession();
+  // Until we know whether this is a guest or a signed-in user, no per-user data is loaded.
+  const sessionReady = sessionStatus !== "loading";
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     setMounted(true);
@@ -1396,7 +1410,12 @@ export default function Home() {
     syncing: garageSyncing,
     addVehicle: addGarageVehicle,
     deleteVehicle: deleteGarageVehicle,
-  } = useGarageVehicles({ userId: session?.user?.id });
+    guestVehicles,
+    importGuestVehicles,
+    dismissGuestVehicles,
+  } = useGarageVehicles({ userId: session?.user?.id, ready: sessionReady });
+  const [importingGuest, setImportingGuest] = useState(false);
+  const [guestImportNote, setGuestImportNote] = useState("");
 
 
   const theme = "dark" as const;
@@ -1411,12 +1430,16 @@ export default function Home() {
   const [confirmDialog, setConfirmDialog] = useState<{open:boolean, title:string, message:string, confirmLabel?:string, onConfirm:()=>void | Promise<void>} | null>(null);
 
   const [maintenanceRecords, setMaintenanceRecords] = useState<Record<string, MaintenanceRecord[]>>({});
+  // Nothing is written back to storage until the stored copy has been read,
+  // otherwise the initial empty state could overwrite saved data.
+  const [maintenanceLoaded, setMaintenanceLoaded] = useState(false);
 
   const [diagnosisSessions, setDiagnosisSessions] = useState<Record<string, DiagnosisSession[]>>({});
   const diagnosisStorageKey = session?.user?.id
     ? `carcode_diagnosis_sessions_v1:user:${session.user.id}`
-    : "carcode_diagnosis_sessions_v1:anon";
-  const prevDiagnosisStorageKey = useRef<string>(diagnosisStorageKey);
+    : DIAGNOSIS_ANON_STORAGE_KEY;
+  // Which key `diagnosisSessions` was loaded from; writes only go back to that key.
+  const [diagnosisLoadedKey, setDiagnosisLoadedKey] = useState<string | null>(null);
 
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<any>(null);
@@ -1449,27 +1472,14 @@ export default function Home() {
 
   useEffect(() => {
     try {
-      const rawMaint = localStorage.getItem("carcode_maintenance_v1");
+      const rawMaint = localStorage.getItem(MAINTENANCE_STORAGE_KEY);
       if (rawMaint) {
-        setMaintenanceRecords(JSON.parse(rawMaint));
+        const parsed = JSON.parse(rawMaint);
+        if (parsed && typeof parsed === "object") setMaintenanceRecords(parsed);
       }
     } catch {}
+    setMaintenanceLoaded(true);
     // Diagnosis sessions are loaded in a dedicated effect (keyed by user/anon).
-    try {
-      // Clear previous account's cached diagnosis sessions on user change/sign-out (privacy).
-      if (prevDiagnosisStorageKey.current !== diagnosisStorageKey) {
-        try {
-          localStorage.removeItem(prevDiagnosisStorageKey.current);
-        } catch {}
-        prevDiagnosisStorageKey.current = diagnosisStorageKey;
-        setDiagnosisSessions({});
-      }
-      const rawDiag = localStorage.getItem(diagnosisStorageKey);
-      if (rawDiag) {
-        const parsed = JSON.parse(rawDiag);
-        setDiagnosisSessions(parsed && typeof parsed === "object" ? parsed : {});
-      }
-    } catch {}
     try {
       if (!localStorage.getItem("carcode_onboarded_v1")) {
         setShowOnboarding(true);
@@ -1493,37 +1503,85 @@ export default function Home() {
     return () => window.removeEventListener("beforeinstallprompt", handleInstall);
   }, []);
 
+  // Saved diagnoses live only in this browser (one list for guests, one per
+  // account). Switching between them just changes which list is shown —
+  // nothing is deleted on sign-in or sign-out.
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    // Clear previous account's cached sessions on user change/sign-out (privacy).
-    if (prevDiagnosisStorageKey.current !== diagnosisStorageKey) {
-      try { window.localStorage.removeItem(prevDiagnosisStorageKey.current); } catch {}
-      prevDiagnosisStorageKey.current = diagnosisStorageKey;
-    }
-    try {
-      const raw = window.localStorage.getItem(diagnosisStorageKey);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        setDiagnosisSessions(parsed && typeof parsed === "object" ? parsed : {});
-      } else {
-        setDiagnosisSessions({});
-      }
-    } catch {
-      setDiagnosisSessions({});
-    }
-  }, [diagnosisStorageKey]);
+    if (typeof window === "undefined" || !sessionReady) return;
+    setDiagnosisSessions(readDiagnosisSessions(diagnosisStorageKey));
+    setDiagnosisLoadedKey(diagnosisStorageKey);
+  }, [diagnosisStorageKey, sessionReady]);
 
   useEffect(() => {
+    if (!maintenanceLoaded) return;
     try {
-      localStorage.setItem("carcode_maintenance_v1", JSON.stringify(maintenanceRecords));
+      localStorage.setItem(MAINTENANCE_STORAGE_KEY, JSON.stringify(maintenanceRecords));
     } catch {}
-  }, [maintenanceRecords]);
+  }, [maintenanceLoaded, maintenanceRecords]);
 
   useEffect(() => {
+    if (diagnosisLoadedKey !== diagnosisStorageKey) return;
     try {
       localStorage.setItem(diagnosisStorageKey, JSON.stringify(diagnosisSessions));
     } catch {}
-  }, [diagnosisSessions, diagnosisStorageKey]);
+  }, [diagnosisLoadedKey, diagnosisSessions, diagnosisStorageKey]);
+
+  /**
+   * "Import vehicles from this device": copy guest vehicles into the signed-in
+   * account, then move their on-device service records and saved diagnoses
+   * over to the new vehicle ids so that history follows the vehicle.
+   */
+  async function handleImportGuestVehicles() {
+    if (importingGuest) return;
+    setImportingGuest(true);
+    setGuestImportNote("");
+    try {
+      const outcome = await importGuestVehicles();
+
+      if (outcome.imported.length > 0) {
+        const idMap = new Map(outcome.imported.map(({ from, to }) => [from.id, to.id]));
+
+        setMaintenanceRecords((prev) => {
+          const next = { ...prev };
+          for (const [oldId, newId] of idMap) {
+            const moved = (next[oldId] || []).map((r) => ({ ...r, vehicleId: newId }));
+            if (moved.length) next[newId] = [...moved, ...(next[newId] || [])];
+            delete next[oldId];
+          }
+          return next;
+        });
+
+        const guestSessions = readDiagnosisSessions(DIAGNOSIS_ANON_STORAGE_KEY);
+        const remainingGuestSessions = { ...guestSessions };
+        const movedSessions: Record<string, DiagnosisSession[]> = {};
+        for (const [oldId, newId] of idMap) {
+          const list = (guestSessions[oldId] || []).map((s) => ({ ...s, vehicleId: newId }));
+          if (list.length) movedSessions[newId] = list;
+          delete remainingGuestSessions[oldId];
+        }
+        if (Object.keys(movedSessions).length > 0) {
+          setDiagnosisSessions((prev) => {
+            const next = { ...prev };
+            for (const [newId, list] of Object.entries(movedSessions)) next[newId] = [...list, ...(next[newId] || [])];
+            return next;
+          });
+          try {
+            localStorage.setItem(DIAGNOSIS_ANON_STORAGE_KEY, JSON.stringify(remainingGuestSessions));
+          } catch {}
+        }
+      }
+
+      const parts: string[] = [];
+      if (outcome.imported.length) parts.push(`${outcome.imported.length} ${tr("importResultImported", lang)}`);
+      if (outcome.duplicates.length) parts.push(`${outcome.duplicates.length} ${tr("importResultDuplicates", lang)}`);
+      if (outcome.failed.length) parts.push(`${outcome.failed.length} ${tr("importResultFailed", lang)}`);
+      setGuestImportNote(parts.join(" · "));
+    } catch {
+      setGuestImportNote(tr("importResultError", lang));
+    } finally {
+      setImportingGuest(false);
+    }
+  }
 
   function saveDiagnosisSession(sessionToSave: DiagnosisSession) {
     if (!sessionToSave?.vehicleId) return;
@@ -1743,7 +1801,7 @@ export default function Home() {
 
   const [makeOptions, setMakeOptions] = useState<{ id: number; name: string }[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
-  const [engineOptions, setEngineOptions] = useState<any[]>([]);
+  const [engineOptions, setEngineOptions] = useState<string[]>([]);
 
   const yearOptions = useMemo(() => {
     const currentYear = new Date().getFullYear();
@@ -1802,31 +1860,9 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [makeConfirmed, gMake, gYear, modelQ, makeOptions]);
 
-  useEffect(() => {
-    if (!gYear.trim() || !gMake.trim() || !gModel.trim()) { setEngineOptions([]); return; }
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(
-          `/api/vehicles/engines?year=${encodeURIComponent(gYear.trim())}&make=${encodeURIComponent(gMake.trim())}&model=${encodeURIComponent(gModel.trim())}`,
-          { cache: "no-store" }
-        );
-        const data = await res.json();
-        const list = Array.isArray(data?.engines) ? data.engines : [];
-        const seen = new Set<string>();
-        const deduped = list.filter((e: any) => {
-          const rawLabel = typeof e === "string" ? e : e?.label || e?.engine || "";
-          const key = engineLabel(String(rawLabel));
-          if (!key) return false;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-        if (!cancelled) setEngineOptions(deduped);
-      } catch { if (!cancelled) setEngineOptions([]); }
-    })();
-    return () => { cancelled = true; };
-  }, [gYear, gMake, gModel]);
+  // Engine is free text. The engine lookup this form used to call depended on a
+  // third-party API that no longer exists, so the only suggestions offered are
+  // the ones decoded from a VIN (see the VIN effect below).
 
   function selectModel(m: string) {
     setGModel(m);
@@ -2288,6 +2324,58 @@ export default function Home() {
           </div>
         ) : tab === "garage" ? (
           <div key="tab-garage" className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[440px_1fr] animate-slide-in relative z-40">
+            {session?.user && (guestVehicles.length > 0 || guestImportNote) && (
+              <div
+                role="status"
+                className={cn("lg:col-span-2 rounded-2xl px-4 sm:px-5 py-4 flex flex-wrap items-center gap-3", t("bg-blue-500/10 border border-blue-500/20", "bg-blue-50 border border-blue-200"))}
+              >
+                <div className="flex-1 min-w-[200px]">
+                  {guestVehicles.length > 0 ? (
+                    <>
+                      <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>
+                        {guestVehicles.length} {guestVehicles.length === 1 ? tr("guestVehiclesFoundOne", lang) : tr("guestVehiclesFoundMany", lang)}
+                      </div>
+                      <div className={cn("mt-0.5 text-xs", t("text-slate-400", "text-slate-500"))}>
+                        {guestVehicles.slice(0, 3).map((v) => `${v.year} ${v.make} ${v.model}`).join(" · ")}
+                        {guestVehicles.length > 3 ? " …" : ""}
+                      </div>
+                      <div className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>{tr("guestVehiclesHint", lang)}</div>
+                    </>
+                  ) : null}
+                  {guestImportNote && (
+                    <div className={cn("text-xs", guestVehicles.length > 0 ? "mt-2" : "", t("text-blue-200", "text-blue-800"))}>{guestImportNote}</div>
+                  )}
+                </div>
+                {guestVehicles.length > 0 ? (
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleImportGuestVehicles}
+                      disabled={importingGuest || garageSyncing}
+                      className="rounded-xl bg-blue-500 px-4 py-2.5 text-xs font-semibold text-white shadow-md shadow-blue-500/25 transition-all hover:bg-blue-400 disabled:opacity-60"
+                    >
+                      {importingGuest ? tr("importing", lang) : tr("importFromDevice", lang)}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { dismissGuestVehicles(); setGuestImportNote(""); }}
+                      disabled={importingGuest}
+                      className={cn("rounded-xl px-3 py-2.5 text-xs font-semibold transition-all", t("border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10", "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"))}
+                    >
+                      {tr("notNow", lang)}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setGuestImportNote("")}
+                    className={cn("shrink-0 rounded-xl px-3 py-2 text-xs font-semibold transition-all", t("border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10", "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"))}
+                  >
+                    {tr("dismiss", lang)}
+                  </button>
+                )}
+              </div>
+            )}
             <div ref={garageFormRef} className={cn("rounded-3xl p-5 sm:p-6 animate-fade-in-up relative overflow-visible", cardStrongClass)}>
               <div className="flex items-center gap-2">
                 <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-500/20">
@@ -2388,12 +2476,14 @@ export default function Home() {
                     name="engine"
                     value={gEngine}
                     onValueChange={setGEngine}
-                    options={engineOptions.map((e: any) => {
-                      const raw = typeof e === "string" ? e : e.label || e.engine;
-                      return { value: raw ?? "", label: engineLabel(String(raw ?? "")) };
-                    })}
-                    displayValue={engineLabel}
-                    placeholder={tr("engine", lang)}
+                    // Typed freely; a VIN-decoded engine is offered as a suggestion
+                    // (hidden once it is already the field's value).
+                    options={engineOptions.filter((e) => e && e !== gEngine)}
+                    placeholder={tr("enginePlaceholder", lang)}
+                    triggerType="input"
+                    allowCustomValue
+                    filterable={false}
+                    maxLength={100}
                     disabled={!gMake.trim() || !gModel.trim() || !gYear.trim()}
                     triggerClassName={cn(
                       inputClass,

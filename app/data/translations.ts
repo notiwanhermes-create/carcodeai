@@ -1057,6 +1057,15 @@ export const T: Translations = {
     de: "Diagnose verfeinern",
     zh: "细化诊断",
   },
+  updatedBasedOnAnswers: {
+    en: "Updated based on your answers",
+    es: "Actualizado según tus respuestas",
+    fr: "Mis à jour selon vos réponses",
+    ar: "تم التحديث بناءً على إجاباتك",
+    pt: "Atualizado com base nas suas respostas",
+    de: "Aktualisiert basierend auf Ihren Antworten",
+    zh: "已根据您的回答更新",
+  },
   confidence: {
     en: "Confidence",
     es: "Confianza",

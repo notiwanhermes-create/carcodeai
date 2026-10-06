@@ -125,17 +125,17 @@ export default function FeedbackWidget() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
                   <div>
                     <label className="block text-xs text-slate-300 mb-1">Name <span className="text-slate-400 text-xs">(optional)</span></label>
-                    <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded-xl px-3 py-2 text-sm bg-white/5 border border-white/10 text-white" />
+                    <input value={name} maxLength={100} onChange={(e) => setName(e.target.value)} className="w-full rounded-xl px-3 py-2 text-sm bg-white/5 border border-white/10 text-white" />
                   </div>
                   <div>
                     <label className="block text-xs text-slate-300 mb-1">Email <span className="text-slate-400 text-xs">(optional)</span></label>
-                    <input value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded-xl px-3 py-2 text-sm bg-white/5 border border-white/10 text-white" />
+                    <input type="email" value={email} maxLength={254} onChange={(e) => setEmail(e.target.value)} className="w-full rounded-xl px-3 py-2 text-sm bg-white/5 border border-white/10 text-white" />
                   </div>
                 </div>
 
                 <div className="mb-4">
                   <label className="block text-xs text-slate-300 mb-1">Your Feedback <span className="text-red-400">*</span></label>
-                  <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={4} className="w-full rounded-xl px-3 py-2 text-sm bg-white/5 border border-white/10 text-white resize-none" />
+                  <textarea value={message} maxLength={2000} onChange={(e) => setMessage(e.target.value)} rows={4} className="w-full rounded-xl px-3 py-2 text-sm bg-white/5 border border-white/10 text-white resize-none" />
                   <div className="text-xs mt-1 text-right text-slate-400">{message.length}/2000</div>
                 </div>
 

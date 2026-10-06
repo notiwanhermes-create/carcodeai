@@ -720,18 +720,7 @@ function buildFollowUpQuestions(doms: Domain[], code?: string, symptoms?: string
   return q.slice(0, 5);
 }
 
-function LikelyCausesPanel({
-  result,
-  theme,
-  code,
-  symptoms,
-  vehicle,
-  onShare,
-  onDownload,
-  onSaveToHistory,
-  vehicleId,
-  lang,
-}: {
+type LikelyCausesPanelProps = {
   result: ApiOk | ApiNoDefinition | null;
   theme: "dark" | "light";
   code?: string;
@@ -742,7 +731,52 @@ function LikelyCausesPanel({
   onSaveToHistory?: (session: DiagnosisSession) => void;
   vehicleId?: string | null;
   lang: LangCode;
-}) {
+};
+
+/**
+ * Wrapper that only decides WHICH state to show. It owns no hooks, so it can
+ * return early freely. All stateful logic lives in LikelyCausesResults, which is
+ * mounted only while there are causes to show — so its hooks always run in the
+ * same order (this is what used to crash the page on a second diagnosis).
+ */
+function LikelyCausesPanel(props: LikelyCausesPanelProps) {
+  const { result, theme, lang } = props;
+  const t = (dark: string, light: string) => theme === "dark" ? dark : light;
+
+  if (result && "noDefinition" in result && result.noDefinition) {
+    return (
+      <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
+        <div className={cn("text-sm font-semibold", t("text-amber-200", "text-amber-800"))}>No verified definition</div>
+        <p className={cn("mt-2 text-sm", t("text-slate-300", "text-slate-600"))}>{result.message}</p>
+        {result.code && <p className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>Code: {result.code}</p>}
+      </div>
+    );
+  }
+
+  if (!result || !("causes" in result) || !result.causes?.length) {
+    return (
+      <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
+        <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("likelyCauses", lang)}</div>
+        <div className={cn("mt-2 text-sm", t("text-slate-400", "text-slate-500"))}>Run a diagnostic to see causes here.</div>
+      </div>
+    );
+  }
+
+  return <LikelyCausesResults {...props} result={result} />;
+}
+
+function LikelyCausesResults({
+  result,
+  theme,
+  code,
+  symptoms,
+  vehicle,
+  onShare,
+  onDownload,
+  onSaveToHistory,
+  vehicleId,
+  lang,
+}: Omit<LikelyCausesPanelProps, "result"> & { result: ApiOk }) {
   const [openCauseId, setOpenCauseId] = useState<string | null>(null);
   const [refineAnswers, setRefineAnswers] = useState<Record<string, string>>({});
   const [guideMode, setGuideMode] = useState(false);
@@ -764,25 +798,6 @@ function LikelyCausesPanel({
       refineRef.current?.querySelector<HTMLButtonElement>("[data-refine-first]")?.focus();
     }, 150);
     setTimeout(() => setGuideHighlight(false), 2500);
-  }
-
-  if (result && "noDefinition" in result && result.noDefinition) {
-    return (
-      <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
-        <div className={cn("text-sm font-semibold", t("text-amber-200", "text-amber-800"))}>No verified definition</div>
-        <p className={cn("mt-2 text-sm", t("text-slate-300", "text-slate-600"))}>{result.message}</p>
-        {result.code && <p className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>Code: {result.code}</p>}
-      </div>
-    );
-  }
-
-  if (!result || !("causes" in result) || !result.causes?.length) {
-    return (
-      <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
-        <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("likelyCauses", lang)}</div>
-        <div className={cn("mt-2 text-sm", t("text-slate-400", "text-slate-500"))}>Run a diagnostic to see causes here.</div>
-      </div>
-    );
   }
 
   const causesWithId = useMemo(() => {

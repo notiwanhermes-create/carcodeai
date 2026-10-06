@@ -70,6 +70,16 @@ model MaintenanceRecord {
   @@map("maintenance_records")
 }
 
+/// Fixed-window request counters used by app/lib/rate-limit.ts.
+model RateLimit {
+  key         String
+  windowStart DateTime @map("window_start") @db.Timestamptz()
+  count       Int      @default(0)
+
+  @@id([key, windowStart])
+  @@map("rate_limits")
+}
+
 model Feedback {
   id        Int      @id @default(autoincrement())
   name      String?

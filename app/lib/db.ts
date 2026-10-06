@@ -11,10 +11,24 @@ const pool = new Pool({
 
 export default pool;
 
-let initialized = false;
+let initPromise: Promise<void> | null = null;
 
-export async function ensureDB() {
-  if (initialized) return;
+/**
+ * Create/upgrade tables this app needs. Safe to call on every request: the
+ * work runs once per server instance (concurrent callers share one promise)
+ * and every statement is idempotent.
+ */
+export function ensureDB(): Promise<void> {
+  if (!initPromise) {
+    initPromise = runSchemaBootstrap().catch((err) => {
+      initPromise = null; // allow a retry on the next request
+      throw err;
+    });
+  }
+  return initPromise;
+}
+
+async function runSchemaBootstrap() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -72,6 +86,13 @@ export async function ensureDB() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS rate_limits (
+      key TEXT NOT NULL,
+      window_start TIMESTAMPTZ NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (key, window_start)
+    );
+
   `);
 
   // Backfill columns for older databases (CREATE TABLE IF NOT EXISTS doesn't add new columns).
@@ -79,5 +100,4 @@ export async function ensureDB() {
     ALTER TABLE garage_vehicles ADD COLUMN IF NOT EXISTS nickname TEXT;
     ALTER TABLE maintenance_records ADD COLUMN IF NOT EXISTS cost TEXT;
   `);
-  initialized = true;
 }

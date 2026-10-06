@@ -2339,8 +2339,8 @@ export default function Home() {
                     <div className={cn("mt-1 ml-9 text-xs", t("text-slate-400", "text-slate-500"))}>{tr("enterCodeOrDescribe", lang)}</div>
 
                     <form className="mt-5 grid gap-3" onSubmit={(e) => { e.preventDefault(); runDiagnostic(new FormData(e.currentTarget)); }}>
-                      <input name="code" placeholder={tr("codePlaceholder", lang)} className={cn(inputClass, "rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")} />
-                      <textarea name="symptoms" placeholder={tr("symptomsPlaceholder", lang)} value={symptomsValue} onChange={(e) => setSymptomsValue(e.target.value)} className={cn(inputClass, "min-h-[100px] rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors resize-none")} />
+                      <input name="code" maxLength={120} autoComplete="off" placeholder={tr("codePlaceholder", lang)} className={cn(inputClass, "rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")} />
+                      <textarea name="symptoms" maxLength={800} placeholder={tr("symptomsPlaceholder", lang)} value={symptomsValue} onChange={(e) => setSymptomsValue(e.target.value)} className={cn(inputClass, "min-h-[100px] rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors resize-none")} />
 
                       <div className="flex flex-wrap gap-2">
                         {quickSymptoms.map((qs) => (

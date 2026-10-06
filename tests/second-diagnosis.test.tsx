@@ -114,6 +114,27 @@ describe("diagnosis flow", () => {
     expect(hookErrors).toHaveLength(0);
   });
 
+  it("shows causes in ranked order without invented confidence, cost or drive-safety values", async () => {
+    render(<Home />);
+    fireEvent.click(await screen.findByRole("button", { name: "Diagnose" }));
+    await submitCode("P0300");
+
+    const first = await screen.findByText("Worn spark plugs");
+    const second = screen.getByText("Worn spark plugs (secondary)");
+    // Ranking is preserved: the first cause comes before the second in the page.
+    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText("Most Likely")).toBeTruthy();
+
+    // Open a cause to check the detail panel too.
+    fireEvent.click(first);
+    const text = document.body.textContent || "";
+    expect(text).not.toMatch(/Confidence\s*\d+\s*%/i);
+    expect(text).not.toMatch(/Urgency/i);
+    expect(text).not.toMatch(/\bDrive\b|\bCaution\b/);
+    expect(text).not.toMatch(/Typical parts|Labor:|Tools needed/i);
+    expect(text).not.toMatch(/\$\s?\d/);
+  });
+
   it("shows the empty state (not a crash) when a diagnosis request fails after a previous success", async () => {
     render(<Home />);
     fireEvent.click(await screen.findByRole("button", { name: "Diagnose" }));

@@ -81,8 +81,6 @@ type MaintenanceRecord = {
   notes: string;
 };
 
-type DiagnosisUrgency = "Drive" | "Caution" | "Stop";
-type ConfidenceLabel = "High" | "Med" | "Low";
 
 /** Renders make logo image; on load error shows fallback letter so no broken image icon. */
 function MakeLogoImg({
@@ -189,17 +187,15 @@ type QuickCheck = {
   meaningFail: string;
 };
 
+/**
+ * A cause as stored in saved diagnosis history. Sessions saved before the
+ * invented confidence / urgency / cost values were removed may still carry
+ * those extra fields; they are ignored.
+ */
 type DiagnosisCauseSnapshot = {
   id: string;
   title: string;
-  confidencePct: number;
-  confidenceLabel: ConfidenceLabel;
   whyLikely: string[];
-  urgency: DiagnosisUrgency;
-  partsCost: string;
-  laborHours: string;
-  diyDifficulty: string;
-  tools: string[];
   confirm?: string[];
   fix?: string[];
 };
@@ -511,44 +507,6 @@ function scoreCause(c: Cause, ctx: { code?: string; symptoms?: string; answers: 
   return Math.max(0.2, score);
 }
 
-function confidenceFromScore(score: number, sum: number): { pct: number; label: ConfidenceLabel } {
-  const pct = sum > 0 ? Math.round((score / sum) * 100) : 0;
-  const label: ConfidenceLabel = pct >= 40 ? "High" : pct >= 22 ? "Med" : "Low";
-  return { pct, label };
-}
-
-function urgencyForCause(c: Cause, ctx: { symptoms?: string }): DiagnosisUrgency {
-  const text = `${c.title} ${c.why || ""} ${ctx.symptoms || ""}`.toLowerCase();
-  if (/(brake|oil pressure|no oil|seized|fire)/.test(text)) return "Stop";
-  if (/(overheat|coolant loss|head gasket|knock|stalling)/.test(text)) return "Caution";
-  if (c.severity === "high" && /(overheat|coolant|leak)/.test(text)) return "Caution";
-  return "Drive";
-}
-
-function estimateForCause(c: Cause): { partsCost: string; laborHours: string; diyDifficulty: string; tools: string[] } {
-  const text = `${c.title} ${c.why || ""}`.toLowerCase();
-  const toolsBase = ["Flashlight", "Gloves"];
-  if (/(coolant|radiator|thermostat|water pump|hose|leak|overheat)/.test(text)) {
-    return { partsCost: "$10–$250", laborHours: "0.5–4 hr", diyDifficulty: "DIY Moderate", tools: [...toolsBase, "Basic socket set", "Catch pan"] };
-  }
-  if (/(fan|fan clutch|airflow)/.test(text)) {
-    return { partsCost: "$50–$400", laborHours: "1–2.5 hr", diyDifficulty: "DIY Moderate", tools: [...toolsBase, "Basic socket set", "Multimeter (optional)"] };
-  }
-  if (/(misfire|spark|plug|coil|ignition)/.test(text)) {
-    return { partsCost: "$20–$300", laborHours: "0.5–3 hr", diyDifficulty: c.difficulty || "DIY Moderate", tools: [...toolsBase, "Spark plug socket", "OBD-II scanner (optional)"] };
-  }
-  if (/(battery|alternator|charging|voltage)/.test(text)) {
-    return { partsCost: "$120–$650", laborHours: "0.5–3 hr", diyDifficulty: "DIY Moderate", tools: [...toolsBase, "Multimeter", "Basic socket set"] };
-  }
-  if (/(fuel pump|injector|fuel pressure|fuel)/.test(text)) {
-    return { partsCost: "$80–$700", laborHours: "1–5 hr", diyDifficulty: "Mechanic Recommended", tools: [...toolsBase, "OBD-II scanner (optional)"] };
-  }
-  if (/(catalyst|converter|o2|emission|evap)/.test(text)) {
-    return { partsCost: "$60–$2,000", laborHours: "0.5–3 hr", diyDifficulty: "Mechanic Recommended", tools: [...toolsBase, "OBD-II scanner"] };
-  }
-  return { partsCost: "$0–$500+", laborHours: "0.5–4 hr", diyDifficulty: c.difficulty || "DIY Moderate", tools: toolsBase };
-}
-
 function buildWhyLikely(
   c: Cause,
   ctx: { code?: string; symptoms?: string; vehicle?: { year: string; make: string; model: string } | null; answers: Record<string, string> }
@@ -831,21 +789,6 @@ function LikelyCausesResults({
 
   const followUps = useMemo(() => buildFollowUpQuestions(allDomains, code, symptoms), [allDomains, code, symptoms]);
 
-  const baselineById = useMemo(() => {
-    // Baseline confidence computed from original causes with no refine answers.
-    const scored = causesWithId.map(({ c, id }) => ({
-      id,
-      score: scoreCause(c, { code, symptoms, answers: {} }),
-    }));
-    const sum = scored.reduce((acc, x) => acc + x.score, 0);
-    const m = new Map<string, { pct: number; label: ConfidenceLabel }>();
-    scored.forEach((x) => {
-      const conf = confidenceFromScore(x.score, sum);
-      m.set(x.id, conf);
-    });
-    return m;
-  }, [causesWithId, code, symptoms]);
-
   const hasRefinements = useMemo(() => Object.keys(refineAnswers).length > 0, [refineAnswers]);
 
   const rankedCauses = useMemo(() => {
@@ -868,62 +811,29 @@ function LikelyCausesResults({
       return b.score - a.score || a.originalIdx - b.originalIdx;
     });
 
-    const sum = sorted.reduce((acc, x) => acc + x.score, 0);
-
-    return sorted.map(({ c, id, score }) => {
-      const conf = confidenceFromScore(score, sum);
-      const est = estimateForCause(c);
-      return {
-        ...c,
-        id,
-        score,
-        confidencePct: conf.pct,
-        confidenceLabel: conf.label,
-        confidenceDeltaPct: hasRefinements ? conf.pct - (baselineById.get(id)?.pct ?? conf.pct) : 0,
-        whyLikely: buildWhyLikely(c, { code, symptoms, vehicle, answers: refineAnswers }),
-        urgency: urgencyForCause(c, { symptoms }),
-        partsCost: est.partsCost,
-        laborHours: est.laborHours,
-        diyDifficulty: est.diyDifficulty,
-        tools: est.tools,
-      };
-    });
-  }, [baselineById, causesWithId, code, hasRefinements, refineAnswers, symptoms, vehicle]);
+    // Only the ORDER is shown. Confidence percentages, cost/labour estimates and
+    // the "safe to drive" badge were removed: they were derived from keyword
+    // matching in the browser, not from the diagnosis, and will come back once
+    // the diagnosis itself supplies them as structured data.
+    return sorted.map(({ c, id, score }) => ({
+      ...c,
+      id,
+      score,
+      whyLikely: buildWhyLikely(c, { code, symptoms, vehicle, answers: refineAnswers }),
+    }));
+  }, [causesWithId, code, hasRefinements, refineAnswers, symptoms, vehicle]);
 
   const quickChecks = useMemo(
     () => buildQuickChecks(rankedCauses.slice(0, 3).map((c) => ({ c, id: c.id })), { code, symptoms }),
     [rankedCauses, code, symptoms]
   );
 
-  function urgencyPill(u: DiagnosisUrgency) {
-    if (u === "Stop") return { label: "Stop", cls: t("bg-red-500/15 text-red-300 border-red-500/30", "bg-red-50 text-red-700 border-red-200"), dot: "bg-red-400" };
-    if (u === "Caution") return { label: "Caution", cls: t("bg-amber-500/15 text-amber-300 border-amber-500/30", "bg-amber-50 text-amber-700 border-amber-200"), dot: "bg-amber-400" };
-    return { label: "Drive", cls: t("bg-emerald-500/15 text-emerald-300 border-emerald-500/30", "bg-emerald-50 text-emerald-700 border-emerald-200"), dot: "bg-emerald-400" };
-  }
-
-  function confPill(c: { confidencePct: number; confidenceLabel: ConfidenceLabel }) {
-    const base =
-      c.confidenceLabel === "High"
-        ? { cls: t("bg-blue-500/15 text-blue-300 border-blue-500/30", "bg-blue-50 text-blue-700 border-blue-200"), dot: "bg-blue-400" }
-        : c.confidenceLabel === "Med"
-          ? { cls: t("bg-sky-500/15 text-sky-300 border-sky-500/30", "bg-sky-50 text-sky-700 border-sky-200"), dot: "bg-sky-400" }
-          : { cls: t("bg-slate-500/15 text-slate-300 border-slate-500/30", "bg-slate-100 text-slate-600 border-slate-200"), dot: "bg-slate-400" };
-    return { label: `${c.confidencePct}%`, ...base };
-  }
-
   function buildSession(): DiagnosisSession | null {
     if (!vehicleId || !vehicle) return null;
     const finalRankedCauses: DiagnosisCauseSnapshot[] = rankedCauses.map((c) => ({
       id: c.id,
       title: c.title,
-      confidencePct: c.confidencePct,
-      confidenceLabel: c.confidenceLabel,
       whyLikely: c.whyLikely,
-      urgency: c.urgency,
-      partsCost: c.partsCost,
-      laborHours: c.laborHours,
-      diyDifficulty: c.diyDifficulty,
-      tools: c.tools,
       confirm: c.confirm,
       fix: c.fix,
     }));
@@ -992,16 +902,13 @@ function LikelyCausesResults({
       addWrapped("Ranked causes:", 12, true, 6);
       session.finalRankedCauses.forEach((c, i) => {
         addWrapped(`${i + 1}. ${c.title}`, 11, true, 2);
-        addWrapped(`Confidence: ${c.confidencePct}% (${c.confidenceLabel}) • Urgency: ${c.urgency}`, 10, false, 2);
-        addWrapped(`Typical parts: ${c.partsCost} • Labor: ${c.laborHours} • DIY: ${c.diyDifficulty}`, 10, false, 2);
-        if (c.tools?.length) addWrapped(`Tools: ${c.tools.join(", ")}`, 10, false, 2);
         if (c.whyLikely?.length) addWrapped(`Why likely:\n- ${c.whyLikely.join("\n- ")}`, 10, false, 2);
         if (c.confirm?.length) addWrapped(`Confirm:\n- ${c.confirm.join("\n- ")}`, 10, false, 2);
         if (c.fix?.length) addWrapped(`Fix:\n- ${c.fix.join("\n- ")}`, 10, false, 8);
         y += 6;
       });
 
-      addWrapped("Disclaimer: Estimates only. Use safe lifting procedures and stop driving if the vehicle is unsafe to operate.", 9, false);
+      addWrapped("Disclaimer: AI-generated guidance, not a professional inspection. Causes are listed most likely first. Use safe lifting procedures and stop driving if the vehicle is unsafe to operate.", 9, false);
 
       doc.save(`carcode-diagnosis-${Date.now()}.pdf`);
     } catch {
@@ -1364,27 +1271,6 @@ function LikelyCausesResults({
                         <span className={cn("h-1.5 w-1.5 rounded-full", sev.dot)} />
                         {sev.label}
                       </span>
-                      <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold", confPill(c).cls)}>
-                        <span className={cn("h-1.5 w-1.5 rounded-full", confPill(c).dot)} />
-                        {tr("confidence", lang)} {confPill(c).label}
-                      </span>
-                      {hasRefinements && typeof (c as any).confidenceDeltaPct === "number" && (c as any).confidenceDeltaPct !== 0 && (
-                        <span
-                          className={cn(
-                            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold",
-                            (c as any).confidenceDeltaPct > 0
-                              ? t("bg-emerald-500/15 text-emerald-300 border-emerald-500/30", "bg-emerald-50 text-emerald-700 border-emerald-200")
-                              : t("bg-red-500/15 text-red-300 border-red-500/30", "bg-red-50 text-red-700 border-red-200")
-                          )}
-                        >
-                          {(c as any).confidenceDeltaPct > 0 ? "+" : ""}
-                          {(c as any).confidenceDeltaPct}%
-                        </span>
-                      )}
-                      <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold", urgencyPill(c.urgency).cls)}>
-                        <span className={cn("h-1.5 w-1.5 rounded-full", urgencyPill(c.urgency).dot)} />
-                        {tr("urgency", lang)} {urgencyPill(c.urgency).label}
-                      </span>
                     </div>
                     {c.why && <div className={cn("mt-1 text-sm", t("text-slate-400", "text-slate-500"))}>{c.why}</div>}
                     {c.difficulty && (
@@ -1392,9 +1278,6 @@ function LikelyCausesResults({
                         <span className={cn("inline-flex items-center gap-1 text-xs", diff.color)}>
                           {diff.icon}
                           {c.difficulty}
-                        </span>
-                        <span className={cn("text-xs", t("text-slate-400", "text-slate-500"))}>
-                          {tr("partsCost", lang)}: {c.partsCost} • {tr("laborHours", lang)}: {c.laborHours}
                         </span>
                       </div>
                     )}
@@ -1405,7 +1288,7 @@ function LikelyCausesResults({
 
               {isOpen && (
                 <div className={cn("border-t px-5 py-5", t("border-white/10", "border-slate-200"))}>
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-4">
                     <div className={cn("rounded-2xl p-4", t("border border-white/10 bg-white/5", "border border-slate-200 bg-slate-50"))}>
                       <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>{tr("whyLikely", lang)}</div>
                       <ul className={cn("mt-2 space-y-2 text-sm", t("text-slate-300", "text-slate-600"))}>
@@ -1417,24 +1300,7 @@ function LikelyCausesResults({
                         ))}
                       </ul>
                       <div className={cn("mt-3 text-[11px] leading-relaxed", t("text-slate-400", "text-slate-500"))}>
-                        Estimates vary by vehicle/region. If symptoms are severe or safety-related, stop and tow.
-                      </div>
-                    </div>
-
-                    <div className={cn("rounded-2xl p-4", t("border border-white/10 bg-white/5", "border border-slate-200 bg-slate-50"))}>
-                      <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>Parts • Labor • Tools</div>
-                      <div className={cn("mt-2 text-sm", t("text-slate-300", "text-slate-600"))}>
-                        <div><span className="font-semibold">{tr("partsCost", lang)}:</span> {c.partsCost}</div>
-                        <div className="mt-1"><span className="font-semibold">{tr("laborHours", lang)}:</span> {c.laborHours}</div>
-                        <div className="mt-1"><span className="font-semibold">{tr("diyDifficulty", lang)}:</span> {c.diyDifficulty}</div>
-                      </div>
-                      <div className={cn("mt-3 text-xs font-semibold", t("text-white", "text-slate-900"))}>{tr("toolsNeeded", lang)}</div>
-                      <div className={cn("mt-2 flex flex-wrap gap-2", t("text-slate-300", "text-slate-600"))}>
-                        {(c.tools || []).map((tool: string) => (
-                          <span key={tool} className={cn("rounded-full px-2.5 py-1 text-[11px]", t("border border-white/10 bg-white/5", "border border-slate-200 bg-white"))}>
-                            {tool}
-                          </span>
-                        ))}
+                        This is guidance, not an inspection. If symptoms are severe or safety-related, stop driving and have the vehicle towed.
                       </div>
                     </div>
                   </div>

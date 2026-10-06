@@ -2,7 +2,7 @@
 
 ## Phase 0 and Phase 1 — 2026-10-05
 
-Branch `fix/phase-0-1-critical` (9 commits on top of `main`, not pushed).
+Branch `fix/phase-0-1-critical` (on top of `main`, not pushed).
 Finding numbers (C1, H13, …) refer to the pre-launch audit.
 
 ### Before deploying this branch

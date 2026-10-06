@@ -55,8 +55,8 @@ export async function registerUser(email: string, password: string, firstName?: 
        VALUES ($1, $2, $3, $4, $5)`,
       [userId, email.toLowerCase(), passwordHash, firstName || null, lastName || null]
     );
-  } catch (e: any) {
-    if (e?.code === "23505") {
+  } catch (e: unknown) {
+    if ((e as { code?: string } | null)?.code === "23505") {
       return { error: "An account with this email already exists." };
     }
     throw e;

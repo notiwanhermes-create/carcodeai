@@ -57,8 +57,8 @@ export default function FeedbackWidget() {
       setEmail("");
       setMessage("");
       setRating(0);
-    } catch (e: any) {
-      setError(e?.message || "Something went wrong");
+    } catch (e: unknown) {
+      setError((e instanceof Error && e.message) || "Something went wrong");
     } finally {
       setSending(false);
     }

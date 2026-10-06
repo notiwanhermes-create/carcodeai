@@ -188,6 +188,12 @@ type QuickCheck = {
  * invented confidence / urgency / cost values were removed may still carry
  * those extra fields; they are ignored.
  */
+/** Records saved by older versions stored the odometer as a single "mileage" value. */
+type LegacyMaintenanceRecord = MaintenanceRecord & { mileage?: string | number };
+
+/** The browser's "install this app" prompt event (not in the standard DOM typings). */
+type InstallPromptEvent = Event & { prompt: () => Promise<unknown> };
+
 type DiagnosisCauseSnapshot = {
   id: string;
   title: string;
@@ -277,7 +283,7 @@ function cn(...xs: Array<string | false | null | undefined>) {
 
 function uid() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? (crypto as any).randomUUID()
+    ? crypto.randomUUID()
     : Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
 
@@ -1442,7 +1448,7 @@ export default function Home() {
   const [diagnosisLoadedKey, setDiagnosisLoadedKey] = useState<string | null>(null);
 
   const [showOnboarding, setShowOnboarding] = useState(false);
-  const [installPrompt, setInstallPrompt] = useState<any>(null);
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const [showInstallBanner, setShowInstallBanner] = useState(false);
 
   const garageFormRef = useRef<HTMLDivElement | null>(null);
@@ -1493,7 +1499,7 @@ export default function Home() {
     const isMobile = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     const handleInstall = (e: Event) => {
       e.preventDefault();
-      setInstallPrompt(e);
+      setInstallPrompt(e as InstallPromptEvent);
       const dismissed = localStorage.getItem("carcode_install_dismissed");
       if (!dismissed && isMobile) setShowInstallBanner(true);
     };
@@ -1735,8 +1741,8 @@ export default function Home() {
         setResult(data as ApiOk | ApiNoDefinition);
         setSearchPanelOpen(false);
       }
-    } catch (e: any) {
-      const msg = e?.message || "Network error.";
+    } catch (e: unknown) {
+      const msg = (e instanceof Error && e.message) || "Network error.";
       const isFetchFailed = /failed to fetch|network error|load failed/i.test(String(msg));
       setError(isFetchFailed
         ? "Couldn't reach the server. Make sure the app is running (e.g. npm run dev), and check your internet connection."
@@ -1826,10 +1832,11 @@ export default function Home() {
         if (cancelled) return;
         const raw = Array.isArray(d.makes) ? d.makes : [];
         const items = raw
-          .map((m: any) => {
-            if (typeof m === "string") return { id: 0, name: m };
-            const name = String(m?.name ?? m?.MakeName ?? m?.Make_Name ?? "").trim();
-            const id = Number(m?.id ?? m?.MakeId ?? m?.Make_ID ?? 0);
+          .map((entry: unknown) => {
+            if (typeof entry === "string") return { id: 0, name: entry };
+            const m = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>;
+            const name = String(m.name ?? m.MakeName ?? m.Make_Name ?? "").trim();
+            const id = Number(m.id ?? m.MakeId ?? m.Make_ID ?? 0);
             return id && name ? { id, name } : null;
           })
           .filter((x: { id: number; name: string } | null): x is { id: number; name: string } => x != null && x.name !== "");
@@ -2724,12 +2731,12 @@ export default function Home() {
                                       </button>
                                     </div>
                                   </div>
-                                  {(mr.mileageValue !== undefined || (mr as any).mileage) && (
+                                  {(mr.mileageValue !== undefined || (mr as LegacyMaintenanceRecord).mileage) && (
                                     <div className={cn("mt-0.5", t("text-slate-400", "text-slate-500"))}>
                                       {(
                                         mr.mileageValue !== undefined
                                           ? mr.mileageValue
-                                          : Number(String((mr as any).mileage ?? "").replace(/,/g, "")) || 0
+                                          : Number(String((mr as LegacyMaintenanceRecord).mileage ?? "").replace(/,/g, "")) || 0
                                       ).toLocaleString()}{" "}
                                       {mr.mileageUnit || "mi"}
                                     </div>

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-function clean(v: any) {
+function clean(v: unknown) {
   const s = String(v ?? "").trim();
   if (!s || s === "0" || s.toLowerCase() === "not applicable") return "";
   return s;
@@ -45,7 +45,7 @@ export async function GET(request: Request) {
       decoded: { year, make, model, trim },
       suggestions,
     });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, decoded: null, suggestions: [], error: e?.message ?? "Error" });
+  } catch (e: unknown) {
+    return NextResponse.json({ ok: false, decoded: null, suggestions: [], error: e instanceof Error ? e.message : "Error" });
   }
 }

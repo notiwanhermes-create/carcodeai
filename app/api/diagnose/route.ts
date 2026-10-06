@@ -56,14 +56,15 @@ function safeJsonParse(text: string) {
 /** Ensure parsed has a valid causes array; normalize items so each has title, why, severity, difficulty, confirm, fix. */
 function normalizeParsedResponse(parsed: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!parsed || typeof parsed !== "object") return null;
-  let causes = parsed.causes;
+  const causes = parsed.causes;
   if (!Array.isArray(causes) || causes.length === 0) return null;
-  const normalized = causes.map((c: any) => {
-    if (!c || typeof c !== "object") return null;
+  const normalized = causes.map((raw: unknown) => {
+    if (!raw || typeof raw !== "object") return null;
+    const c = raw as Record<string, unknown>;
     return {
       title: typeof c.title === "string" ? c.title : "Possible cause",
       why: typeof c.why === "string" ? c.why : "",
-      severity: ["high", "medium", "low"].includes(c.severity) ? c.severity : "medium",
+      severity: typeof c.severity === "string" && ["high", "medium", "low"].includes(c.severity) ? c.severity : "medium",
       difficulty: typeof c.difficulty === "string" ? c.difficulty : "DIY Moderate",
       confirm: Array.isArray(c.confirm) ? c.confirm.filter((x: unknown) => typeof x === "string") : [],
       fix: Array.isArray(c.fix) ? c.fix.filter((x: unknown) => typeof x === "string") : [],
@@ -105,8 +106,10 @@ function toInt(x: unknown): number | null {
   return Number.isFinite(n) ? Math.floor(n) : null;
 }
 
+type HeaderBag = { get?: (name: string) => string | null } & Record<string, unknown>;
+
 function getRetryAfterMsFromError(err: unknown): number | null {
-  const e = err as any;
+  const e = err as { headers?: HeaderBag } | null;
   const hdrs = e?.headers;
   const ra =
     (typeof hdrs?.get === "function" ? hdrs.get("retry-after") : null) ??
@@ -124,7 +127,7 @@ function getRetryAfterMsFromError(err: unknown): number | null {
 }
 
 function isRateLimit429(err: unknown): boolean {
-  const e = err as any;
+  const e = err as { status?: number; code?: string; error?: { code?: string } } | null;
   return e?.status === 429 || e?.code === "rate_limit_exceeded" || e?.error?.code === "rate_limit_exceeded";
 }
 
@@ -218,7 +221,7 @@ export async function POST(req: Request) {
 
     const vehicleLine = `${year} ${make} ${model}${engine ? ` (${engine})` : ""}`;
 
-    let verifiedDefinitions: CodeDefinitionPayload[] = [];
+    const verifiedDefinitions: CodeDefinitionPayload[] = [];
     let dtcResults: DtcLookupResult[] = [];
     let complaintLine: string;
 

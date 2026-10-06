@@ -28,9 +28,9 @@ async function fetchAllMakesFromNHTSA(): Promise<{ id: number; name: string }[]>
   const r = await fetch(url, { cache: "no-store" });
   if (!r.ok) return [];
   const data = await r.json();
-  const results: any[] = data?.Results ?? [];
+  const results: Array<Record<string, unknown>> = data?.Results ?? [];
   return results
-    .map((x: any) => ({
+    .map((x) => ({
       id: Number(x?.MakeId ?? x?.Make_ID ?? 0),
       name: String(x?.MakeName ?? x?.Make_Name ?? "").trim(),
     }))

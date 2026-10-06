@@ -5,6 +5,7 @@ import { extractDtcCodes, lookupDtc, type DtcLookupResult } from "../../lib/dtc-
 import { parseDiagnoseBody } from "../../lib/diagnose-input";
 import { checkBurst, consumeDiagnosisQuota, diagnoseLimits, type DiagnoseCaller } from "../../lib/diagnose-guard";
 import { clientIpKey } from "../../lib/client-ip";
+import { readJsonBody } from "../../lib/http";
 import { auth } from "../../lib/auth-config";
 
 export const runtime = "nodejs";
@@ -87,35 +88,6 @@ async function getSignedInUserId(): Promise<string | null> {
     return session?.user?.id ?? null;
   } catch {
     return null;
-  }
-}
-
-/** Read the body as text with a hard size cap, then parse JSON. */
-async function readJsonBody(
-  req: Request,
-  maxBytes: number,
-): Promise<{ ok: true; data: unknown } | { ok: false; status: number; code: string; error: string }> {
-  const contentType = (req.headers.get("content-type") || "").toLowerCase();
-  if (!contentType.includes("application/json")) {
-    return { ok: false, status: 415, code: "unsupported_media_type", error: "Send the request as JSON." };
-  }
-  const declared = Number(req.headers.get("content-length") || "0");
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    return { ok: false, status: 413, code: "payload_too_large", error: "Request is too large." };
-  }
-  let text: string;
-  try {
-    text = await req.text();
-  } catch {
-    return { ok: false, status: 400, code: "invalid_request", error: "Invalid request." };
-  }
-  if (Buffer.byteLength(text, "utf8") > maxBytes) {
-    return { ok: false, status: 413, code: "payload_too_large", error: "Request is too large." };
-  }
-  try {
-    return { ok: true, data: JSON.parse(text) };
-  } catch {
-    return { ok: false, status: 400, code: "invalid_request", error: "Invalid request." };
   }
 }
 

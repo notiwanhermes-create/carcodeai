@@ -17,11 +17,33 @@ model User {
   profileImage String?  @map("profile_image")
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
+  /// When ownership of the email address was proven (our emailed link plus the
+  /// account password, or a Google sign-in with a verified email).
+  emailVerified    DateTime? @map("email_verified") @db.Timestamptz()
+  /// Bumped to sign out every existing session for this user.
+  sessionVersion   Int       @default(0) @map("session_version")
+  /// True for password accounts created before email verification existed.
+  /// They can still sign in, but are not trusted as proven email owners.
+  legacyUnverified Boolean   @default(false) @map("legacy_unverified")
+
   sessions           Session[]
   vehicles           Vehicle[]
   maintenanceRecords MaintenanceRecord[]
+  verificationTokens EmailVerificationToken[]
 
   @@map("users")
+}
+
+/// Single-use tokens emailed to new password accounts. Only a SHA-256 hash is stored.
+model EmailVerificationToken {
+  tokenHash String   @id @map("token_hash")
+  userId    String   @map("user_id")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz()
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("email_verification_tokens")
 }
 
 model Session {

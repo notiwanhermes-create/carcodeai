@@ -100,4 +100,43 @@ async function runSchemaBootstrap() {
     ALTER TABLE garage_vehicles ADD COLUMN IF NOT EXISTS nickname TEXT;
     ALTER TABLE maintenance_records ADD COLUMN IF NOT EXISTS cost TEXT;
   `);
+
+  // Email verification + safe account linking.
+  //
+  // The DO block runs its body exactly once: the first time the columns are
+  // added. That is when existing accounts are classified, so nobody who could
+  // sign in before is locked out:
+  //   - Google-only accounts are marked verified (Google vouched for the email
+  //     and there is no password that someone else could have set).
+  //   - Accounts that have a password are marked "legacy_unverified": they keep
+  //     working, but are not treated as proven owners of the email address.
+  // No password is changed or removed here.
+  await pool.query(`
+    DO $$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(727274001);
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'users' AND column_name = 'email_verified'
+      ) THEN
+        ALTER TABLE users ADD COLUMN email_verified TIMESTAMPTZ;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS legacy_unverified BOOLEAN NOT NULL DEFAULT FALSE;
+        UPDATE users SET email_verified = COALESCE(created_at, NOW())
+          WHERE google_id IS NOT NULL AND password_hash IS NULL;
+        UPDATE users SET legacy_unverified = TRUE
+          WHERE password_hash IS NOT NULL;
+      END IF;
+    END $$;
+
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS legacy_unverified BOOLEAN NOT NULL DEFAULT FALSE;
+
+    CREATE TABLE IF NOT EXISTS email_verification_tokens (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
 }

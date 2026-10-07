@@ -24,10 +24,6 @@ type EngineOption =
       source?: string;
     };
 
-function engineLabel(raw: string): string {
-  return raw.split(" - ")[0].split("•")[0].split("|")[0].split("(")[0].trim();
-}
-
 import * as ReactDOM from "react-dom";
 
 type Vehicle = {
@@ -81,8 +77,6 @@ type MaintenanceRecord = {
   notes: string;
 };
 
-type DiagnosisUrgency = "Drive" | "Caution" | "Stop";
-type ConfidenceLabel = "High" | "Med" | "Low";
 
 /** Renders make logo image; on load error shows fallback letter so no broken image icon. */
 function MakeLogoImg({
@@ -189,17 +183,21 @@ type QuickCheck = {
   meaningFail: string;
 };
 
+/**
+ * A cause as stored in saved diagnosis history. Sessions saved before the
+ * invented confidence / urgency / cost values were removed may still carry
+ * those extra fields; they are ignored.
+ */
+/** Records saved by older versions stored the odometer as a single "mileage" value. */
+type LegacyMaintenanceRecord = MaintenanceRecord & { mileage?: string | number };
+
+/** The browser's "install this app" prompt event (not in the standard DOM typings). */
+type InstallPromptEvent = Event & { prompt: () => Promise<unknown> };
+
 type DiagnosisCauseSnapshot = {
   id: string;
   title: string;
-  confidencePct: number;
-  confidenceLabel: ConfidenceLabel;
   whyLikely: string[];
-  urgency: DiagnosisUrgency;
-  partsCost: string;
-  laborHours: string;
-  diyDifficulty: string;
-  tools: string[];
   confirm?: string[];
   fix?: string[];
 };
@@ -216,6 +214,22 @@ type DiagnosisSession = {
   finalRankedCauses: DiagnosisCauseSnapshot[];
   confirmedFix?: { causeId: string; causeTitle: string; fix: string };
 };
+
+const MAINTENANCE_STORAGE_KEY = "carcode_maintenance_v1";
+const DIAGNOSIS_ANON_STORAGE_KEY = "carcode_diagnosis_sessions_v1:anon";
+
+/** Saved diagnoses for one storage key, or an empty object if missing/unreadable. */
+function readDiagnosisSessions(key: string): Record<string, DiagnosisSession[]> {
+  try {
+    const raw = window.localStorage.getItem(key);
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, DiagnosisSession[]>)
+      : {};
+  } catch {
+    return {};
+  }
+}
 
 function AuthButtons({ theme }: { theme: "dark" | "light" }) {
   const { data: session, status } = useSession();
@@ -269,7 +283,7 @@ function cn(...xs: Array<string | false | null | undefined>) {
 
 function uid() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? (crypto as any).randomUUID()
+    ? crypto.randomUUID()
     : Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
 
@@ -511,44 +525,6 @@ function scoreCause(c: Cause, ctx: { code?: string; symptoms?: string; answers: 
   return Math.max(0.2, score);
 }
 
-function confidenceFromScore(score: number, sum: number): { pct: number; label: ConfidenceLabel } {
-  const pct = sum > 0 ? Math.round((score / sum) * 100) : 0;
-  const label: ConfidenceLabel = pct >= 40 ? "High" : pct >= 22 ? "Med" : "Low";
-  return { pct, label };
-}
-
-function urgencyForCause(c: Cause, ctx: { symptoms?: string }): DiagnosisUrgency {
-  const text = `${c.title} ${c.why || ""} ${ctx.symptoms || ""}`.toLowerCase();
-  if (/(brake|oil pressure|no oil|seized|fire)/.test(text)) return "Stop";
-  if (/(overheat|coolant loss|head gasket|knock|stalling)/.test(text)) return "Caution";
-  if (c.severity === "high" && /(overheat|coolant|leak)/.test(text)) return "Caution";
-  return "Drive";
-}
-
-function estimateForCause(c: Cause): { partsCost: string; laborHours: string; diyDifficulty: string; tools: string[] } {
-  const text = `${c.title} ${c.why || ""}`.toLowerCase();
-  const toolsBase = ["Flashlight", "Gloves"];
-  if (/(coolant|radiator|thermostat|water pump|hose|leak|overheat)/.test(text)) {
-    return { partsCost: "$10–$250", laborHours: "0.5–4 hr", diyDifficulty: "DIY Moderate", tools: [...toolsBase, "Basic socket set", "Catch pan"] };
-  }
-  if (/(fan|fan clutch|airflow)/.test(text)) {
-    return { partsCost: "$50–$400", laborHours: "1–2.5 hr", diyDifficulty: "DIY Moderate", tools: [...toolsBase, "Basic socket set", "Multimeter (optional)"] };
-  }
-  if (/(misfire|spark|plug|coil|ignition)/.test(text)) {
-    return { partsCost: "$20–$300", laborHours: "0.5–3 hr", diyDifficulty: c.difficulty || "DIY Moderate", tools: [...toolsBase, "Spark plug socket", "OBD-II scanner (optional)"] };
-  }
-  if (/(battery|alternator|charging|voltage)/.test(text)) {
-    return { partsCost: "$120–$650", laborHours: "0.5–3 hr", diyDifficulty: "DIY Moderate", tools: [...toolsBase, "Multimeter", "Basic socket set"] };
-  }
-  if (/(fuel pump|injector|fuel pressure|fuel)/.test(text)) {
-    return { partsCost: "$80–$700", laborHours: "1–5 hr", diyDifficulty: "Mechanic Recommended", tools: [...toolsBase, "OBD-II scanner (optional)"] };
-  }
-  if (/(catalyst|converter|o2|emission|evap)/.test(text)) {
-    return { partsCost: "$60–$2,000", laborHours: "0.5–3 hr", diyDifficulty: "Mechanic Recommended", tools: [...toolsBase, "OBD-II scanner"] };
-  }
-  return { partsCost: "$0–$500+", laborHours: "0.5–4 hr", diyDifficulty: c.difficulty || "DIY Moderate", tools: toolsBase };
-}
-
 function buildWhyLikely(
   c: Cause,
   ctx: { code?: string; symptoms?: string; vehicle?: { year: string; make: string; model: string } | null; answers: Record<string, string> }
@@ -720,18 +696,7 @@ function buildFollowUpQuestions(doms: Domain[], code?: string, symptoms?: string
   return q.slice(0, 5);
 }
 
-function LikelyCausesPanel({
-  result,
-  theme,
-  code,
-  symptoms,
-  vehicle,
-  onShare,
-  onDownload,
-  onSaveToHistory,
-  vehicleId,
-  lang,
-}: {
+type LikelyCausesPanelProps = {
   result: ApiOk | ApiNoDefinition | null;
   theme: "dark" | "light";
   code?: string;
@@ -742,7 +707,52 @@ function LikelyCausesPanel({
   onSaveToHistory?: (session: DiagnosisSession) => void;
   vehicleId?: string | null;
   lang: LangCode;
-}) {
+};
+
+/**
+ * Wrapper that only decides WHICH state to show. It owns no hooks, so it can
+ * return early freely. All stateful logic lives in LikelyCausesResults, which is
+ * mounted only while there are causes to show — so its hooks always run in the
+ * same order (this is what used to crash the page on a second diagnosis).
+ */
+function LikelyCausesPanel(props: LikelyCausesPanelProps) {
+  const { result, theme, lang } = props;
+  const t = (dark: string, light: string) => theme === "dark" ? dark : light;
+
+  if (result && "noDefinition" in result && result.noDefinition) {
+    return (
+      <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
+        <div className={cn("text-sm font-semibold", t("text-amber-200", "text-amber-800"))}>No verified definition</div>
+        <p className={cn("mt-2 text-sm", t("text-slate-300", "text-slate-600"))}>{result.message}</p>
+        {result.code && <p className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>Code: {result.code}</p>}
+      </div>
+    );
+  }
+
+  if (!result || !("causes" in result) || !result.causes?.length) {
+    return (
+      <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
+        <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("likelyCauses", lang)}</div>
+        <div className={cn("mt-2 text-sm", t("text-slate-400", "text-slate-500"))}>Run a diagnostic to see causes here.</div>
+      </div>
+    );
+  }
+
+  return <LikelyCausesResults {...props} result={result} />;
+}
+
+function LikelyCausesResults({
+  result,
+  theme,
+  code,
+  symptoms,
+  vehicle,
+  onShare,
+  onDownload,
+  onSaveToHistory,
+  vehicleId,
+  lang,
+}: Omit<LikelyCausesPanelProps, "result"> & { result: ApiOk }) {
   const [openCauseId, setOpenCauseId] = useState<string | null>(null);
   const [refineAnswers, setRefineAnswers] = useState<Record<string, string>>({});
   const [guideMode, setGuideMode] = useState(false);
@@ -764,25 +774,6 @@ function LikelyCausesPanel({
       refineRef.current?.querySelector<HTMLButtonElement>("[data-refine-first]")?.focus();
     }, 150);
     setTimeout(() => setGuideHighlight(false), 2500);
-  }
-
-  if (result && "noDefinition" in result && result.noDefinition) {
-    return (
-      <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
-        <div className={cn("text-sm font-semibold", t("text-amber-200", "text-amber-800"))}>No verified definition</div>
-        <p className={cn("mt-2 text-sm", t("text-slate-300", "text-slate-600"))}>{result.message}</p>
-        {result.code && <p className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>Code: {result.code}</p>}
-      </div>
-    );
-  }
-
-  if (!result || !("causes" in result) || !result.causes?.length) {
-    return (
-      <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
-        <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("likelyCauses", lang)}</div>
-        <div className={cn("mt-2 text-sm", t("text-slate-400", "text-slate-500"))}>Run a diagnostic to see causes here.</div>
-      </div>
-    );
   }
 
   const causesWithId = useMemo(() => {
@@ -816,21 +807,6 @@ function LikelyCausesPanel({
 
   const followUps = useMemo(() => buildFollowUpQuestions(allDomains, code, symptoms), [allDomains, code, symptoms]);
 
-  const baselineById = useMemo(() => {
-    // Baseline confidence computed from original causes with no refine answers.
-    const scored = causesWithId.map(({ c, id }) => ({
-      id,
-      score: scoreCause(c, { code, symptoms, answers: {} }),
-    }));
-    const sum = scored.reduce((acc, x) => acc + x.score, 0);
-    const m = new Map<string, { pct: number; label: ConfidenceLabel }>();
-    scored.forEach((x) => {
-      const conf = confidenceFromScore(x.score, sum);
-      m.set(x.id, conf);
-    });
-    return m;
-  }, [causesWithId, code, symptoms]);
-
   const hasRefinements = useMemo(() => Object.keys(refineAnswers).length > 0, [refineAnswers]);
 
   const rankedCauses = useMemo(() => {
@@ -853,62 +829,29 @@ function LikelyCausesPanel({
       return b.score - a.score || a.originalIdx - b.originalIdx;
     });
 
-    const sum = sorted.reduce((acc, x) => acc + x.score, 0);
-
-    return sorted.map(({ c, id, score }) => {
-      const conf = confidenceFromScore(score, sum);
-      const est = estimateForCause(c);
-      return {
-        ...c,
-        id,
-        score,
-        confidencePct: conf.pct,
-        confidenceLabel: conf.label,
-        confidenceDeltaPct: hasRefinements ? conf.pct - (baselineById.get(id)?.pct ?? conf.pct) : 0,
-        whyLikely: buildWhyLikely(c, { code, symptoms, vehicle, answers: refineAnswers }),
-        urgency: urgencyForCause(c, { symptoms }),
-        partsCost: est.partsCost,
-        laborHours: est.laborHours,
-        diyDifficulty: est.diyDifficulty,
-        tools: est.tools,
-      };
-    });
-  }, [baselineById, causesWithId, code, hasRefinements, refineAnswers, symptoms, vehicle]);
+    // Only the ORDER is shown. Confidence percentages, cost/labour estimates and
+    // the "safe to drive" badge were removed: they were derived from keyword
+    // matching in the browser, not from the diagnosis, and will come back once
+    // the diagnosis itself supplies them as structured data.
+    return sorted.map(({ c, id, score }) => ({
+      ...c,
+      id,
+      score,
+      whyLikely: buildWhyLikely(c, { code, symptoms, vehicle, answers: refineAnswers }),
+    }));
+  }, [causesWithId, code, hasRefinements, refineAnswers, symptoms, vehicle]);
 
   const quickChecks = useMemo(
     () => buildQuickChecks(rankedCauses.slice(0, 3).map((c) => ({ c, id: c.id })), { code, symptoms }),
     [rankedCauses, code, symptoms]
   );
 
-  function urgencyPill(u: DiagnosisUrgency) {
-    if (u === "Stop") return { label: "Stop", cls: t("bg-red-500/15 text-red-300 border-red-500/30", "bg-red-50 text-red-700 border-red-200"), dot: "bg-red-400" };
-    if (u === "Caution") return { label: "Caution", cls: t("bg-amber-500/15 text-amber-300 border-amber-500/30", "bg-amber-50 text-amber-700 border-amber-200"), dot: "bg-amber-400" };
-    return { label: "Drive", cls: t("bg-emerald-500/15 text-emerald-300 border-emerald-500/30", "bg-emerald-50 text-emerald-700 border-emerald-200"), dot: "bg-emerald-400" };
-  }
-
-  function confPill(c: { confidencePct: number; confidenceLabel: ConfidenceLabel }) {
-    const base =
-      c.confidenceLabel === "High"
-        ? { cls: t("bg-blue-500/15 text-blue-300 border-blue-500/30", "bg-blue-50 text-blue-700 border-blue-200"), dot: "bg-blue-400" }
-        : c.confidenceLabel === "Med"
-          ? { cls: t("bg-sky-500/15 text-sky-300 border-sky-500/30", "bg-sky-50 text-sky-700 border-sky-200"), dot: "bg-sky-400" }
-          : { cls: t("bg-slate-500/15 text-slate-300 border-slate-500/30", "bg-slate-100 text-slate-600 border-slate-200"), dot: "bg-slate-400" };
-    return { label: `${c.confidencePct}%`, ...base };
-  }
-
   function buildSession(): DiagnosisSession | null {
     if (!vehicleId || !vehicle) return null;
     const finalRankedCauses: DiagnosisCauseSnapshot[] = rankedCauses.map((c) => ({
       id: c.id,
       title: c.title,
-      confidencePct: c.confidencePct,
-      confidenceLabel: c.confidenceLabel,
       whyLikely: c.whyLikely,
-      urgency: c.urgency,
-      partsCost: c.partsCost,
-      laborHours: c.laborHours,
-      diyDifficulty: c.diyDifficulty,
-      tools: c.tools,
       confirm: c.confirm,
       fix: c.fix,
     }));
@@ -977,16 +920,13 @@ function LikelyCausesPanel({
       addWrapped("Ranked causes:", 12, true, 6);
       session.finalRankedCauses.forEach((c, i) => {
         addWrapped(`${i + 1}. ${c.title}`, 11, true, 2);
-        addWrapped(`Confidence: ${c.confidencePct}% (${c.confidenceLabel}) • Urgency: ${c.urgency}`, 10, false, 2);
-        addWrapped(`Typical parts: ${c.partsCost} • Labor: ${c.laborHours} • DIY: ${c.diyDifficulty}`, 10, false, 2);
-        if (c.tools?.length) addWrapped(`Tools: ${c.tools.join(", ")}`, 10, false, 2);
         if (c.whyLikely?.length) addWrapped(`Why likely:\n- ${c.whyLikely.join("\n- ")}`, 10, false, 2);
         if (c.confirm?.length) addWrapped(`Confirm:\n- ${c.confirm.join("\n- ")}`, 10, false, 2);
         if (c.fix?.length) addWrapped(`Fix:\n- ${c.fix.join("\n- ")}`, 10, false, 8);
         y += 6;
       });
 
-      addWrapped("Disclaimer: Estimates only. Use safe lifting procedures and stop driving if the vehicle is unsafe to operate.", 9, false);
+      addWrapped("Disclaimer: AI-generated guidance, not a professional inspection. Causes are listed most likely first. Use safe lifting procedures and stop driving if the vehicle is unsafe to operate.", 9, false);
 
       doc.save(`carcode-diagnosis-${Date.now()}.pdf`);
     } catch {
@@ -1349,27 +1289,6 @@ function LikelyCausesPanel({
                         <span className={cn("h-1.5 w-1.5 rounded-full", sev.dot)} />
                         {sev.label}
                       </span>
-                      <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold", confPill(c).cls)}>
-                        <span className={cn("h-1.5 w-1.5 rounded-full", confPill(c).dot)} />
-                        {tr("confidence", lang)} {confPill(c).label}
-                      </span>
-                      {hasRefinements && typeof (c as any).confidenceDeltaPct === "number" && (c as any).confidenceDeltaPct !== 0 && (
-                        <span
-                          className={cn(
-                            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold",
-                            (c as any).confidenceDeltaPct > 0
-                              ? t("bg-emerald-500/15 text-emerald-300 border-emerald-500/30", "bg-emerald-50 text-emerald-700 border-emerald-200")
-                              : t("bg-red-500/15 text-red-300 border-red-500/30", "bg-red-50 text-red-700 border-red-200")
-                          )}
-                        >
-                          {(c as any).confidenceDeltaPct > 0 ? "+" : ""}
-                          {(c as any).confidenceDeltaPct}%
-                        </span>
-                      )}
-                      <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold", urgencyPill(c.urgency).cls)}>
-                        <span className={cn("h-1.5 w-1.5 rounded-full", urgencyPill(c.urgency).dot)} />
-                        {tr("urgency", lang)} {urgencyPill(c.urgency).label}
-                      </span>
                     </div>
                     {c.why && <div className={cn("mt-1 text-sm", t("text-slate-400", "text-slate-500"))}>{c.why}</div>}
                     {c.difficulty && (
@@ -1377,9 +1296,6 @@ function LikelyCausesPanel({
                         <span className={cn("inline-flex items-center gap-1 text-xs", diff.color)}>
                           {diff.icon}
                           {c.difficulty}
-                        </span>
-                        <span className={cn("text-xs", t("text-slate-400", "text-slate-500"))}>
-                          {tr("partsCost", lang)}: {c.partsCost} • {tr("laborHours", lang)}: {c.laborHours}
                         </span>
                       </div>
                     )}
@@ -1390,7 +1306,7 @@ function LikelyCausesPanel({
 
               {isOpen && (
                 <div className={cn("border-t px-5 py-5", t("border-white/10", "border-slate-200"))}>
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="grid grid-cols-1 gap-4">
                     <div className={cn("rounded-2xl p-4", t("border border-white/10 bg-white/5", "border border-slate-200 bg-slate-50"))}>
                       <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>{tr("whyLikely", lang)}</div>
                       <ul className={cn("mt-2 space-y-2 text-sm", t("text-slate-300", "text-slate-600"))}>
@@ -1402,24 +1318,7 @@ function LikelyCausesPanel({
                         ))}
                       </ul>
                       <div className={cn("mt-3 text-[11px] leading-relaxed", t("text-slate-400", "text-slate-500"))}>
-                        Estimates vary by vehicle/region. If symptoms are severe or safety-related, stop and tow.
-                      </div>
-                    </div>
-
-                    <div className={cn("rounded-2xl p-4", t("border border-white/10 bg-white/5", "border border-slate-200 bg-slate-50"))}>
-                      <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>Parts • Labor • Tools</div>
-                      <div className={cn("mt-2 text-sm", t("text-slate-300", "text-slate-600"))}>
-                        <div><span className="font-semibold">{tr("partsCost", lang)}:</span> {c.partsCost}</div>
-                        <div className="mt-1"><span className="font-semibold">{tr("laborHours", lang)}:</span> {c.laborHours}</div>
-                        <div className="mt-1"><span className="font-semibold">{tr("diyDifficulty", lang)}:</span> {c.diyDifficulty}</div>
-                      </div>
-                      <div className={cn("mt-3 text-xs font-semibold", t("text-white", "text-slate-900"))}>{tr("toolsNeeded", lang)}</div>
-                      <div className={cn("mt-2 flex flex-wrap gap-2", t("text-slate-300", "text-slate-600"))}>
-                        {(c.tools || []).map((tool: string) => (
-                          <span key={tool} className={cn("rounded-full px-2.5 py-1 text-[11px]", t("border border-white/10 bg-white/5", "border border-slate-200 bg-white"))}>
-                            {tool}
-                          </span>
-                        ))}
+                        This is guidance, not an inspection. If symptoms are severe or safety-related, stop driving and have the vehicle towed.
                       </div>
                     </div>
                   </div>
@@ -1499,7 +1398,9 @@ function Toast({ message, visible }: { message: string; visible: boolean }) {
 
 
 export default function Home() {
-  const { data: session } = useSession();
+  const { data: session, status: sessionStatus } = useSession();
+  // Until we know whether this is a guest or a signed-in user, no per-user data is loaded.
+  const sessionReady = sessionStatus !== "loading";
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     setMounted(true);
@@ -1515,7 +1416,12 @@ export default function Home() {
     syncing: garageSyncing,
     addVehicle: addGarageVehicle,
     deleteVehicle: deleteGarageVehicle,
-  } = useGarageVehicles({ userId: session?.user?.id });
+    guestVehicles,
+    importGuestVehicles,
+    dismissGuestVehicles,
+  } = useGarageVehicles({ userId: session?.user?.id, ready: sessionReady });
+  const [importingGuest, setImportingGuest] = useState(false);
+  const [guestImportNote, setGuestImportNote] = useState("");
 
 
   const theme = "dark" as const;
@@ -1530,15 +1436,19 @@ export default function Home() {
   const [confirmDialog, setConfirmDialog] = useState<{open:boolean, title:string, message:string, confirmLabel?:string, onConfirm:()=>void | Promise<void>} | null>(null);
 
   const [maintenanceRecords, setMaintenanceRecords] = useState<Record<string, MaintenanceRecord[]>>({});
+  // Nothing is written back to storage until the stored copy has been read,
+  // otherwise the initial empty state could overwrite saved data.
+  const [maintenanceLoaded, setMaintenanceLoaded] = useState(false);
 
   const [diagnosisSessions, setDiagnosisSessions] = useState<Record<string, DiagnosisSession[]>>({});
   const diagnosisStorageKey = session?.user?.id
     ? `carcode_diagnosis_sessions_v1:user:${session.user.id}`
-    : "carcode_diagnosis_sessions_v1:anon";
-  const prevDiagnosisStorageKey = useRef<string>(diagnosisStorageKey);
+    : DIAGNOSIS_ANON_STORAGE_KEY;
+  // Which key `diagnosisSessions` was loaded from; writes only go back to that key.
+  const [diagnosisLoadedKey, setDiagnosisLoadedKey] = useState<string | null>(null);
 
   const [showOnboarding, setShowOnboarding] = useState(false);
-  const [installPrompt, setInstallPrompt] = useState<any>(null);
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const [showInstallBanner, setShowInstallBanner] = useState(false);
 
   const garageFormRef = useRef<HTMLDivElement | null>(null);
@@ -1568,27 +1478,14 @@ export default function Home() {
 
   useEffect(() => {
     try {
-      const rawMaint = localStorage.getItem("carcode_maintenance_v1");
+      const rawMaint = localStorage.getItem(MAINTENANCE_STORAGE_KEY);
       if (rawMaint) {
-        setMaintenanceRecords(JSON.parse(rawMaint));
+        const parsed = JSON.parse(rawMaint);
+        if (parsed && typeof parsed === "object") setMaintenanceRecords(parsed);
       }
     } catch {}
+    setMaintenanceLoaded(true);
     // Diagnosis sessions are loaded in a dedicated effect (keyed by user/anon).
-    try {
-      // Clear previous account's cached diagnosis sessions on user change/sign-out (privacy).
-      if (prevDiagnosisStorageKey.current !== diagnosisStorageKey) {
-        try {
-          localStorage.removeItem(prevDiagnosisStorageKey.current);
-        } catch {}
-        prevDiagnosisStorageKey.current = diagnosisStorageKey;
-        setDiagnosisSessions({});
-      }
-      const rawDiag = localStorage.getItem(diagnosisStorageKey);
-      if (rawDiag) {
-        const parsed = JSON.parse(rawDiag);
-        setDiagnosisSessions(parsed && typeof parsed === "object" ? parsed : {});
-      }
-    } catch {}
     try {
       if (!localStorage.getItem("carcode_onboarded_v1")) {
         setShowOnboarding(true);
@@ -1602,7 +1499,7 @@ export default function Home() {
     const isMobile = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     const handleInstall = (e: Event) => {
       e.preventDefault();
-      setInstallPrompt(e);
+      setInstallPrompt(e as InstallPromptEvent);
       const dismissed = localStorage.getItem("carcode_install_dismissed");
       if (!dismissed && isMobile) setShowInstallBanner(true);
     };
@@ -1612,37 +1509,85 @@ export default function Home() {
     return () => window.removeEventListener("beforeinstallprompt", handleInstall);
   }, []);
 
+  // Saved diagnoses live only in this browser (one list for guests, one per
+  // account). Switching between them just changes which list is shown —
+  // nothing is deleted on sign-in or sign-out.
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    // Clear previous account's cached sessions on user change/sign-out (privacy).
-    if (prevDiagnosisStorageKey.current !== diagnosisStorageKey) {
-      try { window.localStorage.removeItem(prevDiagnosisStorageKey.current); } catch {}
-      prevDiagnosisStorageKey.current = diagnosisStorageKey;
-    }
-    try {
-      const raw = window.localStorage.getItem(diagnosisStorageKey);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        setDiagnosisSessions(parsed && typeof parsed === "object" ? parsed : {});
-      } else {
-        setDiagnosisSessions({});
-      }
-    } catch {
-      setDiagnosisSessions({});
-    }
-  }, [diagnosisStorageKey]);
+    if (typeof window === "undefined" || !sessionReady) return;
+    setDiagnosisSessions(readDiagnosisSessions(diagnosisStorageKey));
+    setDiagnosisLoadedKey(diagnosisStorageKey);
+  }, [diagnosisStorageKey, sessionReady]);
 
   useEffect(() => {
+    if (!maintenanceLoaded) return;
     try {
-      localStorage.setItem("carcode_maintenance_v1", JSON.stringify(maintenanceRecords));
+      localStorage.setItem(MAINTENANCE_STORAGE_KEY, JSON.stringify(maintenanceRecords));
     } catch {}
-  }, [maintenanceRecords]);
+  }, [maintenanceLoaded, maintenanceRecords]);
 
   useEffect(() => {
+    if (diagnosisLoadedKey !== diagnosisStorageKey) return;
     try {
       localStorage.setItem(diagnosisStorageKey, JSON.stringify(diagnosisSessions));
     } catch {}
-  }, [diagnosisSessions, diagnosisStorageKey]);
+  }, [diagnosisLoadedKey, diagnosisSessions, diagnosisStorageKey]);
+
+  /**
+   * "Import vehicles from this device": copy guest vehicles into the signed-in
+   * account, then move their on-device service records and saved diagnoses
+   * over to the new vehicle ids so that history follows the vehicle.
+   */
+  async function handleImportGuestVehicles() {
+    if (importingGuest) return;
+    setImportingGuest(true);
+    setGuestImportNote("");
+    try {
+      const outcome = await importGuestVehicles();
+
+      if (outcome.imported.length > 0) {
+        const idMap = new Map(outcome.imported.map(({ from, to }) => [from.id, to.id]));
+
+        setMaintenanceRecords((prev) => {
+          const next = { ...prev };
+          for (const [oldId, newId] of idMap) {
+            const moved = (next[oldId] || []).map((r) => ({ ...r, vehicleId: newId }));
+            if (moved.length) next[newId] = [...moved, ...(next[newId] || [])];
+            delete next[oldId];
+          }
+          return next;
+        });
+
+        const guestSessions = readDiagnosisSessions(DIAGNOSIS_ANON_STORAGE_KEY);
+        const remainingGuestSessions = { ...guestSessions };
+        const movedSessions: Record<string, DiagnosisSession[]> = {};
+        for (const [oldId, newId] of idMap) {
+          const list = (guestSessions[oldId] || []).map((s) => ({ ...s, vehicleId: newId }));
+          if (list.length) movedSessions[newId] = list;
+          delete remainingGuestSessions[oldId];
+        }
+        if (Object.keys(movedSessions).length > 0) {
+          setDiagnosisSessions((prev) => {
+            const next = { ...prev };
+            for (const [newId, list] of Object.entries(movedSessions)) next[newId] = [...list, ...(next[newId] || [])];
+            return next;
+          });
+          try {
+            localStorage.setItem(DIAGNOSIS_ANON_STORAGE_KEY, JSON.stringify(remainingGuestSessions));
+          } catch {}
+        }
+      }
+
+      const parts: string[] = [];
+      if (outcome.imported.length) parts.push(`${outcome.imported.length} ${tr("importResultImported", lang)}`);
+      if (outcome.duplicates.length) parts.push(`${outcome.duplicates.length} ${tr("importResultDuplicates", lang)}`);
+      if (outcome.failed.length) parts.push(`${outcome.failed.length} ${tr("importResultFailed", lang)}`);
+      setGuestImportNote(parts.join(" · "));
+    } catch {
+      setGuestImportNote(tr("importResultError", lang));
+    } finally {
+      setImportingGuest(false);
+    }
+  }
 
   function saveDiagnosisSession(sessionToSave: DiagnosisSession) {
     if (!sessionToSave?.vehicleId) return;
@@ -1796,8 +1741,8 @@ export default function Home() {
         setResult(data as ApiOk | ApiNoDefinition);
         setSearchPanelOpen(false);
       }
-    } catch (e: any) {
-      const msg = e?.message || "Network error.";
+    } catch (e: unknown) {
+      const msg = (e instanceof Error && e.message) || "Network error.";
       const isFetchFailed = /failed to fetch|network error|load failed/i.test(String(msg));
       setError(isFetchFailed
         ? "Couldn't reach the server. Make sure the app is running (e.g. npm run dev), and check your internet connection."
@@ -1862,7 +1807,7 @@ export default function Home() {
 
   const [makeOptions, setMakeOptions] = useState<{ id: number; name: string }[]>([]);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
-  const [engineOptions, setEngineOptions] = useState<any[]>([]);
+  const [engineOptions, setEngineOptions] = useState<string[]>([]);
 
   const yearOptions = useMemo(() => {
     const currentYear = new Date().getFullYear();
@@ -1887,10 +1832,11 @@ export default function Home() {
         if (cancelled) return;
         const raw = Array.isArray(d.makes) ? d.makes : [];
         const items = raw
-          .map((m: any) => {
-            if (typeof m === "string") return { id: 0, name: m };
-            const name = String(m?.name ?? m?.MakeName ?? m?.Make_Name ?? "").trim();
-            const id = Number(m?.id ?? m?.MakeId ?? m?.Make_ID ?? 0);
+          .map((entry: unknown) => {
+            if (typeof entry === "string") return { id: 0, name: entry };
+            const m = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>;
+            const name = String(m.name ?? m.MakeName ?? m.Make_Name ?? "").trim();
+            const id = Number(m.id ?? m.MakeId ?? m.Make_ID ?? 0);
             return id && name ? { id, name } : null;
           })
           .filter((x: { id: number; name: string } | null): x is { id: number; name: string } => x != null && x.name !== "");
@@ -1921,31 +1867,9 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [makeConfirmed, gMake, gYear, modelQ, makeOptions]);
 
-  useEffect(() => {
-    if (!gYear.trim() || !gMake.trim() || !gModel.trim()) { setEngineOptions([]); return; }
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(
-          `/api/vehicles/engines?year=${encodeURIComponent(gYear.trim())}&make=${encodeURIComponent(gMake.trim())}&model=${encodeURIComponent(gModel.trim())}`,
-          { cache: "no-store" }
-        );
-        const data = await res.json();
-        const list = Array.isArray(data?.engines) ? data.engines : [];
-        const seen = new Set<string>();
-        const deduped = list.filter((e: any) => {
-          const rawLabel = typeof e === "string" ? e : e?.label || e?.engine || "";
-          const key = engineLabel(String(rawLabel));
-          if (!key) return false;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-        if (!cancelled) setEngineOptions(deduped);
-      } catch { if (!cancelled) setEngineOptions([]); }
-    })();
-    return () => { cancelled = true; };
-  }, [gYear, gMake, gModel]);
+  // Engine is free text. The engine lookup this form used to call depended on a
+  // third-party API that no longer exists, so the only suggestions offered are
+  // the ones decoded from a VIN (see the VIN effect below).
 
   function selectModel(m: string) {
     setGModel(m);
@@ -2324,8 +2248,8 @@ export default function Home() {
                     <div className={cn("mt-1 ml-9 text-xs", t("text-slate-400", "text-slate-500"))}>{tr("enterCodeOrDescribe", lang)}</div>
 
                     <form className="mt-5 grid gap-3" onSubmit={(e) => { e.preventDefault(); runDiagnostic(new FormData(e.currentTarget)); }}>
-                      <input name="code" placeholder={tr("codePlaceholder", lang)} className={cn(inputClass, "rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")} />
-                      <textarea name="symptoms" placeholder={tr("symptomsPlaceholder", lang)} value={symptomsValue} onChange={(e) => setSymptomsValue(e.target.value)} className={cn(inputClass, "min-h-[100px] rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors resize-none")} />
+                      <input name="code" maxLength={120} autoComplete="off" placeholder={tr("codePlaceholder", lang)} className={cn(inputClass, "rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")} />
+                      <textarea name="symptoms" maxLength={800} placeholder={tr("symptomsPlaceholder", lang)} value={symptomsValue} onChange={(e) => setSymptomsValue(e.target.value)} className={cn(inputClass, "min-h-[100px] rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors resize-none")} />
 
                       <div className="flex flex-wrap gap-2">
                         {quickSymptoms.map((qs) => (
@@ -2407,6 +2331,58 @@ export default function Home() {
           </div>
         ) : tab === "garage" ? (
           <div key="tab-garage" className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[440px_1fr] animate-slide-in relative z-40">
+            {session?.user && (guestVehicles.length > 0 || guestImportNote) && (
+              <div
+                role="status"
+                className={cn("lg:col-span-2 rounded-2xl px-4 sm:px-5 py-4 flex flex-wrap items-center gap-3", t("bg-blue-500/10 border border-blue-500/20", "bg-blue-50 border border-blue-200"))}
+              >
+                <div className="flex-1 min-w-[200px]">
+                  {guestVehicles.length > 0 ? (
+                    <>
+                      <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>
+                        {guestVehicles.length} {guestVehicles.length === 1 ? tr("guestVehiclesFoundOne", lang) : tr("guestVehiclesFoundMany", lang)}
+                      </div>
+                      <div className={cn("mt-0.5 text-xs", t("text-slate-400", "text-slate-500"))}>
+                        {guestVehicles.slice(0, 3).map((v) => `${v.year} ${v.make} ${v.model}`).join(" · ")}
+                        {guestVehicles.length > 3 ? " …" : ""}
+                      </div>
+                      <div className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>{tr("guestVehiclesHint", lang)}</div>
+                    </>
+                  ) : null}
+                  {guestImportNote && (
+                    <div className={cn("text-xs", guestVehicles.length > 0 ? "mt-2" : "", t("text-blue-200", "text-blue-800"))}>{guestImportNote}</div>
+                  )}
+                </div>
+                {guestVehicles.length > 0 ? (
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleImportGuestVehicles}
+                      disabled={importingGuest || garageSyncing}
+                      className="rounded-xl bg-blue-500 px-4 py-2.5 text-xs font-semibold text-white shadow-md shadow-blue-500/25 transition-all hover:bg-blue-400 disabled:opacity-60"
+                    >
+                      {importingGuest ? tr("importing", lang) : tr("importFromDevice", lang)}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { dismissGuestVehicles(); setGuestImportNote(""); }}
+                      disabled={importingGuest}
+                      className={cn("rounded-xl px-3 py-2.5 text-xs font-semibold transition-all", t("border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10", "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"))}
+                    >
+                      {tr("notNow", lang)}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setGuestImportNote("")}
+                    className={cn("shrink-0 rounded-xl px-3 py-2 text-xs font-semibold transition-all", t("border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10", "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"))}
+                  >
+                    {tr("dismiss", lang)}
+                  </button>
+                )}
+              </div>
+            )}
             <div ref={garageFormRef} className={cn("rounded-3xl p-5 sm:p-6 animate-fade-in-up relative overflow-visible", cardStrongClass)}>
               <div className="flex items-center gap-2">
                 <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-blue-500/20">
@@ -2507,12 +2483,14 @@ export default function Home() {
                     name="engine"
                     value={gEngine}
                     onValueChange={setGEngine}
-                    options={engineOptions.map((e: any) => {
-                      const raw = typeof e === "string" ? e : e.label || e.engine;
-                      return { value: raw ?? "", label: engineLabel(String(raw ?? "")) };
-                    })}
-                    displayValue={engineLabel}
-                    placeholder={tr("engine", lang)}
+                    // Typed freely; a VIN-decoded engine is offered as a suggestion
+                    // (hidden once it is already the field's value).
+                    options={engineOptions.filter((e) => e && e !== gEngine)}
+                    placeholder={tr("enginePlaceholder", lang)}
+                    triggerType="input"
+                    allowCustomValue
+                    filterable={false}
+                    maxLength={100}
                     disabled={!gMake.trim() || !gModel.trim() || !gYear.trim()}
                     triggerClassName={cn(
                       inputClass,
@@ -2753,12 +2731,12 @@ export default function Home() {
                                       </button>
                                     </div>
                                   </div>
-                                  {(mr.mileageValue !== undefined || (mr as any).mileage) && (
+                                  {(mr.mileageValue !== undefined || (mr as LegacyMaintenanceRecord).mileage) && (
                                     <div className={cn("mt-0.5", t("text-slate-400", "text-slate-500"))}>
                                       {(
                                         mr.mileageValue !== undefined
                                           ? mr.mileageValue
-                                          : Number(String((mr as any).mileage ?? "").replace(/,/g, "")) || 0
+                                          : Number(String((mr as LegacyMaintenanceRecord).mileage ?? "").replace(/,/g, "")) || 0
                                       ).toLocaleString()}{" "}
                                       {mr.mileageUnit || "mi"}
                                     </div>

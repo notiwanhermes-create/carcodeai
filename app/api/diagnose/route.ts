@@ -2,6 +2,11 @@ import OpenAI from "openai";
 import { getCodeDefinition } from "../../lib/code-definition";
 import { normalizeCode } from "../../lib/code-parse";
 import { extractDtcCodes, lookupDtc, type DtcLookupResult } from "../../lib/dtc-lookup";
+import { parseDiagnoseBody } from "../../lib/diagnose-input";
+import { checkBurst, consumeDiagnosisQuota, diagnoseLimits, type DiagnoseCaller } from "../../lib/diagnose-guard";
+import { clientIpKey } from "../../lib/client-ip";
+import { readJsonBody } from "../../lib/http";
+import { auth } from "../../lib/auth-config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,15 +15,10 @@ const MAX_OUTPUT_TOKENS = 800; // hard cap to reduce TPM spikes
 const MAX_RETRIES = 4;
 const MAX_CONCURRENCY = 1; // prevent bursty concurrent requests
 
-type Body = {
-  code?: string;
-  year?: string;
-  make?: string;
-  model?: string;
-  engine?: string;
-  symptoms?: string;
-  lang?: string;
-};
+/** Messages that are safe to show to anyone. Internal details are only ever logged. */
+const GENERIC_UNAVAILABLE = "Diagnosis is temporarily unavailable. Please try again in a moment.";
+const GENERIC_BAD_RESULT =
+  "We couldn't complete that diagnosis. Please try again, or add a bit more detail (e.g. when it happens, where it seems to come from).";
 
 type CodeDefinitionPayload = {
   code: string;
@@ -56,14 +56,15 @@ function safeJsonParse(text: string) {
 /** Ensure parsed has a valid causes array; normalize items so each has title, why, severity, difficulty, confirm, fix. */
 function normalizeParsedResponse(parsed: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!parsed || typeof parsed !== "object") return null;
-  let causes = parsed.causes;
+  const causes = parsed.causes;
   if (!Array.isArray(causes) || causes.length === 0) return null;
-  const normalized = causes.map((c: any) => {
-    if (!c || typeof c !== "object") return null;
+  const normalized = causes.map((raw: unknown) => {
+    if (!raw || typeof raw !== "object") return null;
+    const c = raw as Record<string, unknown>;
     return {
       title: typeof c.title === "string" ? c.title : "Possible cause",
       why: typeof c.why === "string" ? c.why : "",
-      severity: ["high", "medium", "low"].includes(c.severity) ? c.severity : "medium",
+      severity: typeof c.severity === "string" && ["high", "medium", "low"].includes(c.severity) ? c.severity : "medium",
       difficulty: typeof c.difficulty === "string" ? c.difficulty : "DIY Moderate",
       confirm: Array.isArray(c.confirm) ? c.confirm.filter((x: unknown) => typeof x === "string") : [],
       fix: Array.isArray(c.fix) ? c.fix.filter((x: unknown) => typeof x === "string") : [],
@@ -74,8 +75,21 @@ function normalizeParsedResponse(parsed: Record<string, unknown> | null): Record
 }
 
 /** Always return JSON (no HTML). */
-function jsonResponse(body: object, status: number) {
-  return Response.json(body, { status, headers: { "Content-Type": "application/json" } });
+function jsonResponse(body: object, status: number, extraHeaders?: Record<string, string>) {
+  return Response.json(body, {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...extraHeaders },
+  });
+}
+
+/** Signed-in user id, or null. Never throws: an auth hiccup just means "guest". */
+async function getSignedInUserId(): Promise<string | null> {
+  try {
+    const session = await auth();
+    return session?.user?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function sleep(ms: number) {
@@ -92,8 +106,10 @@ function toInt(x: unknown): number | null {
   return Number.isFinite(n) ? Math.floor(n) : null;
 }
 
+type HeaderBag = { get?: (name: string) => string | null } & Record<string, unknown>;
+
 function getRetryAfterMsFromError(err: unknown): number | null {
-  const e = err as any;
+  const e = err as { headers?: HeaderBag } | null;
   const hdrs = e?.headers;
   const ra =
     (typeof hdrs?.get === "function" ? hdrs.get("retry-after") : null) ??
@@ -111,7 +127,7 @@ function getRetryAfterMsFromError(err: unknown): number | null {
 }
 
 function isRateLimit429(err: unknown): boolean {
-  const e = err as any;
+  const e = err as { status?: number; code?: string; error?: { code?: string } } | null;
   return e?.status === 429 || e?.code === "rate_limit_exceeded" || e?.error?.code === "rate_limit_exceeded";
 }
 
@@ -170,11 +186,27 @@ function parseCodeInput(raw: string): string[] {
 
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as Body;
+    const limits = diagnoseLimits();
+    const caller: DiagnoseCaller = { ipKey: clientIpKey(req), userId: await getSignedInUserId() };
 
-    const year = (body.year || "").trim();
-    const make = (body.make || "").trim();
-    const model = (body.model || "").trim();
+    // 1) Flood protection: every request from an IP counts, valid or not.
+    const burst = await checkBurst(caller);
+    if (!burst.allowed) {
+      return jsonResponse({ error: burst.error, code: burst.code }, burst.status, {
+        "Retry-After": String(burst.retryAfterSeconds),
+      });
+    }
+
+    // 2) Size-capped JSON body, then strict validation of every field.
+    const rawBody = await readJsonBody(req, limits.maxBodyBytes);
+    if (!rawBody.ok) {
+      return jsonResponse({ error: rawBody.error, code: rawBody.code }, rawBody.status);
+    }
+    const parsedBody = parseDiagnoseBody(rawBody.data);
+    if (!parsedBody.ok) {
+      return jsonResponse({ error: parsedBody.error, code: "invalid_request", field: parsedBody.field }, 400);
+    }
+    const { year, make, model, engine, code, symptoms, lang } = parsedBody.value;
 
     const langMap: Record<string, string> = {
       en: "English",
@@ -185,24 +217,11 @@ export async function POST(req: Request) {
       de: "German",
       zh: "Chinese",
     };
-    const outputLanguage = langMap[(body.lang || "en").trim()] || "English";
-
-    if (!year || !make || !model) {
-      return jsonResponse({ error: "Year, Make, and Model are required." }, 400);
-    }
-
-    const code = (body.code || "").trim();
-    const engine = (body.engine || "").trim();
-    const symptoms = truncate((body.symptoms || "").trim(), 800);
-    const lang = (body.lang || "en").trim();
-
-    if (!code && !symptoms) {
-      return jsonResponse({ error: "Enter a trouble code OR describe symptoms." }, 400);
-    }
+    const outputLanguage = langMap[lang] || "English";
 
     const vehicleLine = `${year} ${make} ${model}${engine ? ` (${engine})` : ""}`;
 
-    let verifiedDefinitions: CodeDefinitionPayload[] = [];
+    const verifiedDefinitions: CodeDefinitionPayload[] = [];
     let dtcResults: DtcLookupResult[] = [];
     let complaintLine: string;
 
@@ -322,8 +341,9 @@ export async function POST(req: Request) {
       "",
       "Return JSON with this schema:",
       "{",
-      `  "vehicle": "${vehicleLine}",`,
-      `  "input": { "code": "${truncate(code, 80)}", "symptoms": "${truncate(symptoms, 200)}" },`,
+      // JSON.stringify keeps this example valid even when the user typed quotes.
+      `  "vehicle": ${JSON.stringify(vehicleLine)},`,
+      `  "input": { "code": ${JSON.stringify(truncate(code, 80))}, "symptoms": ${JSON.stringify(truncate(symptoms, 200))} },`,
       '  "causes": [',
       '    { "title": "…", "why": "…", "severity": "high|medium|low", "difficulty": "…", "confirm": ["…"], "fix": ["…"] }',
       "  ]",
@@ -334,8 +354,18 @@ export async function POST(req: Request) {
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey?.trim()) {
-      return jsonResponse({ error: "OPENAI_API_KEY not set" }, 500);
+      console.error("[POST /api/diagnose] OPENAI_API_KEY is not set");
+      return jsonResponse({ error: GENERIC_UNAVAILABLE, code: "service_unavailable" }, 503);
     }
+
+    // 3) Usage allowance. Counted only now, when the request will reach the AI model.
+    const quota = await consumeDiagnosisQuota(caller);
+    if (!quota.allowed) {
+      return jsonResponse({ error: quota.error, code: quota.code }, quota.status, {
+        "Retry-After": String(quota.retryAfterSeconds),
+      });
+    }
+
     const openai = new OpenAI({ apiKey: apiKey.trim() });
 
     const release = await openAiSemaphore.acquire();
@@ -364,13 +394,8 @@ export async function POST(req: Request) {
               await sleep(jitterMs(400 * (attempt + 1)));
               continue;
             }
-            return jsonResponse(
-              {
-                error: "The diagnosis didn’t come back in the right format. Please try again or add a bit more detail (e.g. when the noise happens, where it seems to come from).",
-                debug: text.slice(0, 500),
-              },
-              500
-            );
+            console.error("[POST /api/diagnose] model output could not be parsed after retries; length:", text.length);
+            return jsonResponse({ error: GENERIC_BAD_RESULT, code: "bad_result" }, 502);
           }
 
           if (dtcResults.length > 0) {
@@ -404,13 +429,17 @@ export async function POST(req: Request) {
       release();
     }
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "Server error.";
-    const status = isRateLimit429(e) ? 429 : 500;
-    // Log so Vercel/server logs show the real cause (e.g. OPENAI_API_KEY, DATABASE_URL, API errors).
-    console.error("[POST /api/diagnose]", message, e instanceof Error ? e.name : "");
-    const payload: { error: string; code?: string } = { error: message };
-    if (message.includes("OPENAI_API_KEY")) payload.code = "OPENAI_API_KEY";
-    else if (message.includes("DATABASE_URL")) payload.code = "DATABASE_URL";
-    return jsonResponse(payload, status);
+    // The real cause goes to the server log only (Vercel logs). The browser
+    // gets a generic message: no provider errors, keys, or stack details.
+    const message = e instanceof Error ? e.message : String(e);
+    console.error("[POST /api/diagnose]", e instanceof Error ? e.name : "Error", message);
+    if (isRateLimit429(e)) {
+      return jsonResponse(
+        { error: "CarCode AI is very busy right now. Please try again in a minute.", code: "busy" },
+        503,
+        { "Retry-After": "30" },
+      );
+    }
+    return jsonResponse({ error: GENERIC_UNAVAILABLE, code: "service_unavailable" }, 503);
   }
 }

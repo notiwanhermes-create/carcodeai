@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-function clean(v: any) {
+function clean(v: unknown) {
   const s = String(v ?? "").trim();
   if (!s || s === "0" || s.toLowerCase() === "not applicable") return "";
   return s;
@@ -31,7 +31,9 @@ export async function GET(request: Request) {
     const model = clean(row.Model);
     const trim = clean(row.Trim);
 
-    const dispL = clean(row.DisplacementL);      // "2.0"
+    // NHTSA returns values like "2.998832712": show one decimal ("3.0").
+    const dispNum = Number(clean(row.DisplacementL));
+    const dispL = Number.isFinite(dispNum) && dispNum > 0 ? dispNum.toFixed(1) : "";
     const cyl = clean(row.EngineCylinders);      // "4"
     const fuel = clean(row.FuelTypePrimary);     // "Gasoline"
 
@@ -43,7 +45,7 @@ export async function GET(request: Request) {
       decoded: { year, make, model, trim },
       suggestions,
     });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, decoded: null, suggestions: [], error: e?.message ?? "Error" });
+  } catch (e: unknown) {
+    return NextResponse.json({ ok: false, decoded: null, suggestions: [], error: e instanceof Error ? e.message : "Error" });
   }
 }

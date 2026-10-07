@@ -1,3 +1,6 @@
+/* eslint-disable @typescript-eslint/no-explicit-any --
+   Legacy CarQuery response parsing. The CarQuery API no longer exists and the
+   garage form no longer calls this route; it is replaced in Phase 2. */
 import { NextResponse } from "next/server";
 
 type EngineOption = {

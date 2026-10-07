@@ -1,34 +1,58 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createHash } from "crypto";
 import { Pool } from "pg";
 import { Resend } from "resend";
 import { appendFile, mkdir } from "fs/promises";
 import { join } from "path";
+import { consumeRateLimit, envInt } from "@/app/lib/rate-limit";
+import { clientIpKey } from "@/app/lib/client-ip";
+import { auth } from "@/app/lib/auth-config";
 
-const AUTO_REPLY_MAX_PER_HOUR = 3;
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+/**
+ * Limits (per IP, hashed). Configurable; 0 disables a limit.
+ *   FEEDBACK_IP_HOURLY_LIMIT  default 5
+ *   FEEDBACK_IP_DAILY_LIMIT   default 20
+ *   FEEDBACK_REPLY_DAILY_LIMIT  confirmation emails per signed-in user per day, default 2
+ */
+const HOUR_SECONDS = 60 * 60;
+const DAY_SECONDS = 24 * HOUR_SECONDS;
+const MAX_BODY_BYTES = 16 * 1024;
+const LIMITS = { name: 100, email: 254, message: 2000, pageUrl: 500 } as const;
+
+const GENERIC_ERROR = "Unable to send feedback right now. Please try again later.";
+
+type FeedbackPayload = {
+  name: string;
+  email: string;
+  rating: number | null;
+  message: string;
+  pageUrl: string | null;
+  createdAt: string;
+};
 
 /** Basic email format validation (RFC 5322 simplified). */
 function isValidEmail(email: string): boolean {
-  const trimmed = email.trim();
-  if (trimmed.length > 254) return false;
-  const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return re.test(trimmed);
+  if (email.length > LIMITS.email) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-function getClientIp(req: NextRequest): string {
-  const forwarded = req.headers.get("x-forwarded-for");
-  const first = forwarded?.split(",")[0]?.trim();
-  if (first) return first;
-  const real = req.headers.get("x-real-ip");
-  if (real) return real;
-  return "unknown";
-}
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 
-function hashIp(ip: string): string {
-  return createHash("sha256").update(ip + (process.env.RATE_LIMIT_SALT ?? "feedback")).digest("hex").slice(0, 32);
+/** Keep only origin + path: query strings can carry tokens and personal data. */
+function sanitizePageUrl(raw: string | null): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim().slice(0, LIMITS.pageUrl);
+  try {
+    const u = new URL(trimmed);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return `${u.origin}${u.pathname}`.slice(0, LIMITS.pageUrl);
+  } catch {
+    return null;
+  }
 }
-
-const GENERIC_ERROR = "Unable to send feedback right now. Please try again later.";
 
 let feedbackPool: Pool | null = null;
 
@@ -51,7 +75,6 @@ function getPool(): Pool {
 }
 
 let tableReady = false;
-let rateLimitTableReady = false;
 
 async function ensureFeedbackTable(client: import("pg").PoolClient) {
   await client.query(`
@@ -64,61 +87,18 @@ async function ensureFeedbackTable(client: import("pg").PoolClient) {
       page_url TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
+    -- The table may have been created elsewhere with a "page" column instead.
+    ALTER TABLE feedback ADD COLUMN IF NOT EXISTS page_url TEXT;
   `);
   tableReady = true;
-}
-
-async function ensureRateLimitTable(client: import("pg").PoolClient) {
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS feedback_auto_reply_log (
-      id SERIAL PRIMARY KEY,
-      email_lower TEXT NOT NULL,
-      ip_hash TEXT NOT NULL,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    );
-    CREATE INDEX IF NOT EXISTS idx_feedback_auto_reply_log_lookup
-    ON feedback_auto_reply_log (email_lower, ip_hash, created_at);
-  `);
-  rateLimitTableReady = true;
-}
-
-async function canSendAutoReply(
-  client: import("pg").PoolClient,
-  emailLower: string,
-  ipHash: string
-): Promise<boolean> {
-  const r = await client.query(
-    `SELECT COUNT(*)::int AS n FROM feedback_auto_reply_log
-     WHERE email_lower = $1 AND ip_hash = $2 AND created_at > NOW() - INTERVAL '1 hour'`,
-    [emailLower, ipHash]
-  );
-  return (r.rows[0]?.n ?? 0) < AUTO_REPLY_MAX_PER_HOUR;
-}
-
-async function recordAutoReplySent(
-  client: import("pg").PoolClient,
-  emailLower: string,
-  ipHash: string
-): Promise<void> {
-  await client.query(
-    `INSERT INTO feedback_auto_reply_log (email_lower, ip_hash) VALUES ($1, $2)`,
-    [emailLower, ipHash]
-  );
 }
 
 function safeLog(msg: string, meta?: Record<string, unknown>) {
   console.error("[feedback]", msg, meta ?? "");
 }
 
-/** Send feedback notification email via Resend. Logs on failure; does not throw. */
-async function sendFeedbackEmail(payload: {
-  name: string;
-  email: string;
-  rating: number | null;
-  message: string;
-  pageUrl: string | null;
-  createdAt: string;
-}) {
+/** Notify the site owner. The owner's own inbox is the only place user text is emailed to. */
+async function sendFeedbackEmail(payload: FeedbackPayload) {
   const apiKey = process.env.RESEND_API_KEY;
   const to = process.env.FEEDBACK_TO;
   const from = process.env.FEEDBACK_FROM;
@@ -141,85 +121,48 @@ async function sendFeedbackEmail(payload: {
     const { error } = await resend.emails.send({
       from,
       to: [to],
-      replyTo: to,
       subject,
       text: body,
     });
-    if (error) {
-      safeLog("email failed", { error: error.message });
-    }
+    if (error) safeLog("email failed", { error: error.message });
   } catch (e) {
     safeLog("email error", { err: (e as Error)?.message });
   }
 }
 
-/** Send auto-reply to user. Logs on failure; does not throw. */
-async function sendAutoReplyToUser(payload: {
-  name: string;
-  email: string;
-  rating: number | null;
-  message: string;
-  pageUrl: string | null;
-  createdAt: string;
-}): Promise<void> {
+/**
+ * Confirmation email. Sent ONLY to the signed-in user's own account address,
+ * and it contains fixed text only — nothing the submitter typed. This is what
+ * stops the endpoint from being used to send email to arbitrary people.
+ */
+async function sendConfirmationToAccountEmail(accountEmail: string): Promise<void> {
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.FEEDBACK_FROM;
   const to = process.env.FEEDBACK_TO;
-  if (!apiKey || !from || !to) return;
-  const subject =
-    process.env.FEEDBACK_REPLY_SUBJECT?.trim() || "We got your feedback — CarCode AI";
-  const snippet =
-    payload.message.length > 200
-      ? payload.message.slice(0, 200).replace(/\n/g, " ") + "…"
-      : payload.message.replace(/\n/g, " ");
+  if (!apiKey || !from) return;
+  const subject = process.env.FEEDBACK_REPLY_SUBJECT?.trim() || "We got your feedback — CarCode AI";
   const text = [
     "Thanks for your feedback! We've received it and will use it to improve CarCode AI.",
     "",
-    "Here's what you sent:",
-    snippet,
-    "",
-    `If you have more to add, just reply to this email or contact us at ${to}.`,
+    "If you have more to add, just reply to this email.",
   ].join("\n");
-  const html = [
-    "<p>Thanks for your feedback! We've received it and will use it to improve CarCode AI.</p>",
-    "<p><strong>What you sent:</strong></p>",
-    `<p>${escapeHtml(snippet)}</p>`,
-    `<p>If you have more to add, just reply to this email or contact us at <a href="mailto:${escapeHtml(to)}">${escapeHtml(to)}</a>.</p>`,
-  ].join("");
   try {
     const resend = new Resend(apiKey);
     const { error } = await resend.emails.send({
       from,
-      to: [payload.email],
-      replyTo: to,
+      to: [accountEmail],
+      ...(to ? { replyTo: to } : {}),
       subject,
       text,
-      html,
     });
-    if (error) safeLog("auto-reply failed", { hasUserEmail: true, messageLen: payload.message.length });
+    if (error) safeLog("confirmation email failed", {});
   } catch {
-    safeLog("auto-reply error", { hasUserEmail: true, messageLen: payload.message.length });
+    safeLog("confirmation email error", {});
   }
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-/** Fallback when DATABASE_URL is missing: write to file and log, then return success. */
-async function saveFeedbackFallback(payload: {
-  name: string;
-  email: string;
-  rating: number | null;
-  message: string;
-  pageUrl: string | null;
-  createdAt: string;
-}) {
+/** Fallback when DATABASE_URL is missing: write to file and log. */
+async function saveFeedbackFallback(payload: FeedbackPayload) {
   const line = JSON.stringify(payload) + "\n";
   safeLog("no-db fallback", {
     messageLen: payload.message.length,
@@ -234,118 +177,147 @@ async function saveFeedbackFallback(payload: {
     } catch {
       /* dir may already exist */
     }
-    const file = join(dir, "feedback.jsonl");
-    await appendFile(file, line, "utf8");
+    await appendFile(join(dir, "feedback.jsonl"), line, "utf8");
   } catch (e) {
     safeLog("fallback file write failed", { err: (e as Error)?.message });
   }
 }
 
-function json(status: number, body: { ok: true } | { ok: false; error: string }) {
-  return NextResponse.json(body, { status });
+async function saveFeedback(payload: FeedbackPayload) {
+  if (!process.env.DATABASE_URL) {
+    await saveFeedbackFallback(payload);
+    return;
+  }
+  const client = await getPool().connect();
+  try {
+    if (!tableReady) await ensureFeedbackTable(client);
+    await client.query(
+      `INSERT INTO feedback (name, email, rating, message, page_url) VALUES ($1, $2, $3, $4, $5)`,
+      [payload.name || null, payload.email || null, payload.rating, payload.message, payload.pageUrl],
+    );
+  } finally {
+    client.release();
+  }
+}
+
+type ErrorBody = { ok: false; error: string; code?: string };
+
+function json(status: number, body: { ok: true } | ErrorBody, headers?: Record<string, string>) {
+  return NextResponse.json(body, { status, headers: { "Cache-Control": "no-store", ...headers } });
 }
 
 export function GET() {
-  try {
-    return json(200, { ok: true });
-  } catch {
-    return json(500, { ok: false, error: GENERIC_ERROR });
-  }
+  return json(200, { ok: true });
 }
 
 export async function POST(req: NextRequest) {
   try {
+    // 1) Rate limit per IP before doing any work.
+    const ipKey = clientIpKey(req);
+    const hourly = await consumeRateLimit(`feedback:ip:hour:${ipKey}`, envInt("FEEDBACK_IP_HOURLY_LIMIT", 5), HOUR_SECONDS);
+    const daily = hourly.allowed
+      ? await consumeRateLimit(`feedback:ip:day:${ipKey}`, envInt("FEEDBACK_IP_DAILY_LIMIT", 20), DAY_SECONDS)
+      : hourly;
+    if (!hourly.allowed || !daily.allowed) {
+      const retryAfter = !hourly.allowed ? hourly.retryAfterSeconds : daily.retryAfterSeconds;
+      return json(
+        429,
+        { ok: false, code: "rate_limited", error: "You've sent a lot of feedback recently. Please try again later." },
+        { "Retry-After": String(retryAfter) },
+      );
+    }
+
+    // 2) Size-capped JSON body.
+    const declared = Number(req.headers.get("content-length") || "0");
+    if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+      return json(413, { ok: false, code: "payload_too_large", error: "Request is too large." });
+    }
     let body: Record<string, unknown>;
     try {
-      body = await req.json();
+      const text = await req.text();
+      if (Buffer.byteLength(text, "utf8") > MAX_BODY_BYTES) {
+        return json(413, { ok: false, code: "payload_too_large", error: "Request is too large." });
+      }
+      const parsed: unknown = JSON.parse(text);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+      body = parsed as Record<string, unknown>;
     } catch {
       return json(400, { ok: false, error: "Invalid request body (expected JSON)" });
     }
 
-    const name = typeof body.name === "string" ? body.name : "";
-    const email = typeof body.email === "string" ? body.email : "";
+    // 3) Validate every field.
+    const optionalText = (v: unknown) => (v === undefined || v === null ? "" : v);
+    const nameRaw = optionalText(body.name);
+    const emailRaw = optionalText(body.email);
+    const messageRaw = optionalText(body.message);
+    const pageRaw = optionalText(body.pageUrl ?? body.page);
+    if ([nameRaw, emailRaw, messageRaw, pageRaw].some((v) => typeof v !== "string")) {
+      return json(400, { ok: false, error: "Invalid request body (expected JSON)" });
+    }
+    const name = (nameRaw as string).replace(CONTROL_CHARS, " ").trim();
+    const email = (emailRaw as string).trim();
+    const message = (messageRaw as string).replace(CONTROL_CHARS, " ").trim();
     const rating = body.rating;
-    const message = typeof body.message === "string" ? body.message : "";
-    const pageUrl =
-      (typeof body.pageUrl === "string" ? body.pageUrl : null) ||
-      (typeof body.page === "string" ? body.page : null);
 
-    if (!message.trim()) {
+    if (!message) {
       return json(400, { ok: false, error: "Please enter your feedback message" });
     }
-    if (message.trim().length > 2000) {
-      return json(400, { ok: false, error: "Message is too long (max 2000 characters)" });
+    if (message.length > LIMITS.message) {
+      return json(400, { ok: false, error: `Message is too long (max ${LIMITS.message} characters)` });
     }
-    if (rating !== undefined && (typeof rating !== "number" || rating < 1 || rating > 5)) {
+    if (name.length > LIMITS.name) {
+      return json(400, { ok: false, error: `Name is too long (max ${LIMITS.name} characters)` });
+    }
+    if (email && !isValidEmail(email)) {
+      return json(400, { ok: false, error: "Please enter a valid email address" });
+    }
+    if (rating !== undefined && rating !== null && (typeof rating !== "number" || !Number.isInteger(rating) || rating < 1 || rating > 5)) {
       return json(400, { ok: false, error: "Rating must be between 1 and 5" });
     }
 
-    const createdAt = new Date().toISOString();
-    const payload = {
-      name: name.trim() || "",
-      email: email.trim() || "",
-      rating: rating == null ? null : Number(rating),
-      message: message.trim(),
-      pageUrl: pageUrl?.trim() || null,
-      createdAt,
+    const payload: FeedbackPayload = {
+      name,
+      email,
+      rating: typeof rating === "number" ? rating : null,
+      message,
+      pageUrl: sanitizePageUrl((pageRaw as string) || null),
+      createdAt: new Date().toISOString(),
     };
 
-    if (process.env.DATABASE_URL) {
-      try {
-        const p = getPool();
-        const client = await p.connect();
-        try {
-          if (!tableReady) await ensureFeedbackTable(client);
-          if (!rateLimitTableReady) await ensureRateLimitTable(client);
-          await client.query(
-            `INSERT INTO feedback (name, email, rating, message, page_url) VALUES ($1, $2, $3, $4, $5)`,
-            [
-              payload.name || null,
-              payload.email || null,
-              payload.rating,
-              payload.message,
-              payload.pageUrl ?? null,
-            ]
-          );
-          safeLog("submitted", { hasUserEmail: !!payload.email, messageLen: payload.message.length });
-          await sendFeedbackEmail(payload);
+    // 4) Store it. This is the only step that can fail the request.
+    try {
+      await saveFeedback(payload);
+    } catch (err: unknown) {
+      safeLog("db failure", { code: (err as { code?: string })?.code, message: (err as Error)?.message });
+      return json(500, { ok: false, error: GENERIC_ERROR });
+    }
+    safeLog("submitted", { hasUserEmail: !!payload.email, messageLen: payload.message.length });
 
-          const userEmail = payload.email.trim();
-          if (userEmail && isValidEmail(userEmail)) {
-            const from = process.env.FEEDBACK_FROM;
-            if (!from?.trim()) {
-              safeLog("auto-reply config missing", {});
-              return json(500, {
-                ok: false,
-                error: "Server configuration error. Please try again later.",
-              });
-            }
-            const ip = getClientIp(req);
-            const ipHash = hashIp(ip);
-            const emailLower = userEmail.toLowerCase();
-            const allowed = await canSendAutoReply(client, emailLower, ipHash);
-            if (allowed) {
-              await sendAutoReplyToUser(payload);
-              await recordAutoReplySent(client, emailLower, ipHash);
-            }
-          }
-        } finally {
-          client.release();
-        }
-        return json(200, { ok: true });
-      } catch (err: unknown) {
-        const code = (err as { code?: string })?.code;
-        const msg = (err as { message?: string })?.message ?? "Unknown error";
-        safeLog("db failure", { code, message: msg });
-        return json(500, { ok: false, error: GENERIC_ERROR });
+    // 5) Emails never turn a saved submission into an error.
+    await sendFeedbackEmail(payload);
+
+    if (payload.email) {
+      let session: { user?: { id?: string; email?: string | null } } | null = null;
+      try {
+        session = await auth();
+      } catch {
+        session = null;
+      }
+      const accountEmail = session?.user?.email?.trim().toLowerCase();
+      const userId = session?.user?.id;
+      if (userId && accountEmail && accountEmail === payload.email.toLowerCase()) {
+        const allowed = await consumeRateLimit(
+          `feedback:reply:user:${userId}`,
+          envInt("FEEDBACK_REPLY_DAILY_LIMIT", 2),
+          DAY_SECONDS,
+        );
+        if (allowed.allowed) await sendConfirmationToAccountEmail(accountEmail);
       }
     }
 
-    await saveFeedbackFallback(payload);
     return json(200, { ok: true });
   } catch (err: unknown) {
-    const msg = (err as { message?: string })?.message ?? "Unknown error";
-    safeLog("unexpected error", { message: msg });
+    safeLog("unexpected error", { message: (err as Error)?.message ?? "Unknown error" });
     return json(500, { ok: false, error: GENERIC_ERROR });
   }
 }

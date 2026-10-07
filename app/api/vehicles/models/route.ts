@@ -70,18 +70,16 @@ export async function GET(request: Request) {
       if (!r.ok) return NextResponse.json({ models: [] });
 
       const data = await r.json();
-      const results: any[] = data?.Results ?? [];
+      const results: Array<Record<string, unknown>> = data?.Results ?? [];
 
       const all: string[] = results
-        .filter((x: any) => {
+        .filter((x) => {
           if (year) return true;
           const vtId = x?.VehicleTypeId;
           if (!vtId) return true;
-          return CAR_VEHICLE_TYPE_IDS.has(vtId);
+          return CAR_VEHICLE_TYPE_IDS.has(Number(vtId));
         })
-        .map((x: { Model_Name?: string; ModelName?: string }) =>
-          String(x?.Model_Name ?? x?.ModelName ?? "").trim()
-        )
+        .map((x) => String(x?.Model_Name ?? x?.ModelName ?? "").trim())
         .filter(Boolean);
       unique = Array.from(new Set(all)).sort((a, b) => a.localeCompare(b));
       modelsCache.set(cacheKey, { list: unique, time: now });

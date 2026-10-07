@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const vehicleId = searchParams.get("vehicleId");
 
-  const where: any = { userId: session.user.id };
+  const where: { userId: string; vehicleId?: string } = { userId: session.user.id };
   if (vehicleId) where.vehicleId = vehicleId;
 
   const records = await prisma.maintenanceRecord.findMany({

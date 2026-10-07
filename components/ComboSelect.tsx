@@ -31,6 +31,8 @@ export type ComboSelectProps = {
   onBlur?: () => void;
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onSelect?: (value: string) => void;
+  /** Longest text the field accepts (applies to free-text "input" fields). */
+  maxLength?: number;
 };
 
 export function ComboSelect({
@@ -50,6 +52,7 @@ export function ComboSelect({
   onBlur,
   onKeyDown,
   onSelect: onSelectProp,
+  maxLength,
 }: ComboSelectProps) {
   const [open, setOpen] = React.useState(false);
   const [inputText, setInputText] = React.useState("");
@@ -60,6 +63,8 @@ export function ComboSelect({
   const triggerRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  // Set when the user picks a suggestion; cleared when they type again.
+  const suppressAutoOpenRef = React.useRef(false);
 
   const display = displayValue ? displayValue(value) : value;
 
@@ -111,6 +116,7 @@ export function ComboSelect({
       } else {
         onValueChange(v);
       }
+      suppressAutoOpenRef.current = true;
       setOpen(false);
       setInputText("");
       setIsTyping(false);
@@ -121,6 +127,7 @@ export function ComboSelect({
   const handleInputChange = React.useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const val = e.target.value;
+      suppressAutoOpenRef.current = false;
       if (triggerType === "input") {
         onValueChange(val);
       } else {
@@ -141,11 +148,18 @@ export function ComboSelect({
     if (options.length > 0) setOpen(true);
   }, [disabled, options.length, triggerType]);
 
+  // Free-text fields: show suggestions as they arrive, but only while the user
+  // is typing in THIS field. Without the focus check the list re-opened on every
+  // parent re-render (and after a value was filled in from elsewhere, e.g. a VIN
+  // decode) and sat on top of the fields below it.
+  const optionsKey = React.useMemo(() => options.map(optionValue).join("\u0001"), [options]);
   React.useEffect(() => {
-    if (triggerType === "input" && options.length > 0 && value.trim()) {
+    if (triggerType !== "input" || !optionsKey || !value.trim()) return;
+    if (suppressAutoOpenRef.current) return;
+    if (typeof document !== "undefined" && document.activeElement === inputRef.current) {
       setOpen(true);
     }
-  }, [options, triggerType, value]);
+  }, [optionsKey, triggerType, value]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -226,6 +240,7 @@ export function ComboSelect({
         aria-expanded={open}
         aria-haspopup="listbox"
         placeholder={placeholder}
+        maxLength={triggerType === "input" ? maxLength : undefined}
         autoComplete="off"
         className={triggerClassName}
       />

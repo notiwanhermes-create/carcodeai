@@ -1,17 +1,16 @@
 import { NextResponse } from "next/server";
 
-const CACHE_TTL_MS = 10 * 60 * 1000;
+const NHTSA = "https://vpic.nhtsa.dot.gov/api/vehicles";
+/** Cars, SUVs/minivans and pickups. Motorcycles, trailers, buses etc. are left out. */
+const VEHICLE_TYPES = ["passenger car", "multipurpose passenger vehicle (mpv)", "truck"];
+
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const CACHE_MAX_ENTRIES = 500;
+const UPSTREAM_TIMEOUT_MS = 8000;
 const modelsCache = new Map<string, { list: string[]; time: number }>();
 
 function normalize(s: string) {
   return s.trim().toLowerCase();
-}
-
-function makeKey(s: string) {
-  return s
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "");
 }
 
 function scoreModel(name: string, q: string) {
@@ -23,80 +22,85 @@ function scoreModel(name: string, q: string) {
   return 0;
 }
 
-const CAR_VEHICLE_TYPE_IDS = new Set([2, 7, 10]);
+type NhtsaModelRow = { Make_Name?: unknown; Model_Name?: unknown };
+
+/**
+ * Models for one make (and optional year) across the three vehicle types.
+ * NHTSA matches make names loosely ("ford" also returns other manufacturers
+ * with "ford" in their name), so rows are kept only when the make matches exactly.
+ * Returns null when NHTSA could not be reached at all.
+ */
+async function fetchModels(make: string, year: string): Promise<string[] | null> {
+  const wantedMake = make.trim().toUpperCase();
+  const base = `${NHTSA}/GetModelsForMakeYear/make/${encodeURIComponent(make)}`;
+  const urls = VEHICLE_TYPES.map((type) =>
+    year
+      ? `${base}/modelyear/${encodeURIComponent(year)}/vehicletype/${encodeURIComponent(type)}?format=json`
+      : `${base}/vehicletype/${encodeURIComponent(type)}?format=json`,
+  );
+
+  const settled = await Promise.allSettled(
+    urls.map(async (url) => {
+      const r = await fetch(url, { next: { revalidate: 86400 }, signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
+      if (!r.ok) throw new Error(`NHTSA responded ${r.status}`);
+      const data = (await r.json()) as { Results?: NhtsaModelRow[] };
+      return data.Results ?? [];
+    }),
+  );
+
+  if (settled.every((s) => s.status === "rejected")) return null;
+
+  const names = new Set<string>();
+  for (const s of settled) {
+    if (s.status !== "fulfilled") continue;
+    for (const row of s.value) {
+      if (String(row.Make_Name ?? "").trim().toUpperCase() !== wantedMake) continue;
+      const name = String(row.Model_Name ?? "").trim();
+      if (name) names.add(name);
+    }
+  }
+  return Array.from(names).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const makeRaw = (searchParams.get("make") ?? "").trim();
-  const make = makeRaw;
-  const makeIdRaw = (searchParams.get("makeId") ?? "").trim();
-  const makeId = makeIdRaw ? Number(makeIdRaw) : undefined;
-  const year = (searchParams.get("year") ?? "").trim();
-  const qRaw = (searchParams.get("q") ?? "").trim();
-  const q = normalize(qRaw);
+  const make = (searchParams.get("make") ?? "").trim().slice(0, 60);
+  const yearRaw = (searchParams.get("year") ?? "").trim();
+  const year = /^\d{4}$/.test(yearRaw) ? yearRaw : "";
+  const q = normalize((searchParams.get("q") ?? "").slice(0, 60));
 
-  if (!make && !makeId) return NextResponse.json({ models: [] });
+  if (!make) return NextResponse.json({ models: [] });
 
-  const cacheKey = makeId ? `makeId:${makeId}|${year}` : `${makeKey(make)}|${year}`;
+  const cacheKey = `${make.toUpperCase()}|${year}`;
+  const now = Date.now();
+  const cached = modelsCache.get(cacheKey);
 
-  try {
-    let unique: string[];
-
-    const cached = modelsCache.get(cacheKey);
-    const now = Date.now();
-    if (cached && now - cached.time < CACHE_TTL_MS) {
-      unique = cached.list;
-    } else {
-      let url: string;
-      if (makeId) {
-        url = year
-          ? `https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeIdYear/makeId/${encodeURIComponent(
-              String(makeId)
-            )}/modelyear/${encodeURIComponent(year)}?format=json`
-          : `https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeId/makeId/${encodeURIComponent(
-              String(makeId)
-            )}?format=json`;
-      } else {
-        url = year
-          ? `https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeYear/make/${encodeURIComponent(
-              make
-            )}/modelyear/${encodeURIComponent(year)}/vehicletype/passenger%20car?format=json`
-          : `https://vpic.nhtsa.dot.gov/api/vehicles/GetModelsForMakeYear/make/${encodeURIComponent(
-              make
-            )}/vehicletype/passenger%20car?format=json`;
-      }
-
-      const r = await fetch(url, { cache: "no-store" });
-      if (!r.ok) return NextResponse.json({ models: [] });
-
-      const data = await r.json();
-      const results: Array<Record<string, unknown>> = data?.Results ?? [];
-
-      const all: string[] = results
-        .filter((x) => {
-          if (year) return true;
-          const vtId = x?.VehicleTypeId;
-          if (!vtId) return true;
-          return CAR_VEHICLE_TYPE_IDS.has(Number(vtId));
-        })
-        .map((x) => String(x?.Model_Name ?? x?.ModelName ?? "").trim())
-        .filter(Boolean);
-      unique = Array.from(new Set(all)).sort((a, b) => a.localeCompare(b));
-      modelsCache.set(cacheKey, { list: unique, time: now });
+  let list: string[];
+  if (cached && now - cached.time < CACHE_TTL_MS) {
+    list = cached.list;
+  } else {
+    let fetched: string[] | null = null;
+    try {
+      fetched = await fetchModels(make, year);
+    } catch {
+      fetched = null;
     }
-
-    if (!q) {
-      return NextResponse.json({ models: unique });
+    if (fetched === null) {
+      // The form lets people type a model, so an outage degrades to "no suggestions".
+      return NextResponse.json({ models: [], unavailable: true });
     }
-
-    const filtered = unique.filter((name) => normalize(name).includes(q));
-    const ranked = filtered
-      .map((name) => ({ name, s: scoreModel(name, q) }))
-      .sort((a, b) => b.s - a.s || a.name.localeCompare(b.name))
-      .map((x) => x.name);
-
-    return NextResponse.json({ models: ranked });
-  } catch {
-    return NextResponse.json({ models: [] });
+    list = fetched;
+    if (modelsCache.size >= CACHE_MAX_ENTRIES) modelsCache.clear();
+    modelsCache.set(cacheKey, { list, time: now });
   }
+
+  if (!q) return NextResponse.json({ models: list });
+
+  const ranked = list
+    .map((name) => ({ name, s: scoreModel(name, q) }))
+    .filter((x) => x.s > 0)
+    .sort((a, b) => b.s - a.s || a.name.localeCompare(b.name, undefined, { numeric: true }))
+    .map((x) => x.name);
+
+  return NextResponse.json({ models: ranked });
 }

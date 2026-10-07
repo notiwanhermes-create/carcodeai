@@ -10,6 +10,8 @@ import { VehicleDeleteButton } from "../components/VehicleDeleteButton";
 import { LANGUAGES, tr, type LangCode } from "./data/translations";
 import { useGarageVehicles } from "./lib/useGarageVehicles";
 import { getMakeLogo } from "./lib/make-logos";
+import { isValidVinFormat, normalizeVin } from "./lib/vin";
+import { completeMakeName } from "./data/vehicle-makes";
 type EngineOption =
   | string
   | {
@@ -1816,7 +1818,11 @@ export default function Home() {
     return years;
   }, []);
 
-  const [vinLocked, setVinLocked] = useState(false);
+  const [vinStatus, setVinStatus] = useState<
+    | { kind: "idle" | "loading" }
+    | { kind: "ok" | "warn"; vehicle: string }
+    | { kind: "error"; code: "invalid_format" | "not_recognized" | "unavailable" }
+  >({ kind: "idle" });
 
   const makeQ = useDebouncedValue(gMake, 150);
   const modelQ = useDebouncedValue(gModel, 200);
@@ -1854,9 +1860,7 @@ export default function Home() {
     let cancelled = false;
     async function run() {
       const make = gMake.trim();
-      const makeId = makeOptions.find((m) => m.name === make)?.id;
       let url = `/api/vehicles/models?make=${encodeURIComponent(make)}`;
-      if (makeId) url += `&makeId=${makeId}`;
       if (gYear.trim()) url += `&year=${encodeURIComponent(gYear.trim())}`;
       if (modelQ.trim()) url += `&q=${encodeURIComponent(modelQ.trim())}`;
       const r = await fetch(url);
@@ -1865,7 +1869,7 @@ export default function Home() {
     }
     run().catch(() => { if (!cancelled) setModelOptions([]); });
     return () => { cancelled = true; };
-  }, [makeConfirmed, gMake, gYear, modelQ, makeOptions]);
+  }, [makeConfirmed, gMake, gYear, modelQ]);
 
   // Engine is free text. The engine lookup this form used to call depended on a
   // third-party API that no longer exists, so the only suggestions offered are
@@ -1874,35 +1878,58 @@ export default function Home() {
   function selectModel(m: string) {
     setGModel(m);
     setModelOptions([]);
-    setGEngine("");
-    setEngineOptions([]);
   }
 
+  // VIN decode. Only a complete, well-formed 17-character VIN is sent: partial
+  // VINs used to be decoded from the 11th character on, which filled the form
+  // with guesses. A decoded VIN is authoritative, so it replaces what was typed.
   useEffect(() => {
+    const vin = normalizeVin(vinQ);
+    if (vin.length < 17) {
+      setVinStatus({ kind: "idle" });
+      return;
+    }
+    if (!isValidVinFormat(vin)) {
+      setVinStatus({ kind: "error", code: "invalid_format" });
+      return;
+    }
+
     let cancelled = false;
-    async function run() {
-      const vin = vinQ.trim().toUpperCase();
-      if (vin.length < 11) { setVinLocked(false); return; }
-      const r = await fetch(`/api/vehicles/vin?vin=${encodeURIComponent(vin)}`);
-      const data = await r.json();
-      if (cancelled) return;
-      const decoded = data?.decoded;
-      const suggestions = Array.isArray(data?.suggestions) ? data.suggestions : [];
-      setEngineOptions(suggestions);
-      const canFill = !vinLocked || (!gYear.trim() && !gMake.trim() && !gModel.trim());
-      if (decoded?.year && decoded?.make && decoded?.model && canFill) {
+    setVinStatus({ kind: "loading" });
+    (async () => {
+      try {
+        const r = await fetch(`/api/vehicles/vin?vin=${encodeURIComponent(vin)}`);
+        const data = (await r.json()) as {
+          ok?: boolean;
+          decoded?: { year?: string; make?: string; model?: string } | null;
+          suggestions?: unknown;
+          code?: string;
+        };
+        if (cancelled) return;
+
+        const decoded = data?.decoded;
+        if (!data?.ok || !decoded?.year || !decoded?.make || !decoded?.model) {
+          setVinStatus({ kind: "error", code: data?.code === "unavailable" ? "unavailable" : "not_recognized" });
+          return;
+        }
+
+        const suggestions = Array.isArray(data.suggestions)
+          ? data.suggestions.filter((s): s is string => typeof s === "string" && s.length > 0)
+          : [];
         setGYear(decoded.year);
         setGMake(decoded.make);
+        setMakeConfirmed(true);
         setGModel(decoded.model);
-        setVinLocked(true);
+        setEngineOptions(suggestions);
+        setGEngine(suggestions[0] ?? "");
+        setVinStatus({
+          kind: data.code === "check_digit" ? "warn" : "ok",
+          vehicle: `${decoded.year} ${decoded.make} ${decoded.model}`,
+        });
+      } catch {
+        if (!cancelled) setVinStatus({ kind: "error", code: "unavailable" });
       }
-      if (!gEngine.trim() && suggestions.length > 0) {
-        setGEngine(suggestions[0]);
-      }
-    }
-    run().catch(() => {
-      if (!cancelled) { setEngineOptions([]); setVinLocked(false); }
-    });
+    })();
     return () => { cancelled = true; };
   }, [vinQ]);
 
@@ -2400,8 +2427,25 @@ export default function Home() {
                   placeholder={tr("vinPlaceholder", lang)}
                   value={gVin}
                   onChange={(e) => setGVin(e.target.value)}
+                  maxLength={20}
+                  autoCapitalize="characters"
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-describedby="vin-status"
                   className={cn(inputClass, "rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")}
                 />
+                <div id="vin-status" role="status" className="-mt-1 min-h-[1rem] px-1 text-xs">
+                  {vinStatus.kind === "loading" && <span className="text-slate-400">{tr("vinDecoding", lang)}</span>}
+                  {vinStatus.kind === "ok" && <span className="text-emerald-300">✓ {vinStatus.vehicle}</span>}
+                  {vinStatus.kind === "warn" && (
+                    <span className="text-amber-300">{vinStatus.vehicle} — {tr("vinCheckWarning", lang)}</span>
+                  )}
+                  {vinStatus.kind === "error" && (
+                    <span className="text-red-300">
+                      {tr(vinStatus.code === "invalid_format" ? "vinInvalid" : vinStatus.code === "unavailable" ? "vinUnavailable" : "vinNotRecognized", lang)}
+                    </span>
+                  )}
+                </div>
                 <div className="grid grid-cols-2 gap-3 overflow-visible">
                   <ComboSelect
                     name="make"
@@ -2431,7 +2475,12 @@ export default function Home() {
                     triggerType="input"
                     allowCustomValue
                     filterable={false}
-                    onBlur={() => { if (gMake.trim()) setMakeConfirmed(true); }}
+                    onBlur={() => {
+                      if (!gMake.trim()) return;
+                      const listed = completeMakeName(gMake);
+                      if (listed !== gMake) setGMake(listed);
+                      setMakeConfirmed(true);
+                    }}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         if (gMake.trim()) setMakeConfirmed(true);
@@ -2466,9 +2515,16 @@ export default function Home() {
                   <ComboSelect
                     name="model"
                     value={gModel}
-                    onValueChange={selectModel}
+                    // Typed freely, with NHTSA models offered as suggestions. If the
+                    // list is empty or NHTSA is down, the vehicle can still be added.
+                    onValueChange={setGModel}
+                    onSelect={selectModel}
                     options={modelOptions}
                     placeholder={tr("model", lang)}
+                    triggerType="input"
+                    allowCustomValue
+                    filterable={false}
+                    maxLength={60}
                     disabled={!makeConfirmed || !gMake.trim()}
                     triggerClassName={cn(
                       inputClass,

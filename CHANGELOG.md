@@ -1,5 +1,30 @@
 # Changelog
 
+## Phase 2A — vehicle data — 2026-10-06
+
+Branch `fix/phase-2a-vehicle-data`. No database or environment changes.
+
+- **Makes (H7):** suggestions come from a curated list of 64 car and light-truck
+  makes (`app/data/vehicle-makes.ts`) instead of NHTSA’s 12,000-entry
+  manufacturer registry. Typing "for" now offers Ford, not trailer builders.
+  Leaving the field uses the listed spelling ("chev" → Chevrolet). Unlisted
+  makes can still be typed.
+- **Models (H8):** cars, SUVs/minivans and pickups are looked up together and
+  merged, other manufacturers that NHTSA matches loosely are dropped, and
+  motorcycles/ATVs no longer appear. The Model field is now free text with
+  suggestions, so a missing model or an NHTSA outage no longer blocks adding a
+  vehicle. Results are cached and upstream calls time out after 8 seconds.
+- **VIN (H9):** only a complete 17-character VIN is decoded (partial VINs used
+  to fill the form with guesses). The form shows what was found, or why not. A
+  VIN whose check digit does not match is decoded with a warning.
+- **Engine (H10/C3):** the VIN-decoded engine now reads like
+  "3.0L V6 (J30A4) Gasoline": displacement, layout, turbo, engine code and fuel,
+  using only what NHTSA returned. Hybrids and EVs are labelled.
+- Removed `/api/vehicles/engines` (its CarQuery upstream no longer exists).
+- Dropdowns close when their field loses focus (they used to stay open over the
+  fields below when leaving with the Tab key).
+- Tests: 87 (was 72).
+
 ## Phase 0 and Phase 1 — 2026-10-05
 
 Branch `fix/phase-0-1-critical` (on top of `main`, not pushed).

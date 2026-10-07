@@ -223,6 +223,9 @@ export function ComboSelect({
           const related = e.relatedTarget as Node | null;
           if (listRef.current && related && listRef.current.contains(related)) return;
           setTimeout(() => {
+            // Leaving the field (for example with Tab) closes its suggestions.
+            // Without this the list stayed open over the fields below it.
+            setOpen(false);
             setIsTyping(false);
             setInputText("");
             onBlur?.();

@@ -11,6 +11,6 @@ Nothing in this folder is loaded by the app.
     off) and at least one maker-specific text (P0563). Its origin is not recorded.
 - `oem-bmw-seed.unverified.json` — four hard-coded BMW entries with no recorded source.
 
-To bring data back: add it to `app/data/dtc/generic.json` or
-`app/data/dtc/manufacturer.json` with a real `source`, and only after checking it against
-that source. See `app/lib/dtc.ts` for the rules.
+Nothing here is to be copied back by hand. Definitions enter the app only as a data source
+listed in `app/data/dtc/sources.ts`, from a provider we are licensed to use. See
+`app/data/dtc/ATTRIBUTION.md` for the steps and `app/lib/dtc.ts` for the checks.

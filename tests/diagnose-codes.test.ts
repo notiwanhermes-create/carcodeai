@@ -1,7 +1,7 @@
 /**
  * The diagnose endpoint must pass the right trust level for each code to the
  * AI model, report every code back to the page, and never ask the model to
- * guess a manufacturer-specific meaning.
+ * guess the meaning of a code that has no definition on file.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -67,14 +67,62 @@ describe("POST /api/diagnose — trouble code handling", () => {
     expect(promptSent()).toContain('Definition on file: "Random/Multiple Cylinder Misfire Detected"');
   });
 
-  it("no longer refuses a standardized code that has no definition on file", async () => {
-    const res = await POST(makeReq({ code: "P2096" }));
+  it("does not call the model to guess a standard-range code that has no definition on file", async () => {
+    for (const code of ["P2096", "P0301", "U0073", "P2096 P0301"]) {
+      const res = await POST(makeReq({ code }));
+      expect(res.status, code).toBe(200); // reported, not an error
+      const data = await res.json();
+      expect(data.noDefinition).toBe(true);
+      expect(data.causes).toBeUndefined();
+      expect(data.summary_title).toBeUndefined();
+      expect(data.codes[0]).toMatchObject({ status: "generic_unverified", definition: null, verified: false });
+      expect(data.message).toMatch(/does not have a verified definition for (this code|these codes) yet/);
+      expect(data.message).not.toMatch(/manufacturer-specific/);
+    }
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("does not call the model for a code whose range is uncertain", async () => {
+    for (const code of ["P3400", "U3000", "B3000"]) {
+      const res = await POST(makeReq({ code }));
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.noDefinition).toBe(true);
+      expect(data.codes[0]).toMatchObject({ code, status: "uncertain_unavailable", definition: null, verified: false });
+    }
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("with symptoms, diagnoses from the symptoms and tells the model the standard code's definition is unavailable", async () => {
+    const res = await POST(makeReq({ make: "Honda", code: "P2096", symptoms: "rough idle when cold" }));
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.codes[0]).toMatchObject({ code: "P2096", status: "generic_unverified", definition: null, verified: false });
     expect(data.causes).toHaveLength(1);
-    expect(promptSent()).toMatch(/P2096: standardized \(generic\) OBD-II code, but NO verified definition is on file/);
+    expect(data.codes[0]).toMatchObject({ code: "P2096", status: "generic_unverified", definition: null, verified: false });
     expect(data.summary_title).toBeUndefined();
+    expect(createMock).toHaveBeenCalledTimes(1);
+    const prompt = promptSent();
+    expect(prompt).toMatch(/P2096: the exact definition of this code is NOT available/);
+    expect(prompt).toMatch(/Do NOT state, guess, invent or imply what this code means/);
+    expect(prompt).toContain("Symptoms: rough idle when cold");
+    expect(prompt).not.toMatch(/Definition on file|Verified definition|general knowledge/);
+  });
+
+  it("still diagnoses when at least one code has a definition, and marks the others as unavailable", async () => {
+    const res = await POST(makeReq({ code: "P0300 P2096 P3400" }));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.codes.map((c: { code: string; status: string }) => `${c.code}:${c.status}`)).toEqual([
+      "P0300:generic_definition",
+      "P2096:generic_unverified",
+      "P3400:uncertain_unavailable",
+    ]);
+    expect(data.summary_title).toBe("P0300: Random/Multiple Cylinder Misfire Detected");
+    expect(createMock).toHaveBeenCalledTimes(1);
+    const prompt = promptSent();
+    expect(prompt).toContain('Definition on file: "Random/Multiple Cylinder Misfire Detected"');
+    expect(prompt).toMatch(/P2096: the exact definition of this code is NOT available/);
+    expect(prompt).toMatch(/P3400: the exact definition of this code is NOT available, and it is not known/);
   });
 
   it("processes the known code and flags the unknown one instead of failing the request", async () => {
@@ -109,6 +157,15 @@ describe("POST /api/diagnose — trouble code handling", () => {
     expect(prompt).toMatch(/P1345: manufacturer-specific code\. Its exact meaning for BMW is NOT available/);
     expect(prompt).toContain("Symptoms: rough idle when cold");
     expect(prompt).not.toMatch(/Authoritative code definition/i);
+  });
+
+  it("uses one clear message when unsupported codes of different kinds are entered together", async () => {
+    const res = await POST(makeReq({ make: "BMW", code: "P1345 P2096 hello" }));
+    const data = await res.json();
+    expect(data.noDefinition).toBe(true);
+    expect(data.codes.map((c: { status: string }) => c.status)).toEqual(["manufacturer_unavailable", "generic_unverified", "invalid"]);
+    expect(data.message).toMatch(/does not have a verified definition for these codes yet/);
+    expect(createMock).not.toHaveBeenCalled();
   });
 
   it("uses both the codes and the symptoms when both are given", async () => {

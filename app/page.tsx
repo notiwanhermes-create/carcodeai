@@ -712,7 +712,7 @@ function CodeStatusList({ codes, lang }: { codes: DtcResult[]; lang: LangCode })
         const note =
           c.status === "generic_definition"
             ? tr(c.verified ? "codeVerifiedDefinition" : "codeStandardDefinition", lang)
-            : c.status === "generic_unverified"
+            : c.status === "generic_unverified" || c.status === "uncertain_unavailable"
               ? tr("codeDefinitionNotVerified", lang)
               : c.status === "manufacturer_definition"
                 ? `${c.make}: ${tr("codeManufacturerSpecific", lang)}`

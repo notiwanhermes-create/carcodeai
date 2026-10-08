@@ -1,10 +1,10 @@
 [
-  { "code": "P0011", "title": "\"A\" Camshaft Position - Timing Over-Advanced or System Performance (Bank 1)", "source": "SAE J2012 / ISO 15031-6 standardized title", "verification": "curated" },
-  { "code": "P0016", "title": "Crankshaft Position - Camshaft Position Correlation (Bank 1 Sensor A)", "source": "SAE J2012 / ISO 15031-6 standardized title", "verification": "curated" },
-  { "code": "P0171", "title": "System Too Lean (Bank 1)", "source": "SAE J2012 / ISO 15031-6 standardized title", "verification": "curated" },
-  { "code": "P0300", "title": "Random/Multiple Cylinder Misfire Detected", "source": "SAE J2012 / ISO 15031-6 standardized title", "verification": "curated" },
-  { "code": "P0420", "title": "Catalyst System Efficiency Below Threshold (Bank 1)", "source": "SAE J2012 / ISO 15031-6 standardized title", "verification": "curated" },
-  { "code": "P0455", "title": "Evaporative Emission System Leak Detected (Large Leak)", "source": "SAE J2012 / ISO 15031-6 standardized title", "verification": "curated" },
-  { "code": "P0A80", "title": "Replace Hybrid Battery Pack", "source": "SAE J2012 / ISO 15031-6 standardized title", "verification": "curated" },
-  { "code": "U0100", "title": "Lost Communication With ECM/PCM \"A\"", "source": "SAE J2012 / ISO 15031-6 standardized title", "verification": "curated" }
+  { "code": "P0011", "title": "\"A\" Camshaft Position - Timing Over-Advanced or System Performance (Bank 1)", "source": "Entered by hand from the widely published title of this code. Not checked against licensed SAE J2012-DA data.", "verification": "curated" },
+  { "code": "P0016", "title": "Crankshaft Position - Camshaft Position Correlation (Bank 1 Sensor A)", "source": "Entered by hand from the widely published title of this code. Not checked against licensed SAE J2012-DA data.", "verification": "curated" },
+  { "code": "P0171", "title": "System Too Lean (Bank 1)", "source": "Entered by hand from the widely published title of this code. Not checked against licensed SAE J2012-DA data.", "verification": "curated" },
+  { "code": "P0300", "title": "Random/Multiple Cylinder Misfire Detected", "source": "Entered by hand from the widely published title of this code. Not checked against licensed SAE J2012-DA data.", "verification": "curated" },
+  { "code": "P0420", "title": "Catalyst System Efficiency Below Threshold (Bank 1)", "source": "Entered by hand from the widely published title of this code. Not checked against licensed SAE J2012-DA data.", "verification": "curated" },
+  { "code": "P0455", "title": "Evaporative Emission System Leak Detected (Large Leak)", "source": "Entered by hand from the widely published title of this code. Not checked against licensed SAE J2012-DA data.", "verification": "curated" },
+  { "code": "P0A80", "title": "Replace Hybrid Battery Pack", "source": "Entered by hand from the widely published title of this code. Not checked against licensed SAE J2012-DA data.", "verification": "curated" },
+  { "code": "U0100", "title": "Lost Communication With ECM/PCM \"A\"", "source": "Entered by hand from the widely published title of this code. Not checked against licensed SAE J2012-DA data.", "verification": "curated" }
 ]

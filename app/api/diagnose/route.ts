@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { describeCodesForPrompt, isUsableForDiagnosis, lookupCodes, type DtcResult } from "../../lib/dtc";
+import { describeCodesForPrompt, hasDefinitionOnFile, lookupCodes, type DtcResult } from "../../lib/dtc";
 import { parseDiagnoseBody } from "../../lib/diagnose-input";
 import { checkBurst, consumeDiagnosisQuota, diagnoseLimits, type DiagnoseCaller } from "../../lib/diagnose-guard";
 import { clientIpKey } from "../../lib/client-ip";
@@ -208,23 +208,24 @@ export async function POST(req: Request) {
     // Every code the user entered gets an explicit result. Nothing is guessed,
     // and one bad code never fails the whole request.
     const codeResults: DtcResult[] = code ? lookupCodes(code, make) : [];
-    const usableCodes = codeResults.filter(isUsableForDiagnosis);
+    const definedCodes = codeResults.filter(hasDefinitionOnFile);
 
-    // Nothing to reason about: only invalid codes, or manufacturer-specific codes
-    // with no verified definition, and no symptoms. Say so instead of asking the
-    // model to guess. No AI call is made and no quota is used.
-    if (codeResults.length > 0 && usableCodes.length === 0 && !symptoms) {
-      const onlyInvalid = codeResults.every((r) => r.status === "invalid");
-      return jsonResponse(
-        {
-          noDefinition: true,
-          codes: codeResults,
-          message: onlyInvalid
-            ? "We couldn't recognise that as a trouble code. Check it and try again, or describe the symptoms instead."
-            : "This code is manufacturer-specific and CarCode AI does not currently have a verified definition for this vehicle. Describe the symptoms as well and we can still help narrow it down.",
-        },
-        200,
-      );
+    // Nothing to reason from: no code has a definition on file (standard code we
+    // can't vouch for, manufacturer-specific code, or not a code at all) and there
+    // are no symptoms. Say so instead of asking the model to guess what the code
+    // means. No AI call is made and no quota is used.
+    if (codeResults.length > 0 && definedCodes.length === 0 && !symptoms) {
+      const recognised = codeResults.filter((r) => r.status !== "invalid");
+      let message: string;
+      if (recognised.length === 0) {
+        message = "We couldn't recognise that as a trouble code. Check it and try again, or describe the symptoms instead.";
+      } else if (recognised.every((r) => r.status === "manufacturer_unavailable")) {
+        message =
+          "This code is manufacturer-specific and CarCode AI does not currently have a verified definition for this vehicle. Describe the symptoms as well and we can still help narrow it down.";
+      } else {
+        message = `CarCode AI does not have a verified definition for ${recognised.length === 1 ? "this code" : "these codes"} yet, so we won't guess what ${recognised.length === 1 ? "it means" : "they mean"}. Describe the symptoms as well and we can still help narrow it down.`;
+      }
+      return jsonResponse({ noDefinition: true, codes: codeResults, message }, 200);
     }
 
     const complaintParts: string[] = [];
@@ -244,7 +245,7 @@ export async function POST(req: Request) {
       "No prices/cost estimates.",
       "severity must be: high | medium | low.",
       `difficulty must be translated into ${outputLanguage}.`,
-      "Never state an exact definition for a trouble code unless one is given to you below. Follow the note attached to each code exactly.",
+      "Never state, guess or imply the definition of a trouble code unless that definition is given to you below. Follow the note attached to each code exactly.",
     ].join("\n");
 
     const user = [

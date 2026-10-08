@@ -1,7 +1,5 @@
 import OpenAI from "openai";
-import { getCodeDefinition } from "../../lib/code-definition";
-import { normalizeCode } from "../../lib/code-parse";
-import { extractDtcCodes, lookupDtc, type DtcLookupResult } from "../../lib/dtc-lookup";
+import { describeCodesForPrompt, isUsableForDiagnosis, lookupCodes, type DtcResult } from "../../lib/dtc";
 import { parseDiagnoseBody } from "../../lib/diagnose-input";
 import { checkBurst, consumeDiagnosisQuota, diagnoseLimits, type DiagnoseCaller } from "../../lib/diagnose-guard";
 import { clientIpKey } from "../../lib/client-ip";
@@ -19,13 +17,6 @@ const MAX_CONCURRENCY = 1; // prevent bursty concurrent requests
 const GENERIC_UNAVAILABLE = "Diagnosis is temporarily unavailable. Please try again in a moment.";
 const GENERIC_BAD_RESULT =
   "We couldn't complete that diagnosis. Please try again, or add a bit more detail (e.g. when it happens, where it seems to come from).";
-
-type CodeDefinitionPayload = {
-  code: string;
-  title: string;
-  description: string;
-  source: string | null;
-};
 
 /** Strip markdown code fences so we can parse JSON that the model wrapped in ```json ... ``` */
 function stripJsonFences(raw: string): string {
@@ -177,13 +168,6 @@ class Semaphore {
 
 const openAiSemaphore = new Semaphore(MAX_CONCURRENCY);
 
-/** Split code input by comma and trim; also support single OEM hex codes. */
-function parseCodeInput(raw: string): string[] {
-  const parts = raw.split(",").map((p) => p.trim()).filter(Boolean);
-  if (parts.length > 0) return parts;
-  return [raw.trim()].filter(Boolean);
-}
-
 export async function POST(req: Request) {
   try {
     const limits = diagnoseLimits();
@@ -221,100 +205,34 @@ export async function POST(req: Request) {
 
     const vehicleLine = `${year} ${make} ${model}${engine ? ` (${engine})` : ""}`;
 
-    const verifiedDefinitions: CodeDefinitionPayload[] = [];
-    let dtcResults: DtcLookupResult[] = [];
-    let complaintLine: string;
+    // Every code the user entered gets an explicit result. Nothing is guessed,
+    // and one bad code never fails the whole request.
+    const codeResults: DtcResult[] = code ? lookupCodes(code, make) : [];
+    const usableCodes = codeResults.filter(isUsableForDiagnosis);
 
-    if (code) {
-      const codes = parseCodeInput(code);
-      for (const singleCode of codes) {
-        const lookup = await getCodeDefinition(singleCode, make);
-        if (lookup.found && lookup.definition) {
-          verifiedDefinitions.push({
-            code: lookup.definition.code,
-            title: lookup.definition.title,
-            description: lookup.definition.description,
-            source: lookup.definition.source ?? null,
-          });
-          dtcResults.push({
-            code: lookup.definition.code,
-            title: lookup.definition.title,
-            found: true,
-          });
-        } else {
-          if (lookup.parseType === "oem_hex" && !make) {
-            return jsonResponse(
-              {
-                error: "Manufacturer-specific code requires vehicle make. We do not guess OEM code meanings.",
-                code: normalizeCode(singleCode),
-                next: "Select your make or paste scan-tool description.",
-              },
-              400
-            );
-          }
-          if (lookup.parseType === "oem_hex") {
-            return jsonResponse(
-              {
-                error: "Manufacturer-specific code not in our verified database yet.",
-                code: normalizeCode(singleCode),
-                make: make.trim() || undefined,
-              },
-              404
-            );
-          }
-          if (lookup.parseType === "obd2") {
-            return jsonResponse(
-              {
-                error: "OBD-II code not in our database. We do not invent code meanings.",
-                code: normalizeCode(singleCode),
-                next: "Try symptoms or describe the issue.",
-              },
-              404
-            );
-          }
-          return jsonResponse(
-            {
-              error: "Unrecognized code format. Use OBD-II (e.g. P0300) or OEM hex (e.g. 480A12) with make.",
-              code: singleCode,
-              next: "Paste scan-tool description or try symptoms.",
-            },
-            400
-          );
-        }
-      }
-
-      if (verifiedDefinitions.length > 0) {
-        complaintLine = verifiedDefinitions
-          .map((d) => `Code: ${d.code} — ${d.title}. Description: ${d.description || ""}`)
-          .join("\n");
-      } else {
-        const extracted = extractDtcCodes(code);
-        if (extracted.length > 0) {
-          dtcResults = extracted.map(lookupDtc);
-          complaintLine = dtcResults.map((r) => `Code: ${r.code} — ${r.title}.`).join("\n");
-        } else {
-          complaintLine = `Code: ${code}`;
-        }
-      }
-    } else {
-      complaintLine = `Symptoms: ${symptoms}`;
+    // Nothing to reason about: only invalid codes, or manufacturer-specific codes
+    // with no verified definition, and no symptoms. Say so instead of asking the
+    // model to guess. No AI call is made and no quota is used.
+    if (codeResults.length > 0 && usableCodes.length === 0 && !symptoms) {
+      const onlyInvalid = codeResults.every((r) => r.status === "invalid");
+      return jsonResponse(
+        {
+          noDefinition: true,
+          codes: codeResults,
+          message: onlyInvalid
+            ? "We couldn't recognise that as a trouble code. Check it and try again, or describe the symptoms instead."
+            : "This code is manufacturer-specific and CarCode AI does not currently have a verified definition for this vehicle. Describe the symptoms as well and we can still help narrow it down.",
+        },
+        200,
+      );
     }
 
-    // Budget the definition block to avoid huge prompts (TPM spikes).
-    const defsForPrompt = verifiedDefinitions.slice(0, 3).map((d) => ({
-      ...d,
-      description: truncate(d.description || "", 240),
-      title: truncate(d.title || "", 120),
-    }));
-    const dtcDefinitionsBlock =
-      defsForPrompt.length > 0
-        ? truncate(
-            defsForPrompt.map((d) => `- ${d.code}: ${d.title} — ${d.description}`).join("\n"),
-            1200
-          )
-        : "";
-
-    const hasVerifiedDefinition = defsForPrompt.length > 0;
+    const complaintParts: string[] = [];
+    if (codeResults.length > 0) {
+      complaintParts.push(["Trouble codes (follow the note on each code exactly):", describeCodesForPrompt(codeResults, make)].join("\n"));
+    }
+    if (symptoms) complaintParts.push(`Symptoms: ${symptoms}`);
+    const complaintLine = complaintParts.join("\n\n");
 
     const systemBase = [
       "You are an automotive diagnostic assistant.",
@@ -326,18 +244,13 @@ export async function POST(req: Request) {
       "No prices/cost estimates.",
       "severity must be: high | medium | low.",
       `difficulty must be translated into ${outputLanguage}.`,
-      "If an authoritative code definition is provided, do NOT redefine it; use it exactly.",
+      "Never state an exact definition for a trouble code unless one is given to you below. Follow the note attached to each code exactly.",
     ].join("\n");
-
-    const definitionInstruction = hasVerifiedDefinition
-      ? `Authoritative code definition (do not redefine; use exactly):\n${dtcDefinitionsBlock}\n\nRule: Do not redefine the code. Use the provided definition exactly.\n\n`
-      : "";
 
     const user = [
       `Vehicle: ${vehicleLine}`,
       "",
-      definitionInstruction ? definitionInstruction.trimEnd() : "",
-      `Complaint / codes:\n${truncate(complaintLine, 2000)}`,
+      `Complaint:\n${truncate(complaintLine, 2600)}`,
       "",
       "Return JSON with this schema:",
       "{",
@@ -398,20 +311,10 @@ export async function POST(req: Request) {
             return jsonResponse({ error: GENERIC_BAD_RESULT, code: "bad_result" }, 502);
           }
 
-          if (dtcResults.length > 0) {
-            parsed.dtcLookup = dtcResults;
-            parsed.summary_title = dtcResults.map((r) => `${r.code}: ${r.title}`).join(" | ");
-          }
-
-          if (code && verifiedDefinitions.length > 0) {
-            const primary = verifiedDefinitions[0];
-            parsed.code_definition = {
-              code: primary.code,
-              title: primary.title,
-              description: primary.description,
-              source: primary.source,
-            };
-            parsed.summary_title = verifiedDefinitions.map((d) => `${d.code}: ${d.title}`).join(" | ");
+          if (codeResults.length > 0) {
+            parsed.codes = codeResults;
+            const defined = codeResults.filter((r) => r.definition);
+            if (defined.length > 0) parsed.summary_title = defined.map((r) => `${r.code}: ${r.definition}`).join(" | ");
           }
 
           return jsonResponse(parsed, 200);

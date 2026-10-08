@@ -14,7 +14,7 @@ describe("parseDiagnoseBody", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.make).toBe("Toyota");
-    expect(r.value.code).toBe("p0300, P0171, C0035");
+    expect(r.value.code).toBe("P0300, P0171, C0035");
     expect(r.value.lang).toBe("es");
   });
 

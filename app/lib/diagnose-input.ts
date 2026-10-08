@@ -3,6 +3,7 @@
  * has a type check and a hard length limit before it can reach a lookup or
  * the AI prompt.
  */
+import { parseCodeInput } from "./dtc";
 
 export const SUPPORTED_LANGS = ["en", "es", "fr", "ar", "pt", "de", "zh"] as const;
 export type SupportedLang = (typeof SUPPORTED_LANGS)[number];
@@ -110,19 +111,16 @@ export function parseDiagnoseBody(raw: unknown, now: Date = new Date()): Diagnos
     return { ok: false, error: "Year, Make, and Model are required.", field: "make" };
   }
 
-  // Codes: letters, digits and separators only. ";" and new lines count as commas.
-  const codeRaw = get("code").replace(/[;\r\n]+/g, ",");
-  const code = cleanLine(codeRaw)
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .join(", ");
-  if (code && !/^[A-Za-z0-9 ,-]+$/.test(code)) {
-    return { ok: false, error: "Trouble codes can only contain letters, numbers, commas and dashes.", field: "code" };
+  // Codes: letters and digits, separated by spaces, commas, semicolons or new lines.
+  const codeText = get("code");
+  if (codeText.trim() && !/^[A-Za-z0-9\s,;.-]+$/.test(codeText)) {
+    return { ok: false, error: "Trouble codes can only contain letters, numbers, spaces, commas and dashes.", field: "code" };
   }
-  if (code && code.split(",").length > DIAGNOSE_LIMITS.maxCodes) {
+  const codeList = parseCodeInput(codeText);
+  if (codeList.length > DIAGNOSE_LIMITS.maxCodes) {
     return { ok: false, error: `Enter at most ${DIAGNOSE_LIMITS.maxCodes} trouble codes at a time.`, field: "code" };
   }
+  const code = codeList.join(", ");
 
   const symptoms = cleanLine(get("symptoms"));
   if (!code && !symptoms) {

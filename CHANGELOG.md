@@ -1,5 +1,51 @@
 # Changelog
 
+## Phase 2B — trouble-code reliability — 2026-10-07
+
+Branch `fix/phase-2b-dtc-reliability`. No database or environment changes.
+
+Rule introduced: **a missing answer is better than a wrong one.** An exact code
+definition is only ever shown from data on file; manufacturer-specific
+definitions are tied to a make; nothing is marked verified without a source.
+
+- **One module for codes:** `app/lib/dtc.ts` replaces five older files. It parses
+  what the user typed, classifies each code, looks it up and writes the note
+  the AI model receives. It has no database or network access.
+- **Classification by the standard's ranges**, not "P0 vs P1": standardized are
+  P0, P2, P3400–P3FFF, B0, C0, U0, U3 (B3/C3 reserved); manufacturer-controlled
+  are P1, P3000–P33FF, B1, B2, C1, C2, U1, U2. Hybrid/EV codes with letters
+  (P0A80) are standardized P0 codes.
+- **Parser:** codes can be separated by spaces, commas, semicolons or new
+  lines; case, dashes, "P 0300" and duplicates are normalised; codes run
+  together by a multi-line paste are separated. Unknown or invalid entries are
+  reported, never dropped, and never fail the whole request.
+- **Every code gets a result** with one of five statuses: standard definition
+  on file, standard but not verified, manufacturer definition (for that make),
+  manufacturer-specific with no verified definition, or invalid.
+- **Diagnosis:** the model receives a per-code note. It gets an exact
+  definition only when one is on file, and is told not to state or guess the
+  meaning of a manufacturer-specific code. Codes and symptoms are now sent
+  together. If there is nothing safe to diagnose (for example only an
+  unverified manufacturer code and no symptoms), the app says so without
+  calling the model.
+- **Standardized codes are no longer refused** when they are missing from the
+  data (P00xx, P2xxx, U0xxx and so on now work).
+- **Data cleanup:** the old 3,082-entry database was quarantined in full
+  (`data/quarantine/`). 2,589 entries were manufacturer-range codes with no
+  manufacturer recorded, served to every make as SAE data. The 493 entries in
+  standardized ranges contained runs of definitions shifted by one code
+  (P0234, P0401, P0136–P0141 and others). The four hard-coded BMW codes were
+  quarantined too: no source is recorded and they are inconsistent.
+- **Data on file now:** 8 hand-curated standard codes (P0011, P0016, P0171,
+  P0300, P0420, P0455, P0A80, U0100), shown as "standard code", not "verified".
+  The manufacturer store is empty.
+- **UI:** each code shows a short plain-language note on how far its definition
+  can be trusted (7 languages).
+- Removed `/api/dtc/verify` (a public self-test for the old data) and the
+  database pool used only for the BMW codes. The `oem_fault_codes` table is
+  left untouched in the database but is no longer read.
+- Tests: 122 (was 87).
+
 ## Phase 2A — vehicle data — 2026-10-06
 
 Branch `fix/phase-2a-vehicle-data`. No database or environment changes.

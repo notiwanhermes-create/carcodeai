@@ -11,6 +11,7 @@ import { LANGUAGES, tr, type LangCode } from "./data/translations";
 import { useGarageVehicles } from "./lib/useGarageVehicles";
 import { getMakeLogo } from "./lib/make-logos";
 import { isValidVinFormat, normalizeVin } from "./lib/vin";
+import type { DtcResult } from "./lib/dtc";
 import { completeMakeName } from "./data/vehicle-makes";
 type EngineOption =
   | string
@@ -47,23 +48,18 @@ type Cause = {
   fix?: string[];
 };
 
-type DtcLookupResult = {
-  code: string;
-  title: string;
-  found: boolean;
-};
-
 type ApiOk = {
   causes: Cause[];
   summary_title?: string;
-  dtcLookup?: DtcLookupResult[];
+  /** One entry per code the user entered, saying how far its definition can be trusted. */
+  codes?: DtcResult[];
 };
 
+/** Returned when there was nothing safe to diagnose (for example only an unverified manufacturer code). */
 type ApiNoDefinition = {
   noDefinition: true;
   message: string;
-  code?: string;
-  make?: string;
+  codes?: DtcResult[];
 };
 
 type ApiErr = { error: string };
@@ -698,6 +694,53 @@ function buildFollowUpQuestions(doms: Domain[], code?: string, symptoms?: string
   return q.slice(0, 5);
 }
 
+/**
+ * The codes the user entered, each with a plain-language note on how far its
+ * definition can be trusted. A definition is shown only when one is on file.
+ */
+function CodeStatusList({ codes, lang }: { codes: DtcResult[]; lang: LangCode }) {
+  return (
+    <div className="mt-2 space-y-3">
+      {codes.map((c) => {
+        const tone = c.definition ? "ok" : c.status === "invalid" ? "bad" : "warn";
+        const chip =
+          tone === "ok"
+            ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+            : tone === "bad"
+              ? "bg-red-500/15 text-red-300 border border-red-500/30"
+              : "bg-amber-500/20 text-amber-400 border border-amber-500/30";
+        const note =
+          c.status === "generic_definition"
+            ? tr(c.verified ? "codeVerifiedDefinition" : "codeStandardDefinition", lang)
+            : c.status === "generic_unverified"
+              ? tr("codeDefinitionNotVerified", lang)
+              : c.status === "manufacturer_definition"
+                ? `${c.make}: ${tr("codeManufacturerSpecific", lang)}`
+                : c.status === "manufacturer_unavailable"
+                  ? tr("codeManufacturerUnavailable", lang)
+                  : tr("codeInvalid", lang);
+        return (
+          <div key={c.code} className="flex items-start gap-3">
+            <span className={cn("shrink-0 rounded-lg px-2.5 py-1 text-sm font-bold tracking-wide", chip)}>{c.code}</span>
+            <div className="min-w-0">
+              {c.definition && <div className="text-lg font-semibold tracking-tight leading-tight text-white">{c.definition}</div>}
+              <div
+                className={cn(
+                  "text-xs",
+                  c.definition ? "mt-0.5" : "mt-1.5",
+                  tone === "ok" ? "text-blue-300/80" : tone === "bad" ? "text-red-300/90" : "text-amber-300/90",
+                )}
+              >
+                {note}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 type LikelyCausesPanelProps = {
   result: ApiOk | ApiNoDefinition | null;
   theme: "dark" | "light";
@@ -726,7 +769,7 @@ function LikelyCausesPanel(props: LikelyCausesPanelProps) {
       <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
         <div className={cn("text-sm font-semibold", t("text-amber-200", "text-amber-800"))}>No verified definition</div>
         <p className={cn("mt-2 text-sm", t("text-slate-300", "text-slate-600"))}>{result.message}</p>
-        {result.code && <p className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>Code: {result.code}</p>}
+        {result.codes && result.codes.length > 0 && <CodeStatusList codes={result.codes} lang={lang} />}
       </div>
     );
   }
@@ -944,29 +987,8 @@ function LikelyCausesResults({
         <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div className="flex-1 min-w-0">
             <div className={cn("text-[11px] font-medium", t("text-slate-400", "text-slate-500"))}>DIAGNOSTIC SUMMARY</div>
-            {result?.dtcLookup && result.dtcLookup.length > 0 ? (
-              <div className="mt-2 space-y-2">
-                {result.dtcLookup.map((dtc) => (
-                  <div key={dtc.code} className="flex items-start gap-3">
-                    <span className={cn(
-                      "shrink-0 rounded-lg px-2.5 py-1 text-sm font-bold tracking-wide",
-                      dtc.found
-                        ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
-                        : "bg-amber-500/20 text-amber-400 border border-amber-500/30"
-                    )}>
-                      {dtc.code}
-                    </span>
-                    <div className="min-w-0">
-                      <div className={cn("text-lg font-semibold tracking-tight leading-tight", t("text-white", "text-slate-900"))}>
-                        {dtc.title}
-                      </div>
-                      {!dtc.found && (
-                        <div className="mt-0.5 text-xs text-amber-400/80">Not in standard database</div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
+            {result?.codes && result.codes.length > 0 ? (
+              <CodeStatusList codes={result.codes} lang={lang} />
             ) : (
               <div className="flex flex-wrap items-center gap-2">
                 <div className={cn("text-2xl font-semibold tracking-tight", t("text-white", "text-slate-900"))}>

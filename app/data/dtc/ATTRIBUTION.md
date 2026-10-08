@@ -1,21 +1,45 @@
-# DTC Definitions – Data Source and Attribution
+# Trouble-code data: what is here and where it comes from
 
-The Diagnostic Trouble Code (DTC) definitions used in this project are derived from the following public and standardized sources:
+The rule for this folder: **a missing definition is better than a wrong one.**
+Nothing is added here without a recorded source, and nothing is marked
+`verified` unless it was checked against that source.
 
-## Standards
+## generic.json — standardized (generic) codes
 
-- **SAE J2012** – Diagnostic Trouble Code Definitions (Society of Automotive Engineers). Defines standardized OBD-II DTCs for vehicles sold in the United States (1996 and later).
-- **ISO 15031-6** – Road vehicles – Communication between vehicle and external equipment – Part 6: Diagnostic trouble code definitions (technically equivalent to SAE J2012).
+Codes whose meaning is fixed for every make by SAE J2012 / ISO 15031-6
+(P0, P2, P3400-P3FFF, B0, C0, U0, U3).
 
-The 2002 version of SAE J2012 has been incorporated by reference into the U.S. Code of Federal Regulations and is publicly available as a legally binding document.
+Each entry has `code`, `title`, `source` and `verification`:
 
-## Data in This Repository
+- `verified` — checked against a reliable, recorded source (for example licensed
+  SAE J2012-DA data). **No entry has this status yet.**
+- `curated` — a standardized title entered by hand for a very small set of the
+  most common codes. Shown to users as a standard definition, never as "verified".
 
-- **`definitions.json`** – Curated subset of DTCs with full metadata (code, system, standard, title, description, source). Used as the canonical source for key codes (e.g. P0300, P0420, P0171, P0455).
-- **Legacy `../dtc-database.json`** – Broader code-to-title mapping used as a fallback for generic P0xxx (and other) codes. Titles align with SAE J2012 / ISO 15031-6 wording where applicable.
+Current contents: 8 curated codes (P0011, P0016, P0171, P0300, P0420, P0455,
+P0A80, U0100). Every other standardized code is handled, but reported as
+"definition not verified".
 
-## License
+To grow this file properly, license the SAE J2012 Digital Annex (J2012-DA) or a
+commercial DTC data product and import from it, setting `verification` to
+`verified` and `source` to the licensed dataset and version.
 
-Definitions are based on standardized, publicly referenced specifications. No proprietary SAE or ISO material is reproduced in full. Use of short definition titles and descriptions for interoperability and user assistance is consistent with common practice in automotive repair and OBD-II tools.
+## manufacturer.json — manufacturer-specific codes
 
-If you are a standards body or rights holder and believe attribution or licensing should be adjusted, please open an issue.
+Codes in manufacturer-controlled ranges (P1, P3000-P33FF, B1, B2, C1, C2, U1,
+U2) and makers' own code formats. Their meaning differs between makes, so every
+record names its `make` and is only ever returned for that make.
+
+Fields: `code`, `make`, `definition`, `source`, `sourceType`, `verification`,
+and optionally `model`, `yearFrom`, `yearTo`, `chassis`, `engine`, `module`.
+Only records with `verification: "verified"` are served.
+
+Current contents: empty. There is no free, legally clean, comprehensive source
+of manufacturer definitions; they come from the makers' service information or
+from licensed data providers.
+
+## Quarantined data
+
+The previous database and the hard-coded BMW entries are in
+`data/quarantine/` at the repository root, with the reasons. They are not
+loaded by the app.

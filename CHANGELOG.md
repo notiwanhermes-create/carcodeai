@@ -1,5 +1,61 @@
 # Changelog
 
+## Phase 2C — diagnosis quality — 2026-10-08
+
+Branch `fix/phase-2c-diagnosis-quality`, built on top of the Phase 2B branch.
+No database changes. One optional, development-only setting
+(`DIAGNOSE_LOG_CONTEXT`). `zod` is now a direct dependency (it was already
+installed as part of the OpenAI SDK).
+
+- **Structured output:** the diagnosis is requested with OpenAI Structured
+  Outputs (a strict JSON schema), not free text that the server then picked
+  apart. One schema, `app/lib/diagnosis-schema.ts`, is shared by the server and
+  the page. The server checks every reply before it is sent on.
+- **What a diagnosis contains:** a summary, driving guidance, ranked causes,
+  follow-up questions and limits. Each cause has a rank, a likelihood category
+  (very likely, likely, possible, unlikely), an urgency (normal, caution, stop,
+  unknown), why it fits, checks labelled by who can safely do them, a
+  recommended next step and a repair level. No percentages, prices or labour
+  times exist anywhere in the schema.
+- **Driving guidance and urgency** come only from the structured result.
+  "Unknown" is shown when the model cannot justify a level. Nothing is inferred
+  from words such as "fire" or "leak".
+- **Unsupported code numbers are withheld from the AI model.** A code number
+  reaches the model only when a definition for it is on file. Otherwise the
+  model is told that a code with no available definition was supplied, and
+  nothing more, including when the user repeats the code in the symptoms box.
+  A code alone with no usable symptoms still makes no AI call.
+- **Three levels of trust for a code:** verified, locally entered reference
+  title, or unavailable. The 8 hand-entered titles are labelled as a commonly
+  published title, to the user and to the model, and are never called verified.
+- **Codes and symptoms are used together**, with vehicle details: year, make,
+  model, engine, optional mileage, and details decoded from the saved VIN
+  (trim, drive type, fuel, transmission, engine code, turbo). The VIN itself is
+  never sent to the model.
+- **User text is data:** the model receives fixed rules in one message and a
+  single JSON document in another. Quotes, braces and line breaks in what the
+  user typed cannot change the structure of the request.
+- **Follow-up questions come from the diagnosis.** Answering them and pressing
+  "Update diagnosis" asks the server again with the answers; nothing is
+  re-ranked in the browser. Each update counts as one diagnosis.
+- **At most two AI calls per diagnosis:** the request, plus one retry only for
+  a dropped connection, a timeout, a server error or an unreadable reply. The
+  SDK's own hidden retries are switched off. Before this, one diagnosis could
+  trigger up to 15 calls (5 app attempts, each retried twice by the SDK).
+- **No queue:** the one-request-at-a-time lock is gone, so visitors no longer
+  wait behind each other. Each attempt has a 25 second timeout, the model step
+  48 seconds in total, and the route 60 seconds.
+- **Failures are clean:** timeout, rate limit, outage, refusal, cut-off or
+  invalid reply each return a short generic message. No provider text, prompt
+  or raw reply reaches the browser, and no diagnosis is ever made up.
+- **Removed from the browser:** keyword scoring of causes, the hard-coded
+  follow-up questions, the hard-coded quick checks, "why likely" text built
+  from the user's own input, likelihood tags based on list position, and
+  leftover debug logging.
+- **Languages:** the structure and identifiers are the same in all 7
+  languages; only the text differs. New interface labels are translated.
+- Tests: 266 (was 146), including the 7 database-backed account tests.
+
 ## Phase 2B — trouble-code reliability — 2026-10-08
 
 Branch `fix/phase-2b-dtc-reliability`. No database or environment changes.

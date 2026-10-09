@@ -4,6 +4,7 @@
  * the AI prompt.
  */
 import { parseCodeInput } from "./dtc";
+import { isValidVinFormat, normalizeVin } from "./vin";
 
 export const SUPPORTED_LANGS = ["en", "es", "fr", "ar", "pt", "de", "zh"] as const;
 export type SupportedLang = (typeof SUPPORTED_LANGS)[number];
@@ -16,7 +17,14 @@ export const DIAGNOSE_LIMITS = {
   symptoms: 800,
   maxCodes: 8,
   minYear: 1900,
+  maxMileage: 2_000_000,
+  followUps: 6,
+  followUpQuestion: 240,
+  followUpAnswer: 240,
 } as const;
+
+/** An answer the user gave to a follow-up question from an earlier diagnosis. */
+export type FollowUpAnswer = { question: string; answer: string };
 
 export type DiagnoseInput = {
   year: string;
@@ -26,11 +34,50 @@ export type DiagnoseInput = {
   code: string;
   symptoms: string;
   lang: SupportedLang;
+  /** A well-formed 17-character VIN, or "". Used only to look up vehicle details; never sent to the AI model. */
+  vin: string;
+  mileage: { value: number; unit: "km" | "mi" } | null;
+  followUps: FollowUpAnswer[];
 };
 
 export type DiagnoseParseResult =
   | { ok: true; value: DiagnoseInput }
   | { ok: false; error: string; field?: keyof DiagnoseInput | "body" };
+
+function parseMileage(body: Record<string, unknown>): { ok: true; value: DiagnoseInput["mileage"] } | { ok: false } {
+  const raw = body.mileage;
+  if (raw === undefined || raw === null || raw === "") return { ok: true, value: null };
+  if (typeof raw !== "number" && typeof raw !== "string") return { ok: false };
+  const text = String(raw).replace(/[,\s]/g, "");
+  if (!/^\d{1,7}$/.test(text)) return { ok: false };
+  const value = Number(text);
+  if (value < 1 || value > DIAGNOSE_LIMITS.maxMileage) return { ok: false };
+  return { ok: true, value: { value, unit: body.mileageUnit === "mi" ? "mi" : "km" } };
+}
+
+function parseFollowUps(body: Record<string, unknown>): { ok: true; value: FollowUpAnswer[] } | { ok: false; error: string } {
+  const raw = body.followUps;
+  if (raw === undefined || raw === null) return { ok: true, value: [] };
+  if (!Array.isArray(raw)) return { ok: false, error: "Follow-up answers must be a list." };
+  if (raw.length > DIAGNOSE_LIMITS.followUps) {
+    return { ok: false, error: `Send at most ${DIAGNOSE_LIMITS.followUps} follow-up answers.` };
+  }
+  const value: FollowUpAnswer[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return { ok: false, error: "Follow-up answers must be question and answer text." };
+    const { question, answer } = item as Record<string, unknown>;
+    if (typeof question !== "string" || typeof answer !== "string") {
+      return { ok: false, error: "Follow-up answers must be question and answer text." };
+    }
+    if (question.length > DIAGNOSE_LIMITS.followUpQuestion || answer.length > DIAGNOSE_LIMITS.followUpAnswer) {
+      return { ok: false, error: `Follow-up answers are too long (max ${DIAGNOSE_LIMITS.followUpAnswer} characters each).` };
+    }
+    const q = cleanLine(question);
+    const a = cleanLine(answer);
+    if (q && a) value.push({ question: q, answer: a });
+  }
+  return { ok: true, value };
+}
 
 /** Characters that have no place in a vehicle field and could break prompt structure. */
 const STRUCTURAL_CHARS = /["\\`<>{}]/g;
@@ -130,5 +177,22 @@ export function parseDiagnoseBody(raw: unknown, now: Date = new Date()): Diagnos
   const langRaw = cleanLine(get("lang")).toLowerCase();
   const lang = (SUPPORTED_LANGS as readonly string[]).includes(langRaw) ? (langRaw as SupportedLang) : "en";
 
-  return { ok: true, value: { year, make, model, engine, code, symptoms, lang } };
+  // Optional context. A malformed VIN is ignored rather than failing the request:
+  // it only ever adds detail, and older saved vehicles may carry odd values.
+  const vinRaw = body.vin;
+  if (vinRaw !== undefined && vinRaw !== null && typeof vinRaw !== "string") {
+    return { ok: false, error: "VIN must be text.", field: "vin" };
+  }
+  const vinText = normalizeVin(typeof vinRaw === "string" ? vinRaw.slice(0, 40) : "");
+  const vin = isValidVinFormat(vinText) ? vinText : "";
+
+  const mileage = parseMileage(body);
+  if (!mileage.ok) {
+    return { ok: false, error: `Mileage must be a whole number between 1 and ${DIAGNOSE_LIMITS.maxMileage.toLocaleString("en-US")}.`, field: "mileage" };
+  }
+
+  const followUps = parseFollowUps(body);
+  if (!followUps.ok) return { ok: false, error: followUps.error, field: "followUps" };
+
+  return { ok: true, value: { year, make, model, engine, code, symptoms, lang, vin, mileage: mileage.value, followUps: followUps.value } };
 }

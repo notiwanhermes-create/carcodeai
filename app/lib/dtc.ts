@@ -278,9 +278,19 @@ export type DtcStatus =
   /** Not a valid trouble code. */
   | "invalid";
 
+/**
+ * How far the definition attached to a result can be trusted.
+ *  - "verified": from a licensed, recorded source. May be presented as fact.
+ *  - "local_reference": a commonly published title entered by hand. Useful as a
+ *    working meaning, never presented as official or verified.
+ *  - "none": no definition on file.
+ */
+export type DtcTrust = "verified" | "local_reference" | "none";
+
 export type DtcResult = {
   code: string;
   status: DtcStatus;
+  trust: DtcTrust;
   /** How the code was classified. "generic" here is an assumption unless a definition is on file. */
   scope: CodeScope | null;
   system: CodeSystem | null;
@@ -304,6 +314,7 @@ export function lookupCode(input: string, make?: string | null, registry: DtcReg
     return {
       code: code || String(input || "").trim().toUpperCase(),
       status: "invalid",
+      trust: "none",
       scope: null,
       system: null,
       definition: null,
@@ -323,13 +334,17 @@ export function lookupCode(input: string, make?: string | null, registry: DtcReg
       return {
         code,
         status: "generic_definition",
+        trust: hit.verification === "verified" ? "verified" : "local_reference",
         scope: "generic",
         system: cls.system,
         definition: hit.title,
         make: null,
         source: hit.source,
         verified: hit.verification === "verified",
-        message: "Standard code: it means the same thing on every make.",
+        message:
+          hit.verification === "verified"
+            ? "Standard code with a verified definition."
+            : "Commonly published title for this standard code. It has not been checked against the official standard.",
       };
     }
   }
@@ -338,6 +353,7 @@ export function lookupCode(input: string, make?: string | null, registry: DtcReg
     return {
       code,
       status: "generic_unverified",
+      trust: "none",
       scope: "generic",
       system: cls.system,
       definition: null,
@@ -361,6 +377,7 @@ export function lookupCode(input: string, make?: string | null, registry: DtcReg
     return {
       code,
       status: "manufacturer_definition",
+      trust: "verified",
       scope: "manufacturer",
       system: cls.system,
       definition: hit.definition,
@@ -375,6 +392,7 @@ export function lookupCode(input: string, make?: string | null, registry: DtcReg
     return {
       code,
       status: "uncertain_unavailable",
+      trust: "none",
       scope: "uncertain",
       system: cls.system,
       definition: null,
@@ -389,6 +407,7 @@ export function lookupCode(input: string, make?: string | null, registry: DtcReg
   return {
     code,
     status: "manufacturer_unavailable",
+    trust: "none",
     scope: "manufacturer",
     system: cls.system,
     definition: null,
@@ -413,35 +432,4 @@ export function lookupCodes(raw: string, make?: string | null, registry: DtcRegi
  */
 export function hasDefinitionOnFile(r: DtcResult): boolean {
   return (r.status === "generic_definition" || r.status === "manufacturer_definition") && r.definition !== null;
-}
-
-/* ─────────────────────────────── AI prompt ──────────────────────────────── */
-
-const DO_NOT_GUESS = "Do NOT state, guess, invent or imply what this code means, and do not treat any meaning you recall for it as fact.";
-
-/**
- * What the model is told about each code. The wording is deliberate: the model
- * is given an exact definition only when one is on file. For every other code
- * it is told the definition is unavailable and that it must not supply one.
- */
-export function describeCodesForPrompt(results: DtcResult[], make: string): string {
-  const vehicleMake = make.trim() || "this vehicle";
-  return results
-    .map((r) => {
-      switch (r.status) {
-        case "generic_definition":
-          return `- ${r.code}: standardized code (same meaning on every make). Definition on file: "${r.definition}". Use this definition exactly; do not reword or replace it.`;
-        case "generic_unverified":
-          return `- ${r.code}: the exact definition of this code is NOT available. ${DO_NOT_GUESS} Base the diagnosis only on the reported symptoms and the vehicle, and recommend confirming the code's definition with a scan tool or service information.`;
-        case "manufacturer_definition":
-          return `- ${r.code}: ${r.make}-specific code. Verified definition for ${r.make}: "${r.definition}". This definition applies to ${r.make} only. Use it exactly.`;
-        case "manufacturer_unavailable":
-          return `- ${r.code}: manufacturer-specific code. Its exact meaning for ${vehicleMake} is NOT available. ${DO_NOT_GUESS} Do not use the meaning it has on any other make. Base the diagnosis only on the reported symptoms and the vehicle, and recommend reading the code with a ${vehicleMake}-capable scan tool or ${vehicleMake} service information.`;
-        case "uncertain_unavailable":
-          return `- ${r.code}: the exact definition of this code is NOT available, and it is not known whether it is a standardized or a manufacturer-specific code. ${DO_NOT_GUESS} Base the diagnosis only on the reported symptoms and the vehicle, and recommend reading the code with a ${vehicleMake}-capable scan tool or ${vehicleMake} service information.`;
-        case "invalid":
-          return `- ${r.code}: not a valid trouble code. Ignore it.`;
-      }
-    })
-    .join("\n");
 }

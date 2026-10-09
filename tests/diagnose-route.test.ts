@@ -11,12 +11,9 @@ vi.mock("../app/lib/auth-config", () => ({ auth: authMock }));
 
 import { POST } from "../app/api/diagnose/route";
 import { resetMemoryRateLimits } from "../app/lib/rate-limit";
+import { modelDiagnosis, modelReply } from "./helpers/diagnosis-fixture";
 
-const GOOD_OUTPUT = {
-  output_text: JSON.stringify({
-    causes: [{ title: "Worn spark plugs", why: "Old plugs.", severity: "high", difficulty: "DIY Easy", confirm: ["Inspect"], fix: ["Replace"] }],
-  }),
-};
+const GOOD_OUTPUT = modelReply(modelDiagnosis());
 
 const VALID = { year: "2015", make: "Toyota", model: "Camry", engine: "2.5L I4", code: "P0300", symptoms: "", lang: "en" };
 
@@ -68,7 +65,7 @@ describe("POST /api/diagnose — validation", () => {
     const res = await POST(makeReq(VALID));
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.causes).toHaveLength(1);
+    expect(data.diagnosis.causes).toHaveLength(1);
     expect(data.debug).toBeUndefined();
     expect(createMock).toHaveBeenCalledTimes(1);
   });

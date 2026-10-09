@@ -65,17 +65,26 @@ that the licence allows the definitions to be shown to end users.
 Each entry has `code`, `title`, `source` and `verification`:
 
 - `verified`: taken from a licensed source. **No entry has this status yet.**
-- `curated`: a title entered by hand. Shown to users as a standard definition,
-  never as "verified".
+- `curated`: a title entered by hand.
+
+These map to three levels of trust that the page and the AI model are told
+about (`trust` on every lookup result):
+
+| Trust | Where it comes from | Shown to the user as | Given to the AI model as |
+|---|---|---|---|
+| `verified` | a licensed source | "Verified definition" | `definition_status: "verified"`, may be relied on |
+| `local_reference` | a `curated` entry | "Commonly published title for this code. Not yet checked against the official standard" | `definition_status: "local_reference"`, a working meaning that must not be called official or verified |
+| `none` | nothing on file | "Definition not verified yet" | nothing: the code number is withheld |
 
 Current contents: 8 hand-entered codes (P0011, P0016, P0171, P0300, P0420,
 P0455, P0A80, U0100). They were written from the widely published titles of
 these codes and have **not** been checked against licensed SAE data. This set
-is deliberately small and is not to be extended by hand.
+is deliberately small and is not to be extended by hand. When licensed data is
+added in front of it, the same codes become `verified` with no other change.
 
-Every other code in a standardized block is reported as "Definition not
-verified yet". The app does not show a definition for it and does not ask the
-AI model to supply one.
+Every other code is reported as "Definition not verified yet". The app does
+not show a definition for it, and the AI model is never given its number: it
+is told only that a code with no available definition was supplied.
 
 ## manufacturer.json: manufacturer-specific codes (source id `manufacturer-store`)
 

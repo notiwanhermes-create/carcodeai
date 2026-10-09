@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   buildRegistry,
   classifyCode,
-  describeCodesForPrompt,
   hasDefinitionOnFile,
   lookupCode,
   lookupCodes,
@@ -146,6 +145,21 @@ describe("classification (an assumption from public information, not verified da
   });
 });
 
+/** Fixture records for the tests only. The shipped manufacturer store is empty. */
+const makerRecord = (
+  make: string,
+  code: string,
+  definition: string,
+  verification: ManufacturerDtc["verification"] = "verified",
+): ManufacturerDtc => ({ make, code, definition, source: "test fixture", sourceType: "other", verification });
+
+const genericRecord = (code: string, title: string, verification: GenericDtc["verification"] = "verified"): GenericDtc => ({
+  code,
+  title,
+  source: "test fixture",
+  verification,
+});
+
 describe("generic codes", () => {
   it("returns the definition on file for the codes the product must support", () => {
     for (const code of ["P0011", "P0016", "P0171", "P0300", "P0420", "P0455", "P0A80", "U0100"]) {
@@ -153,6 +167,10 @@ describe("generic codes", () => {
       expect(r.status, code).toBe("generic_definition");
       expect(r.definition, code).toBeTruthy();
       expect(hasDefinitionOnFile(r)).toBe(true);
+      // On file, but hand-entered: a reference title, not verified data.
+      expect(r.trust, code).toBe("local_reference");
+      expect(r.verified, code).toBe(false);
+      expect(r.message).not.toMatch(/verified definition/i);
     }
     expect(lookupCode("P0300").definition).toBe("Random/Multiple Cylinder Misfire Detected");
     expect(lookupCode("P0A80").definition).toBe("Replace Hybrid Battery Pack");
@@ -177,7 +195,21 @@ describe("generic codes", () => {
       expect(r.source).toBeNull();
       expect(r.verified).toBe(false);
       expect(r.message).toMatch(/^Definition not verified yet/);
+      expect(r.trust).toBe("none");
       expect(hasDefinitionOnFile(r)).toBe(false);
+    }
+  });
+
+  it("separates the three levels of trust: verified, local reference, none", () => {
+    const registry: DtcRegistry = {
+      generic: [genericRecord("P0300", "LICENSED TITLE", "verified"), genericRecord("P0420", "HAND-ENTERED TITLE", "curated")],
+      manufacturer: [makerRecord("Ford", "P1000", "FORD-ONLY DEFINITION")],
+    };
+    expect(lookupCode("P0300", "Ford", registry)).toMatchObject({ trust: "verified", verified: true });
+    expect(lookupCode("P0420", "Ford", registry)).toMatchObject({ trust: "local_reference", verified: false });
+    expect(lookupCode("P1000", "Ford", registry)).toMatchObject({ trust: "verified", verified: true });
+    for (const code of ["P0301", "P1000", "P3400", "480A12", "HELLO"]) {
+      expect(lookupCode(code, "BMW", registry).trust, code).toBe("none");
     }
   });
 
@@ -199,21 +231,6 @@ describe("generic codes", () => {
     expect(DEFAULT_REGISTRY.generic.every((g) => /Entered by hand/.test(g.source) && /Not checked against licensed/.test(g.source))).toBe(true);
     expect(lookupCode("P0300").verified).toBe(false);
   });
-});
-
-/** Fixture records for the tests only. The shipped manufacturer store is empty. */
-const makerRecord = (
-  make: string,
-  code: string,
-  definition: string,
-  verification: ManufacturerDtc["verification"] = "verified",
-): ManufacturerDtc => ({ make, code, definition, source: "test fixture", sourceType: "other", verification });
-
-const genericRecord = (code: string, title: string, verification: GenericDtc["verification"] = "verified"): GenericDtc => ({
-  code,
-  title,
-  source: "test fixture",
-  verification,
 });
 
 describe("manufacturer-specific codes are isolated by make", () => {
@@ -407,40 +424,5 @@ describe("several codes at once", () => {
       "P3400:uncertain_unavailable",
     ]);
     expect(results.filter(hasDefinitionOnFile).map((r) => r.code)).toEqual(["P0300"]);
-  });
-});
-
-describe("what the AI is told", () => {
-  const prompt = describeCodesForPrompt(lookupCodes("P0300, P0301, P1234, P3400, P9999", "BMW"), "BMW");
-  const line = (code: string) => prompt.split("\n").find((l) => l.startsWith(`- ${code}:`)) || "";
-
-  it("gives the exact definition only when one is on file", () => {
-    expect(line("P0300")).toContain("standardized code");
-    expect(line("P0300")).toContain('"Random/Multiple Cylinder Misfire Detected"');
-    expect(prompt.match(/Definition on file|Verified definition/g)).toHaveLength(1);
-  });
-
-  it("says the definition is unavailable for a standard-range code that is not on file, and forbids supplying one", () => {
-    expect(line("P0301")).toMatch(/the exact definition of this code is NOT available/);
-    expect(line("P0301")).toMatch(/Do NOT state, guess, invent or imply what this code means/);
-    expect(line("P0301")).toMatch(/Base the diagnosis only on the reported symptoms and the vehicle/);
-    expect(line("P0301")).not.toMatch(/general knowledge|you may/i);
-  });
-
-  it("forbids guessing a manufacturer-specific meaning", () => {
-    expect(line("P1234")).toMatch(/manufacturer-specific code\. Its exact meaning for BMW is NOT available/);
-    expect(line("P1234")).toMatch(/Do NOT state, guess, invent or imply what this code means/);
-    expect(line("P1234")).toMatch(/Do not use the meaning it has on any other make/);
-  });
-
-  it("forbids guessing an uncertain code, and does not call it standard or manufacturer-specific", () => {
-    expect(line("P3400")).toMatch(/NOT available, and it is not known whether it is a standardized or a manufacturer-specific code/);
-    expect(line("P3400")).toMatch(/Do NOT state, guess, invent or imply what this code means/);
-  });
-
-  it("tells the model to ignore invalid entries, and never calls missing data verified or authoritative", () => {
-    expect(line("P9999")).toMatch(/not a valid trouble code/);
-    expect(prompt).not.toMatch(/authoritative/i);
-    for (const code of ["P0301", "P1234", "P3400", "P9999"]) expect(line(code)).not.toMatch(/verified/i);
   });
 });

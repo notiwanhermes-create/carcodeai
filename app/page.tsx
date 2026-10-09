@@ -12,6 +12,7 @@ import { useGarageVehicles } from "./lib/useGarageVehicles";
 import { getMakeLogo } from "./lib/make-logos";
 import { isValidVinFormat, normalizeVin } from "./lib/vin";
 import type { DtcResult } from "./lib/dtc";
+import type { CheckLevel, DiagnoseNoDefinition, DiagnoseOk, Diagnosis, Likelihood, RepairLevel, Urgency } from "./lib/diagnosis-schema";
 import { completeMakeName } from "./data/vehicle-makes";
 type EngineOption =
   | string
@@ -39,30 +40,25 @@ type Vehicle = {
   vin?: string;
 };
 
-type Cause = {
-  title: string;
-  why?: string;
-  severity?: "high" | "medium" | "low";
-  difficulty?: "DIY Easy" | "DIY Moderate" | "Mechanic Recommended";
-  confirm?: string[];
-  fix?: string[];
-};
-
-type ApiOk = {
-  causes: Cause[];
-  summary_title?: string;
-  /** One entry per code the user entered, saying how far its definition can be trusted. */
-  codes?: DtcResult[];
-};
-
-/** Returned when there was nothing safe to diagnose (for example only an unverified manufacturer code). */
-type ApiNoDefinition = {
-  noDefinition: true;
-  message: string;
-  codes?: DtcResult[];
-};
+type ApiOk = DiagnoseOk;
+type ApiNoDefinition = DiagnoseNoDefinition;
 
 type ApiErr = { error: string };
+
+/** The body sent to /api/diagnose. */
+type DiagnosePayload = {
+  year: string;
+  make: string;
+  model: string;
+  engine: string;
+  vin: string;
+  mileage: string;
+  mileageUnit: "km" | "mi";
+  code: string;
+  symptoms: string;
+  lang: LangCode;
+  followUps?: { question: string; answer: string }[];
+};
 
 type MaintenanceRecord = {
   id: string;
@@ -102,96 +98,13 @@ function MakeLogoImg({
   );
 }
 
-type FollowUpQuestionOption = { id: string; label: string };
-type FollowUpQuestion = { id: string; prompt: string; options: FollowUpQuestionOption[] };
-
-/** Refine-diagnosis questions (pill-button UI). Answers drive re-ranking of Likely Causes. */
-const REFINE_QUESTIONS: FollowUpQuestion[] = [
-  { id: "checkEngineLight", prompt: "Check engine light status", options: [{ id: "on", label: "On" }, { id: "flashing", label: "Flashing" }, { id: "off", label: "Off" }, { id: "not_sure", label: "Not sure" }] },
-  { id: "tempBehavior", prompt: "Engine temperature behavior", options: [{ id: "overheats_quickly", label: "Overheats quickly (5–10 min)" }, { id: "only_traffic", label: "Only in traffic" }, { id: "only_highway", label: "Only at highway speed" }, { id: "never_overheats", label: "Never actually overheats (just warning)" }, { id: "not_sure", label: "Not sure" }] },
-  { id: "coolantLoss", prompt: "Coolant loss", options: [{ id: "no_loss", label: "No loss" }, { id: "slow_loss", label: "Slow loss" }, { id: "rapid_loss", label: "Rapid loss" }, { id: "not_sure", label: "Not sure" }] },
-  { id: "heaterPerformance", prompt: "Heater performance", options: [{ id: "blows_hot", label: "Heater blows hot" }, { id: "blows_cold", label: "Heater blows cold" }, { id: "changes_hot_cold", label: "Changes hot/cold" }, { id: "not_sure", label: "Not sure" }] },
-  { id: "fanBehavior", prompt: "Cooling fan behavior", options: [{ id: "runs_loud_often", label: "Fan runs loud often" }, { id: "never_comes_on", label: "Fan never comes on" }, { id: "normal", label: "Normal" }, { id: "not_sure", label: "Not sure" }] },
-  { id: "acEffect", prompt: "AC effect", options: [{ id: "makes_worse", label: "AC makes it worse" }, { id: "helps", label: "AC helps" }, { id: "no_change", label: "No change" }, { id: "not_sure", label: "Not sure" }] },
-  { id: "recentWork", prompt: "Recent work", options: [{ id: "cooling_system", label: "Cooling system" }, { id: "oil_service", label: "Oil service" }, { id: "belts_pulleys", label: "Belts/pulleys" }, { id: "none", label: "None" }, { id: "not_sure", label: "Not sure" }] },
-];
-
-/** Returns rule-based score delta and a short reason for re-ranking. Cause title is matched by keyword. */
-function getRefineRuleScore(causeTitle: string, answers: Record<string, string>): { delta: number; reason: string | null } {
-  const t = causeTitle.toLowerCase();
-  let delta = 0;
-  let reason: string | null = null;
-
-  const tempBehavior = answers.tempBehavior;
-  if (tempBehavior === "only_traffic") {
-    if (/(radiator fan|fan failure|thermostat|low coolant)/.test(t)) {
-      const d = 1.2; if (d > delta) { delta = d; reason = "Overheating mainly in traffic often points to fan or thermostat."; }
-    }
-  }
-  if (tempBehavior === "only_highway") {
-    if (/(low coolant|clogged radiator|water pump|thermostat)/.test(t)) {
-      const d = 1.1; if (d > delta) { delta = d; reason = "Overheating at highway speed often points to coolant flow or radiator."; }
-    }
-  }
-
-  const heater = answers.heaterPerformance;
-  const coolantLoss = answers.coolantLoss;
-  if (heater === "blows_cold" && coolantLoss && coolantLoss !== "no_loss") {
-    if (/(low coolant|air in system|air pocket|bleed)/.test(t)) {
-      const d = 1.3; if (d > delta) { delta = d; reason = "Cold heater plus coolant loss suggests low coolant or air in system."; }
-    }
-  }
-
-  const checkEngine = answers.checkEngineLight;
-  if (checkEngine === "flashing") {
-    if (/(misfire|ignition|spark|coil|plug)/.test(t)) {
-      const d = 1.4; if (d > delta) { delta = d; reason = "Flashing check engine light can indicate a severe misfire risk."; }
-    }
-  }
-
-  const fan = answers.fanBehavior;
-  if (fan === "never_comes_on") {
-    if (/(fan|relay|fuse|motor)/.test(t)) {
-      const d = 1.2; if (d > delta) { delta = d; reason = "Fan never coming on points to fan relay, fuse, or motor."; }
-    }
-  }
-
-  if (coolantLoss === "rapid_loss") {
-    if (/(leak|hose|radiator|gasket|pump)/.test(t)) {
-      const d = 0.8; if (d > delta) { delta = d; reason = "Rapid coolant loss often indicates a leak or failing component."; }
-    }
-  }
-
-  const recentWork = answers.recentWork;
-  if (recentWork === "cooling_system") {
-    if (/(air in system|air pocket|bleed|thermostat|leak)/.test(t)) {
-      const d = 0.7; if (d > delta) { delta = d; reason = "Recent cooling work can introduce air or leaks."; }
-    }
-  }
-
-  return { delta, reason };
-}
-
-type QuickCheck = {
-  id: string;
-  title: string;
-  eta: string; // "5–10 min"
-  steps: string[]; // 1–2 steps
-  meaningPass: string;
-  meaningFail: string;
-};
-
-/**
- * A cause as stored in saved diagnosis history. Sessions saved before the
- * invented confidence / urgency / cost values were removed may still carry
- * those extra fields; they are ignored.
- */
 /** Records saved by older versions stored the odometer as a single "mileage" value. */
 type LegacyMaintenanceRecord = MaintenanceRecord & { mileage?: string | number };
 
 /** The browser's "install this app" prompt event (not in the standard DOM typings). */
 type InstallPromptEvent = Event & { prompt: () => Promise<unknown> };
 
+/** A cause as stored in saved diagnosis history (kept small and stable across versions). */
 type DiagnosisCauseSnapshot = {
   id: string;
   title: string;
@@ -431,269 +344,6 @@ function CarScanLoader({ theme, vehicle, lang }: { theme: "dark" | "light"; vehi
   );
 }
 
-function norm(s: string) {
-  return (s || "").toLowerCase();
-}
-
-function hashString(s: string) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return Math.abs(h);
-}
-
-function stableCauseId(title: string, idx: number) {
-  const slug = norm(title).replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 40);
-  return `${slug || "cause"}-${idx}-${hashString(title)}`;
-}
-
-type Domain =
-  | "cooling"
-  | "leak"
-  | "fan"
-  | "misfire"
-  | "fuel"
-  | "air_intake"
-  | "charging"
-  | "starter"
-  | "emissions"
-  | "sensor"
-  | "unknown";
-
-function domainsForCause(c: Cause, code?: string, symptoms?: string): Domain[] {
-  const text = `${c.title} ${c.why || ""} ${code || ""} ${symptoms || ""}`.toLowerCase();
-  const domains = new Set<Domain>();
-  if (/(overheat|coolant|radiator|thermostat|water pump|head gasket|heat|temp)/.test(text)) domains.add("cooling");
-  if (/(leak|drip|puddle|loss|low coolant|pressure test|hose|clamp)/.test(text)) domains.add("leak");
-  if (/(fan|fans|fan clutch|electric fan|airflow)/.test(text)) domains.add("fan");
-  if (/(misfire|p030|spark|plug|coil|ignition|rough idle|shake)/.test(text)) domains.add("misfire");
-  if (/(fuel|injector|pump|pressure|lean|p017|stall|hesitation)/.test(text)) domains.add("fuel");
-  if (/(vacuum|intake|maf|throttle|air leak|pcv)/.test(text)) domains.add("air_intake");
-  if (/(battery|alternator|charging|voltage|p056)/.test(text)) domains.add("charging");
-  if (/(starter|crank|no crank|click)/.test(text)) domains.add("starter");
-  if (/(o2|catalyst|converter|evap|p042|emission)/.test(text)) domains.add("emissions");
-  if (/(sensor|solenoid|switch|module|wiring|connector)/.test(text)) domains.add("sensor");
-  if (domains.size === 0) domains.add("unknown");
-  return Array.from(domains);
-}
-
-function baseSeverityScore(sev?: Cause["severity"]) {
-  if (sev === "high") return 3.2;
-  if (sev === "low") return 1.2;
-  return 2.0;
-}
-
-function scoreCause(c: Cause, ctx: { code?: string; symptoms?: string; answers: Record<string, string> }) {
-  let score = baseSeverityScore(c.severity);
-  const t = `${c.title} ${c.why || ""}`.toLowerCase();
-  const sym = (ctx.symptoms || "").toLowerCase();
-  const code = (ctx.code || "").toLowerCase();
-
-  // Light keyword overlap boost.
-  const hits = [
-    [/(overheat|hot|temp)/, /(overheat|coolant|radiator|thermostat|fan|water pump)/],
-    [/(coolant|radiator|thermostat|water pump)/, /(coolant|radiator|thermostat|water pump|hose|leak)/],
-    [/(leak|drip|puddle|sweet)/, /(leak|hose|clamp|radiator|coolant)/],
-    [/(rough|shake|misfire)/, /(misfire|spark|plug|coil|ignition|fuel)/],
-    [/(no start|won't start|crank|click)/, /(starter|battery|fuel|ignition)/],
-    [/(battery|dim|voltage)/, /(battery|alternator|charging)/],
-  ] as const;
-  for (const [symRe, causeRe] of hits) {
-    if (symRe.test(sym) && causeRe.test(t)) score += 0.6;
-  }
-
-  // Code hints (conservative).
-  if (code && /p03\d\d/.test(code) && /(misfire|spark|coil|plug)/.test(t)) score += 0.8;
-  if (code && /p017[01]/.test(code) && /(vacuum|intake|maf|fuel|lean)/.test(t)) score += 0.7;
-  if (code && /p0420/.test(code) && /(catalyst|converter|o2|emission)/.test(t)) score += 0.7;
-
-  // Follow-up answers influence (domain-based).
-  const a = ctx.answers;
-  const doms = domainsForCause(c, ctx.code, ctx.symptoms);
-  const has = (d: Domain) => doms.includes(d);
-
-  if (a.coolant_low === "yes" && (has("cooling") || has("leak"))) score += 1.1;
-  if (a.coolant_low === "no" && (has("cooling") || has("leak"))) score -= 0.6;
-  if (a.overheat_idle === "idle" && (has("fan") || has("cooling"))) score += 0.9;
-  if (a.overheat_idle === "highway" && has("cooling")) score += 0.6;
-  if (a.recent_work === "yes" && (has("cooling") || has("leak") || has("air_intake"))) score += 0.5;
-  if (a.weather_hot === "yes" && (has("cooling") || has("fan"))) score += 0.5;
-  if (a.mileage_band === "high" && /(pump|gasket|radiator|alternator|injector)/.test(t)) score += 0.4;
-  if (a.rough_idle === "yes" && has("misfire")) score += 0.7;
-
-  return Math.max(0.2, score);
-}
-
-function buildWhyLikely(
-  c: Cause,
-  ctx: { code?: string; symptoms?: string; vehicle?: { year: string; make: string; model: string } | null; answers: Record<string, string> }
-): string[] {
-  const bullets: string[] = [];
-  const sym = (ctx.symptoms || "").trim();
-  const code = (ctx.code || "").trim();
-  const veh = ctx.vehicle ? `${ctx.vehicle.year} ${ctx.vehicle.make} ${ctx.vehicle.model}`.trim() : "";
-
-  if (sym) {
-    const excerpt = sym.length > 90 ? sym.slice(0, 90).trimEnd() + "…" : sym;
-    bullets.push(`Matches what you reported: “${excerpt}”.`);
-  }
-  if (code) bullets.push(`You entered code(s): ${code.toUpperCase()}.`);
-  if (ctx.answers.mileage_band === "high") bullets.push("Higher mileage can increase wear-related failures for this type of issue.");
-  if (ctx.answers.recent_work === "yes") bullets.push("Recent work can introduce leaks, loose connectors, or trapped air that mimics these symptoms.");
-  if (ctx.answers.weather_hot === "yes") bullets.push("Hot weather and traffic can expose marginal cooling/airflow problems.");
-  if (!bullets.length && veh) bullets.push(`Based on your vehicle: ${veh}.`);
-  while (bullets.length < 2) bullets.push("Common pattern for these symptoms and this category of cause.");
-  return bullets.slice(0, 3);
-}
-
-function buildQuickChecks(topCauses: Array<{ c: Cause; id: string }>, ctx: { code?: string; symptoms?: string }): QuickCheck[] {
-  const checks: QuickCheck[] = [];
-  const used = new Set<string>();
-  function pushIfUnique(q: QuickCheck) {
-    if (used.has(q.id) || checks.length >= 3) return;
-    used.add(q.id);
-    checks.push(q);
-  }
-
-  for (const { c } of topCauses) {
-    const text = `${c.title} ${c.why || ""}`.toLowerCase();
-    if (/(coolant|radiator|thermostat|water pump|overheat)/.test(text)) {
-      pushIfUnique({
-        id: "coolant_level",
-        title: "Check coolant level (engine cold)",
-        eta: "5–10 min",
-        steps: ["With engine cold, check reservoir/radiator level.", "Look for obvious wet spots or crusty residue."],
-        meaningPass: "Coolant level looks normal and no obvious leaks → move to airflow/fan checks.",
-        meaningFail: "Low coolant or visible leaks → likely leak/air pocket; fix leak and bleed system.",
-      });
-    }
-    if (/(leak|hose|pressure)/.test(text)) {
-      pushIfUnique({
-        id: "visible_leaks",
-        title: "Look for leaks under the car",
-        eta: "5–10 min",
-        steps: ["After parking, look for puddles/drips under engine bay.", "Note color/smell (coolant is often sweet)."],
-        meaningPass: "No visible leaks → issue may be internal, intermittent, or airflow/controls related.",
-        meaningFail: "Leak found → address leak source before deeper diagnostics.",
-      });
-    }
-    if (/(fan|airflow)/.test(text) || /(overheat)/.test((ctx.symptoms || "").toLowerCase())) {
-      pushIfUnique({
-        id: "fan_operation",
-        title: "Verify radiator fan operation",
-        eta: "5–10 min",
-        steps: ["Warm the engine and watch if fan turns on near normal temp.", "If AC is on, many cars command the fan on."],
-        meaningPass: "Fan runs as expected → look at thermostat, coolant flow, or restrictions.",
-        meaningFail: "Fan never comes on → suspect fan motor, relay/fuse, wiring, or temperature sensor.",
-      });
-    }
-    if (/(battery|alternator|charging|voltage)/.test(text)) {
-      pushIfUnique({
-        id: "battery_voltage",
-        title: "Quick voltage check",
-        eta: "5–10 min",
-        steps: ["Measure battery voltage: ~12.6V off, ~13.7–14.7V running.", "Look for battery light or dimming lights."],
-        meaningPass: "Voltage looks normal → charging system less likely; continue to next checks.",
-        meaningFail: "Voltage low or unstable → charging/battery issue likely; avoid getting stranded.",
-      });
-    }
-    if (/(misfire|spark|plug|coil)/.test(text)) {
-      pushIfUnique({
-        id: "misfire_simple",
-        title: "Listen/feel for misfire at idle",
-        eta: "5–10 min",
-        steps: ["At idle, note shaking/uneven RPM.", "If safe, check for loose coil/plug connectors."],
-        meaningPass: "Idle is smooth → misfire less likely; focus on other top causes.",
-        meaningFail: "Shaking/uneven idle → ignition/fuel/air issue more likely; continue tests.",
-      });
-    }
-    if (checks.length >= 3) break;
-  }
-
-  if (checks.length < 3) {
-    pushIfUnique({
-      id: "fluids_basic",
-      title: "Basic fluid sanity check",
-      eta: "5–10 min",
-      steps: ["Check oil level and coolant level (engine cold).", "Look for new puddles or smells."],
-      meaningPass: "Fluids normal → proceed to targeted tests for the top cause.",
-      meaningFail: "Low/dirty fluids → address before further driving/diagnosis.",
-    });
-  }
-
-  return checks.slice(0, 3);
-}
-
-function buildFollowUpQuestions(doms: Domain[], code?: string, symptoms?: string): FollowUpQuestion[] {
-  const q: FollowUpQuestion[] = [];
-  const has = (d: Domain) => doms.includes(d);
-
-  q.push({
-    id: "mileage_band",
-    prompt: "About how many miles/kilometers is on the vehicle?",
-    options: [
-      { id: "low", label: "< 60k (100k km)" },
-      { id: "mid", label: "60k–120k (100k–200k km)" },
-      { id: "high", label: "> 120k (200k+ km)" },
-      { id: "unknown", label: "Not sure" },
-    ],
-  });
-  q.push({
-    id: "recent_work",
-    prompt: "Any recent repairs or maintenance right before this started?",
-    options: [
-      { id: "yes", label: "Yes" },
-      { id: "no", label: "No" },
-      { id: "unknown", label: "Not sure" },
-    ],
-  });
-
-  if (has("cooling") || has("leak") || /(overheat|coolant)/i.test(symptoms || "")) {
-    q.push({
-      id: "coolant_low",
-      prompt: "Is the coolant level low (checked when engine is cold)?",
-      options: [
-        { id: "yes", label: "Yes" },
-        { id: "no", label: "No" },
-        { id: "unknown", label: "Not sure" },
-      ],
-    });
-    q.push({
-      id: "overheat_idle",
-      prompt: "When does it get worse?",
-      options: [
-        { id: "idle", label: "At idle / slow traffic" },
-        { id: "highway", label: "At highway speed" },
-        { id: "same", label: "About the same" },
-        { id: "unknown", label: "Not sure" },
-      ],
-    });
-  }
-
-  if (has("misfire") || /p03/i.test(code || "") || /(rough|shake|misfire)/i.test(symptoms || "")) {
-    q.push({
-      id: "rough_idle",
-      prompt: "Does the engine shake or run rough at idle?",
-      options: [
-        { id: "yes", label: "Yes" },
-        { id: "no", label: "No" },
-        { id: "unknown", label: "Not sure" },
-      ],
-    });
-  }
-
-  q.push({
-    id: "weather_hot",
-    prompt: "Is it currently very hot where you’re driving?",
-    options: [
-      { id: "yes", label: "Yes" },
-      { id: "no", label: "No" },
-      { id: "unknown", label: "Not sure" },
-    ],
-  });
-
-  return q.slice(0, 5);
-}
-
 /**
  * The codes the user entered, each with a plain-language note on how far its
  * definition can be trusted. A definition is shown only when one is on file.
@@ -711,7 +361,7 @@ function CodeStatusList({ codes, lang }: { codes: DtcResult[]; lang: LangCode })
               : "bg-amber-500/20 text-amber-400 border border-amber-500/30";
         const note =
           c.status === "generic_definition"
-            ? tr(c.verified ? "codeVerifiedDefinition" : "codeStandardDefinition", lang)
+            ? tr(c.trust === "verified" ? "codeVerifiedDefinition" : "codeReferenceTitle", lang)
             : c.status === "generic_unverified" || c.status === "uncertain_unavailable"
               ? tr("codeDefinitionNotVerified", lang)
               : c.status === "manufacturer_definition"
@@ -720,7 +370,7 @@ function CodeStatusList({ codes, lang }: { codes: DtcResult[]; lang: LangCode })
                   ? tr("codeManufacturerUnavailable", lang)
                   : tr("codeInvalid", lang);
         return (
-          <div key={c.code} className="flex items-start gap-3">
+          <div key={c.code} data-code-trust={c.trust} className="flex items-start gap-3">
             <span className={cn("shrink-0 rounded-lg px-2.5 py-1 text-sm font-bold tracking-wide", chip)}>{c.code}</span>
             <div className="min-w-0">
               {c.definition && <div className="text-lg font-semibold tracking-tight leading-tight text-white">{c.definition}</div>}
@@ -728,7 +378,8 @@ function CodeStatusList({ codes, lang }: { codes: DtcResult[]; lang: LangCode })
                 className={cn(
                   "text-xs",
                   c.definition ? "mt-0.5" : "mt-1.5",
-                  tone === "ok" ? "text-blue-300/80" : tone === "bad" ? "text-red-300/90" : "text-amber-300/90",
+                  // A hand-entered title is shown, but not in the colour used for verified data.
+                  c.trust === "local_reference" ? "text-slate-300/90" : tone === "ok" ? "text-blue-300/80" : tone === "bad" ? "text-red-300/90" : "text-amber-300/90",
                 )}
               >
                 {note}
@@ -737,6 +388,70 @@ function CodeStatusList({ codes, lang }: { codes: DtcResult[]; lang: LangCode })
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Translation keys for the diagnosis enums. The page never decides anything
+ * from the wording of a diagnosis: likelihood, urgency, drive guidance and
+ * check levels are read from these structured values only.
+ */
+const LIKELIHOOD_KEY: Record<Likelihood, string> = {
+  very_likely: "likelihoodVeryLikely",
+  likely: "likelihoodLikely",
+  possible: "likelihoodPossible",
+  unlikely: "likelihoodUnlikely",
+};
+const URGENCY_KEY: Record<Urgency, string> = {
+  normal: "urgencyNormal",
+  caution: "urgencyCaution",
+  stop: "urgencyStop",
+  unknown: "urgencyUnknown",
+};
+const DRIVE_KEY: Record<Urgency, string> = {
+  normal: "driveNormal",
+  caution: "driveCaution",
+  stop: "driveStop",
+  unknown: "driveUnknown",
+};
+const CHECK_LEVEL_KEY: Record<CheckLevel, string> = {
+  owner: "checkOwner",
+  diy: "checkDiy",
+  professional: "checkProfessional",
+};
+const REPAIR_LEVEL_KEY: Record<RepairLevel, string> = {
+  diy_easy: "repairDiyEasy",
+  diy_moderate: "repairDiyModerate",
+  professional: "repairProfessional",
+};
+
+/** An answer to a follow-up question, as sent back to the server. */
+type FollowUpAnswerPayload = { question: string; answer: string };
+
+/** Stable English answers for yes/no questions, whatever language the page is in. */
+const YES_NO_ANSWERS = [
+  { id: "yes", key: "answerYes", text: "Yes" },
+  { id: "no", key: "answerNo", text: "No" },
+  { id: "not_sure", key: "answerNotSure", text: "Not sure" },
+] as const;
+
+/** The safety level shown for the whole diagnosis. Read from the structured result, never inferred. */
+function DriveGuidanceBanner({ guidance, theme, lang }: { guidance: Diagnosis["drive_guidance"]; theme: "dark" | "light"; lang: LangCode }) {
+  const t = (dark: string, light: string) => (theme === "dark" ? dark : light);
+  const level: Urgency = guidance.level in DRIVE_KEY ? guidance.level : "unknown";
+  const tone = {
+    stop: { box: t("bg-red-500/15 border border-red-500/40", "bg-red-50 border border-red-200"), title: t("text-red-200", "text-red-800"), body: t("text-red-200/90", "text-red-700") },
+    caution: { box: t("bg-amber-500/15 border border-amber-500/30", "bg-amber-50 border border-amber-200"), title: t("text-amber-200", "text-amber-800"), body: t("text-amber-200/90", "text-amber-700") },
+    normal: { box: t("glass-card", "bg-white border border-slate-200 shadow-sm"), title: t("text-slate-100", "text-slate-900"), body: t("text-slate-300", "text-slate-600") },
+    unknown: { box: t("glass-card", "bg-white border border-slate-200 shadow-sm"), title: t("text-slate-100", "text-slate-900"), body: t("text-slate-300", "text-slate-600") },
+  }[level];
+  return (
+    <div data-drive-guidance={level} className={cn("rounded-3xl p-5", tone.box)}>
+      <div className={cn("text-[11px] font-medium uppercase tracking-wide", tone.body)}>{tr("driveGuidance", lang)}</div>
+      <div className={cn("mt-1 text-sm font-semibold", tone.title)}>{tr(DRIVE_KEY[level], lang)}</div>
+      {guidance.reason && <p className={cn("mt-1 text-sm", tone.body)}>{guidance.reason}</p>}
+      <p className={cn("mt-2 text-[11px] leading-relaxed", tone.body)}>{tr("driveGuidanceNote", lang)}</p>
     </div>
   );
 }
@@ -752,6 +467,12 @@ type LikelyCausesPanelProps = {
   onSaveToHistory?: (session: DiagnosisSession) => void;
   vehicleId?: string | null;
   lang: LangCode;
+  /** Follow-up answers that were already part of this diagnosis (question → answer). */
+  followUpAnswers?: Record<string, string>;
+  /** Ask the server for an updated diagnosis that takes these answers into account. */
+  onRefine?: (answers: FollowUpAnswerPayload[]) => void;
+  refining?: boolean;
+  refineError?: string | null;
 };
 
 /**
@@ -774,7 +495,9 @@ function LikelyCausesPanel(props: LikelyCausesPanelProps) {
     );
   }
 
-  if (!result || !("causes" in result) || !result.causes?.length) {
+  // Anything that is not a complete diagnosis (including a malformed reply) shows
+  // the empty state. The page never fills in a diagnosis of its own.
+  if (!result || !("diagnosis" in result) || !Array.isArray(result.diagnosis?.causes) || result.diagnosis.causes.length === 0) {
     return (
       <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
         <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("likelyCauses", lang)}</div>
@@ -783,7 +506,20 @@ function LikelyCausesPanel(props: LikelyCausesPanelProps) {
     );
   }
 
-  return <LikelyCausesResults {...props} result={result} />;
+  // A new result gets a new key, so the results view starts from a clean state.
+  return <LikelyCausesResults key={keyForResult(result)} {...props} result={result} />;
+}
+
+/** A stable number for each result object, used as a React key. */
+const resultKeys = new WeakMap<object, number>();
+let nextResultKey = 1;
+function keyForResult(result: object): number {
+  let key = resultKeys.get(result);
+  if (!key) {
+    key = nextResultKey++;
+    resultKeys.set(result, key);
+  }
+  return key;
 }
 
 function LikelyCausesResults({
@@ -797,108 +533,61 @@ function LikelyCausesResults({
   onSaveToHistory,
   vehicleId,
   lang,
+  followUpAnswers,
+  onRefine,
+  refining,
+  refineError,
 }: Omit<LikelyCausesPanelProps, "result"> & { result: ApiOk }) {
+  const diagnosis = result.diagnosis;
+  // Already ranked by the server from the model's own ranking. The page keeps that order.
+  const causes = diagnosis.causes;
+  const followUps = diagnosis.follow_up_questions || [];
+  const limitations = diagnosis.limitations || [];
+
   const [openCauseId, setOpenCauseId] = useState<string | null>(null);
-  const [refineAnswers, setRefineAnswers] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<Record<string, string>>({});
   const [guideMode, setGuideMode] = useState(false);
   const [guideCauseIdx, setGuideCauseIdx] = useState(0);
   const [guideStepIdx, setGuideStepIdx] = useState(0);
   const [guideFixMode, setGuideFixMode] = useState(false);
   const [confirmedFix, setConfirmedFix] = useState<DiagnosisSession["confirmedFix"] | null>(null);
   const [exportingPdf, setExportingPdf] = useState(false);
-  const [guideHighlight, setGuideHighlight] = useState(false);
-  const refineRef = useRef<HTMLDivElement | null>(null);
+  const guideRef = useRef<HTMLDivElement | null>(null);
   const t = (dark: string, light: string) => theme === "dark" ? dark : light;
 
+  // No reset effect is needed: the panel is given a new key for every result,
+  // so answers, the open cause and the guide all start fresh with it.
+
   function handleGuideMeClick() {
-    setGuideMode((v) => !v);
-    setGuideHighlight(true);
-    // If Refine diagnosis is ever hidden/collapsed, expand it here before scrolling.
-    refineRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    setTimeout(() => {
-      refineRef.current?.querySelector<HTMLButtonElement>("[data-refine-first]")?.focus();
-    }, 150);
-    setTimeout(() => setGuideHighlight(false), 2500);
+    const next = !guideMode;
+    setGuideMode(next);
+    if (next) setTimeout(() => guideRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
 
-  const causesWithId = useMemo(() => {
-    return (result.causes || []).map((c, idx) => ({ c, id: stableCauseId(c.title, idx), originalIdx: idx }));
-  }, [result.causes]);
-
-  useEffect(() => {
-    setRefineAnswers({});
-    setOpenCauseId(null);
-    setGuideMode(false);
-    setGuideCauseIdx(0);
-    setGuideStepIdx(0);
-    setGuideFixMode(false);
-    setConfirmedFix(null);
-  }, [result]);
-
-  // Debug step: verify refineAnswers updates trigger.
-  useEffect(() => {
-    // temporary logging per request; keep dev-only to avoid noisy prod logs
-    if (process.env.NODE_ENV !== "production") {
-      // eslint-disable-next-line no-console
-      console.log("refineAnswers changed", refineAnswers);
+  /** The user's answers as plain text for the server. Unanswered questions are left out. */
+  function collectAnswers(): FollowUpAnswerPayload[] {
+    const out: FollowUpAnswerPayload[] = [];
+    for (const q of followUps) {
+      const value = (answers[q.id] || "").trim();
+      if (!value) continue;
+      let answer = value;
+      if (q.answer_type === "yes_no") answer = YES_NO_ANSWERS.find((a) => a.id === value)?.text || "";
+      else if (q.answer_type === "single_choice") answer = q.options.find((o) => o.id === value)?.label || "";
+      if (answer) out.push({ question: q.question, answer });
     }
-  }, [refineAnswers]);
+    return out;
+  }
 
-  const allDomains = useMemo(() => {
-    const d = new Set<Domain>();
-    for (const x of causesWithId.slice(0, 3)) domainsForCause(x.c, code, symptoms).forEach((dd) => d.add(dd));
-    return Array.from(d);
-  }, [causesWithId, code, symptoms]);
-
-  const followUps = useMemo(() => buildFollowUpQuestions(allDomains, code, symptoms), [allDomains, code, symptoms]);
-
-  const hasRefinements = useMemo(() => Object.keys(refineAnswers).length > 0, [refineAnswers]);
-
-  const rankedCauses = useMemo(() => {
-    // Debug step: verify rerank path runs after refineAnswers changes.
-    if (process.env.NODE_ENV !== "production") {
-      // eslint-disable-next-line no-console
-      console.log("reranking causes from refineAnswers", refineAnswers);
-    }
-    // Recompute ranked causes from original causes + refineAnswers.
-    const scored = causesWithId.map(({ c, id, originalIdx }) => ({
-      c,
-      id,
-      originalIdx,
-      score: scoreCause(c, { code, symptoms, answers: refineAnswers }),
-    }));
-
-    // Reset must restore original order.
-    const sorted = [...scored].sort((a, b) => {
-      if (!hasRefinements) return a.originalIdx - b.originalIdx;
-      return b.score - a.score || a.originalIdx - b.originalIdx;
-    });
-
-    // Only the ORDER is shown. Confidence percentages, cost/labour estimates and
-    // the "safe to drive" badge were removed: they were derived from keyword
-    // matching in the browser, not from the diagnosis, and will come back once
-    // the diagnosis itself supplies them as structured data.
-    return sorted.map(({ c, id, score }) => ({
-      ...c,
-      id,
-      score,
-      whyLikely: buildWhyLikely(c, { code, symptoms, vehicle, answers: refineAnswers }),
-    }));
-  }, [causesWithId, code, hasRefinements, refineAnswers, symptoms, vehicle]);
-
-  const quickChecks = useMemo(
-    () => buildQuickChecks(rankedCauses.slice(0, 3).map((c) => ({ c, id: c.id })), { code, symptoms }),
-    [rankedCauses, code, symptoms]
-  );
+  const answeredCount = followUps.filter((q) => (answers[q.id] || "").trim()).length;
 
   function buildSession(): DiagnosisSession | null {
     if (!vehicleId || !vehicle) return null;
-    const finalRankedCauses: DiagnosisCauseSnapshot[] = rankedCauses.map((c) => ({
+    const finalRankedCauses: DiagnosisCauseSnapshot[] = causes.map((c) => ({
       id: c.id,
       title: c.title,
-      whyLikely: c.whyLikely,
-      confirm: c.confirm,
-      fix: c.fix,
+      whyLikely: c.why_it_fits,
+      confirm: c.checks.map((k) => k.instruction),
+      fix: c.recommended_action ? [c.recommended_action] : [],
     }));
     const issueText = [code?.trim() ? `Code: ${code.trim()}` : "", symptoms?.trim() ? `Symptoms: ${symptoms.trim()}` : ""].filter(Boolean).join(" | ") || "Diagnosis";
     return {
@@ -909,7 +598,7 @@ function LikelyCausesResults({
       code: code?.trim() || undefined,
       symptoms: symptoms?.trim() || undefined,
       vehicle: { year: vehicle.year, make: vehicle.make, model: vehicle.model, engine: vehicle.engine },
-      followUpAnswers: refineAnswers,
+      followUpAnswers: followUpAnswers || {},
       finalRankedCauses,
       confirmedFix: confirmedFix || undefined,
     };
@@ -951,27 +640,33 @@ function LikelyCausesResults({
       addWrapped(`Date: ${new Date(session.timestamp).toLocaleString()}`, 10, false, 6);
       addWrapped(session.issueText, 10, false, 10);
 
+      if (diagnosis.summary) addWrapped(diagnosis.summary, 10, false, 6);
+      addWrapped(`${tr("driveGuidance", "en")}: ${tr(DRIVE_KEY[diagnosis.drive_guidance.level] || "driveUnknown", "en")}${diagnosis.drive_guidance.reason ? `. ${diagnosis.drive_guidance.reason}` : ""}`, 10, false, 10);
+
       if (session.confirmedFix) {
         addWrapped("Confirmed fix (from guided flow):", 11, true, 2);
         addWrapped(`${session.confirmedFix.causeTitle}: ${session.confirmedFix.fix}`, 10, false, 10);
       }
 
-      addWrapped("Follow-up answers:", 11, true, 2);
-      const ansLines = Object.entries(session.followUpAnswers || {})
-        .filter(([, v]) => v && v !== "unknown")
-        .map(([k, v]) => `- ${k}: ${v}`);
-      addWrapped(ansLines.length ? ansLines.join("\n") : "- (none)", 10, false, 10);
+      const ansLines = Object.entries(session.followUpAnswers || {}).map(([k, v]) => `- ${k}: ${v}`);
+      if (ansLines.length) {
+        addWrapped("Follow-up answers:", 11, true, 2);
+        addWrapped(ansLines.join("\n"), 10, false, 10);
+      }
 
-      addWrapped("Ranked causes:", 12, true, 6);
-      session.finalRankedCauses.forEach((c, i) => {
-        addWrapped(`${i + 1}. ${c.title}`, 11, true, 2);
-        if (c.whyLikely?.length) addWrapped(`Why likely:\n- ${c.whyLikely.join("\n- ")}`, 10, false, 2);
-        if (c.confirm?.length) addWrapped(`Confirm:\n- ${c.confirm.join("\n- ")}`, 10, false, 2);
-        if (c.fix?.length) addWrapped(`Fix:\n- ${c.fix.join("\n- ")}`, 10, false, 8);
+      addWrapped("Possible causes, most likely first:", 12, true, 6);
+      causes.forEach((c, i) => {
+        addWrapped(`${i + 1}. ${c.title} (${tr(LIKELIHOOD_KEY[c.likelihood] || "likelihoodPossible", "en")})`, 11, true, 2);
+        if (c.explanation) addWrapped(c.explanation, 10, false, 2);
+        if (c.why_it_fits.length) addWrapped(`Why it fits:\n- ${c.why_it_fits.join("\n- ")}`, 10, false, 2);
+        if (c.checks.length) addWrapped(`How to confirm:\n- ${c.checks.map((k) => k.instruction).join("\n- ")}`, 10, false, 2);
+        if (c.recommended_action) addWrapped(`Recommended next step: ${c.recommended_action}`, 10, false, 8);
         y += 6;
       });
 
-      addWrapped("Disclaimer: AI-generated guidance, not a professional inspection. Causes are listed most likely first. Use safe lifting procedures and stop driving if the vehicle is unsafe to operate.", 9, false);
+      if (limitations.length) addWrapped(`Limits of this diagnosis:\n- ${limitations.join("\n- ")}`, 10, false, 8);
+
+      addWrapped("Disclaimer: AI-generated guidance, not a professional inspection. These are possible causes, not a confirmed repair. Use safe lifting procedures and stop driving if the vehicle is unsafe to operate.", 9, false);
 
       doc.save(`carcode-diagnosis-${Date.now()}.pdf`);
     } catch {
@@ -981,40 +676,61 @@ function LikelyCausesResults({
     }
   }
 
+  const actionButton = cn(
+    "shrink-0 flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed",
+    t("border border-white/10 bg-white/10 text-slate-300 hover:bg-blue-500/20 hover:text-blue-300 hover:border-blue-400/30", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300"),
+  );
+  const subCard = t("border border-white/10 bg-white/5", "border border-slate-200 bg-slate-50");
+  const pill = (selected: boolean) =>
+    cn(
+      "rounded-full px-3 py-1.5 text-[11px] font-medium transition-all",
+      selected
+        ? "bg-blue-500 text-white shadow-sm shadow-blue-500/30"
+        : t("border border-white/10 bg-white/5 text-slate-300 hover:border-blue-400/30 hover:text-blue-300", "border border-slate-200 bg-white text-slate-600 hover:border-blue-300 hover:text-blue-600"),
+    );
+
+  const likelihoodTone: Record<Likelihood, string> = {
+    very_likely: t("bg-blue-500/25 text-blue-200 border-blue-400/40", "bg-blue-100 text-blue-800 border-blue-300"),
+    likely: t("bg-blue-500/15 text-blue-300 border-blue-500/30", "bg-blue-50 text-blue-700 border-blue-200"),
+    possible: t("bg-slate-500/15 text-slate-300 border-slate-500/30", "bg-slate-100 text-slate-600 border-slate-200"),
+    unlikely: t("bg-slate-500/10 text-slate-400 border-slate-500/20", "bg-slate-50 text-slate-500 border-slate-200"),
+  };
+  const urgencyTone: Record<Urgency, string> = {
+    stop: t("bg-red-500/15 text-red-300 border-red-500/30", "bg-red-50 text-red-700 border-red-200"),
+    caution: t("bg-amber-500/15 text-amber-300 border-amber-500/30", "bg-amber-50 text-amber-700 border-amber-200"),
+    normal: t("bg-slate-500/10 text-slate-400 border-slate-500/20", "bg-slate-50 text-slate-500 border-slate-200"),
+    unknown: t("bg-slate-500/10 text-slate-400 border-slate-500/20 border-dashed", "bg-slate-50 text-slate-500 border-slate-300 border-dashed"),
+  };
+  const repairTone: Record<RepairLevel, string> = {
+    diy_easy: t("text-emerald-400", "text-emerald-600"),
+    diy_moderate: t("text-yellow-400", "text-yellow-600"),
+    professional: t("text-orange-400", "text-orange-600"),
+  };
+
   return (
     <div className="space-y-4">
       <div className={cn("rounded-3xl p-6", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
-        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-          <div className="flex-1 min-w-0">
-            <div className={cn("text-[11px] font-medium", t("text-slate-400", "text-slate-500"))}>DIAGNOSTIC SUMMARY</div>
-            {result?.codes && result.codes.length > 0 ? (
-              <CodeStatusList codes={result.codes} lang={lang} />
-            ) : (
-              <div className="flex flex-wrap items-center gap-2">
-                <div className={cn("text-2xl font-semibold tracking-tight", t("text-white", "text-slate-900"))}>
-                  {result?.summary_title || tr("likelyCauses", lang)}
-                </div>
-                {Object.keys(refineAnswers).length > 0 && (
-                  <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium", t("bg-blue-500/20 text-blue-300 border border-blue-500/30", "bg-blue-50 text-blue-700 border border-blue-200"))}>
-                    <span className="rounded bg-emerald-500/90 text-white px-1.5 py-0.5 text-[9px] font-bold uppercase">Updated</span>
-                    {tr("updatedBasedOnAnswers", lang)}
-                  </span>
-                )}
-              </div>
+        {/* Stacked: the summary needs the full width, so the actions sit under it at every size. */}
+        <div className="flex flex-col gap-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className={cn("text-[11px] font-medium", t("text-slate-400", "text-slate-500"))}>DIAGNOSTIC SUMMARY</div>
+              {result.refined && (
+                <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium", t("bg-blue-500/20 text-blue-300 border border-blue-500/30", "bg-blue-50 text-blue-700 border border-blue-200"))}>
+                  {tr("updatedBasedOnAnswers", lang)}
+                </span>
+              )}
+            </div>
+            {result.codes && result.codes.length > 0 && <CodeStatusList codes={result.codes} lang={lang} />}
+            {diagnosis.summary && (
+              <p className={cn("mt-3 text-base font-medium leading-snug", t("text-white", "text-slate-900"))}>{diagnosis.summary}</p>
             )}
             <p className={cn("mt-2 text-sm block whitespace-normal break-normal", t("text-slate-400", "text-slate-500"))}>
-              Tap a cause to see how to confirm it and how to fix it.
+              {tr("hypothesisNote", lang)}
             </p>
           </div>
-          <div className="flex flex-wrap items-start gap-2 md:justify-end min-w-0 shrink-0">
-            <button
-              type="button"
-              onClick={handleGuideMeClick}
-              className={cn(
-                "shrink-0 flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all",
-                t("border border-white/10 bg-white/10 text-slate-300 hover:bg-blue-500/20 hover:text-blue-300 hover:border-blue-400/30", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300")
-              )}
-            >
+          <div className="flex flex-wrap items-start gap-2 min-w-0">
+            <button type="button" onClick={handleGuideMeClick} className={actionButton}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M9 18h6" />
                 <path d="M10 22h4" />
@@ -1022,15 +738,7 @@ function LikelyCausesResults({
               </svg>
               {tr("guideMe", lang)}
             </button>
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={!vehicleId || !onSaveToHistory}
-              className={cn(
-                "shrink-0 flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed",
-                t("border border-white/10 bg-white/10 text-slate-300 hover:bg-blue-500/20 hover:text-blue-300 hover:border-blue-400/30", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300")
-              )}
-            >
+            <button type="button" onClick={handleSave} disabled={!vehicleId || !onSaveToHistory} className={actionButton}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
                 <polyline points="17 21 17 13 7 13 7 21" />
@@ -1038,15 +746,7 @@ function LikelyCausesResults({
               </svg>
               {tr("saveToHistory", lang)}
             </button>
-            <button
-              type="button"
-              onClick={handleExportPdf}
-              disabled={!vehicleId || exportingPdf}
-              className={cn(
-                "shrink-0 flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed",
-                t("border border-white/10 bg-white/10 text-slate-300 hover:bg-blue-500/20 hover:text-blue-300 hover:border-blue-400/30", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300")
-              )}
-            >
+            <button type="button" onClick={handleExportPdf} disabled={!vehicleId || exportingPdf} className={actionButton}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                 <polyline points="14 2 14 8 20 8" />
@@ -1056,13 +756,7 @@ function LikelyCausesResults({
               {exportingPdf ? "Exporting…" : tr("exportPdf", lang)}
             </button>
             {onDownload && (
-              <button
-                onClick={onDownload}
-                className={cn(
-                  "shrink-0 flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all",
-                  t("border border-white/10 bg-white/10 text-slate-300 hover:bg-blue-500/20 hover:text-blue-300 hover:border-blue-400/30", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300")
-                )}
-              >
+              <button onClick={onDownload} className={actionButton}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                   <polyline points="7 10 12 15 17 10" />
@@ -1072,13 +766,7 @@ function LikelyCausesResults({
               </button>
             )}
             {onShare && (
-              <button
-                onClick={onShare}
-                className={cn(
-                  "shrink-0 flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all",
-                  t("border border-white/10 bg-white/10 text-slate-300 hover:bg-blue-500/20 hover:text-blue-300 hover:border-blue-400/30", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-300")
-                )}
-              >
+              <button onClick={onShare} className={actionButton}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
                   <polyline points="16 6 12 2 8 6" />
@@ -1091,78 +779,70 @@ function LikelyCausesResults({
         </div>
       </div>
 
-      {refineAnswers.checkEngineLight === "flashing" && (
-        <div className={cn("rounded-3xl p-4", t("bg-amber-500/15 border border-amber-500/30", "bg-amber-50 border border-amber-200"))}>
-          <div className={cn("text-sm font-semibold", t("text-amber-200", "text-amber-800"))}>⚠ Flashing check engine light</div>
-          <p className={cn("mt-1 text-xs", t("text-amber-300/90", "text-amber-700"))}>A flashing light often indicates a severe misfire. Reduce load and consider having the vehicle checked soon.</p>
+      <DriveGuidanceBanner guidance={diagnosis.drive_guidance} theme={theme} lang={lang} />
+
+      {followUps.length > 0 && (
+        <div id="refine-diagnosis" className={cn("rounded-3xl p-6", t("glass-card", "bg-white border border-slate-200 shadow-sm"))}>
+          <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("refineDiagnosis", lang)}</div>
+          <div className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>{tr("refineHint", lang)}</div>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            {followUps.map((fq) => (
+              <div key={fq.id} data-follow-up={fq.answer_type} className={cn("rounded-2xl p-4", subCard)}>
+                <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>{fq.question}</div>
+                {fq.why_it_matters && (
+                  <div className={cn("mt-1 text-[11px] leading-relaxed", t("text-slate-400", "text-slate-500"))}>{fq.why_it_matters}</div>
+                )}
+                {fq.answer_type === "free_text" ? (
+                  <input
+                    type="text"
+                    maxLength={200}
+                    value={answers[fq.id] || ""}
+                    onChange={(e) => setAnswers((prev) => ({ ...prev, [fq.id]: e.target.value }))}
+                    placeholder={tr("typeYourAnswer", lang)}
+                    aria-label={fq.question}
+                    className={cn("mt-3 w-full rounded-xl px-3 py-2 text-xs transition-colors", t("glass-input", "bg-white border border-slate-200 text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none"))}
+                  />
+                ) : (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {(fq.answer_type === "yes_no" ? YES_NO_ANSWERS.map((a) => ({ id: a.id as string, label: tr(a.key, lang) })) : fq.options).map((opt) => {
+                      const selected = answers[fq.id] === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          aria-pressed={selected}
+                          onClick={() => setAnswers((prev) => ({ ...prev, [fq.id]: selected ? "" : opt.id }))}
+                          className={pill(selected)}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              disabled={!onRefine || refining || answeredCount === 0}
+              onClick={() => onRefine?.(collectAnswers())}
+              className="rounded-xl bg-blue-500 px-4 py-2 text-xs font-semibold text-white shadow-md shadow-blue-500/25 transition-all hover:bg-blue-400 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {refining ? tr("updatingDiagnosis", lang) : tr("updateDiagnosis", lang)}
+            </button>
+            {refineError && <span role="alert" className="text-xs text-red-300">{refineError}</span>}
+          </div>
         </div>
       )}
 
-      <div
-        ref={refineRef}
-        id="refine-diagnosis"
-        className={cn(
-          "rounded-3xl p-6",
-          t("glass-card", "bg-white border border-slate-200 shadow-sm")
-        )}
-      >
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("refineDiagnosis", lang)}</div>
-            <div className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>Answer a few quick questions to re-rank likely causes.</div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setRefineAnswers({})}
-            className={cn("rounded-xl px-3 py-2 text-xs font-semibold transition-all", t("border border-white/10 bg-white/10 text-slate-300 hover:bg-white/20", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"))}
-          >
-            Reset
-          </button>
-        </div>
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
-          {followUps.map((fq) => (
-            <div key={fq.id} className={cn("rounded-2xl p-4", t("border border-white/10 bg-white/5", "border border-slate-200 bg-slate-50"))}>
-              <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>{fq.prompt}</div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {fq.options.map((opt) => {
-                  const selected = refineAnswers[fq.id] === opt.id;
-                  const isFirstOption = followUps[0] && fq.id === followUps[0].id && opt.id === followUps[0].options[0]?.id;
-                  return (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      {...(isFirstOption ? { "data-refine-first": true } : {})}
-                      onClick={() => setRefineAnswers((prev) => ({ ...prev, [fq.id]: opt.id }))}
-                      className={cn(
-                        "rounded-full px-3 py-1.5 text-[11px] font-medium transition-all",
-                        selected
-                          ? "bg-blue-500 text-white shadow-sm shadow-blue-500/30"
-                          : t("border border-white/10 bg-white/5 text-slate-300 hover:border-blue-400/30 hover:text-blue-300", "border border-slate-200 bg-white text-slate-600 hover:border-blue-300 hover:text-blue-600")
-                      )}
-                    >
-                      {opt.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
       {guideMode && (
-        <div
-          className={cn(
-            "rounded-3xl p-6 transition-all duration-300",
-            t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"),
-            guideHighlight && "ring-2 ring-cyan-400/60 shadow-[0_0_0_6px_rgba(34,211,238,0.12)]",
-            guideHighlight && t("bg-white/10", "bg-cyan-50/80")
-          )}
-        >
+        <div ref={guideRef} className={cn("rounded-3xl p-6 transition-all duration-300", t("glass-card-strong", "bg-white border border-slate-200 shadow-sm"))}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("guideMe", lang)}</div>
-              <div className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>Work through the top causes one test at a time. If a test fails, we’ll show a recommended fix.</div>
+              <div className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>Work through the top causes one check at a time. If a check points to the cause, we’ll show the recommended next step.</div>
             </div>
             <button
               type="button"
@@ -1173,132 +853,104 @@ function LikelyCausesResults({
             </button>
           </div>
 
-          {rankedCauses.length > 0 && (
-            <div className="mt-5">
-              {(() => {
-                const cause = rankedCauses[Math.min(guideCauseIdx, rankedCauses.length - 1)];
-                const tests = (cause.confirm || []).length ? (cause.confirm || []) : ["Do a basic visual inspection related to this cause (loose connectors, leaks, abnormal noises)."];
-                const step = tests[Math.min(guideStepIdx, tests.length - 1)];
-                return (
-                  <div className={cn("rounded-2xl p-4", t("border border-white/10 bg-white/5", "border border-slate-200 bg-slate-50"))}>
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className={cn("text-xs font-semibold", t("text-slate-300", "text-slate-600"))}>
-                          Step {Math.min(guideStepIdx + 1, tests.length)} of {tests.length} • Cause {Math.min(guideCauseIdx + 1, rankedCauses.length)} of {rankedCauses.length}
-                        </div>
-                        <div className={cn("mt-1 text-sm font-semibold", t("text-white", "text-slate-900"))}>{cause.title}</div>
-                        {!guideFixMode ? (
-                          <div className={cn("mt-3 text-sm", t("text-slate-300", "text-slate-600"))}>{step}</div>
-                        ) : (
+          <div className="mt-5">
+            {(() => {
+              const cause = causes[Math.min(guideCauseIdx, causes.length - 1)];
+              const tests = cause.checks;
+              const step = tests[Math.min(guideStepIdx, Math.max(0, tests.length - 1))];
+              const nextCause = () => {
+                setGuideFixMode(false);
+                setGuideCauseIdx((i) => Math.min(i + 1, causes.length - 1));
+                setGuideStepIdx(0);
+              };
+              const plainButton = cn("rounded-xl px-3 py-2 text-xs font-semibold transition-all", t("border border-white/10 bg-white/10 text-slate-300 hover:bg-white/20", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"));
+              return (
+                <div className={cn("rounded-2xl p-4", subCard)}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className={cn("text-xs font-semibold", t("text-slate-300", "text-slate-600"))}>
+                        {tests.length > 0 ? `Step ${Math.min(guideStepIdx + 1, tests.length)} of ${tests.length} • ` : ""}Cause {Math.min(guideCauseIdx + 1, causes.length)} of {causes.length}
+                      </div>
+                      <div className={cn("mt-1 text-sm font-semibold", t("text-white", "text-slate-900"))}>{cause.title}</div>
+                      {!guideFixMode ? (
+                        step ? (
                           <div className="mt-3">
-                            <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>Recommended fix</div>
-                            <ul className={cn("mt-2 space-y-2 text-sm", t("text-slate-300", "text-slate-600"))}>
-                              {(cause.fix || []).length ? (
-                                cause.fix!.map((fx, i) => (
-                                  <li key={i} className="flex items-start gap-2">
-                                    <span className="mt-2 h-2 w-2 rounded-full bg-blue-400 shrink-0" />
-                                    <span className="min-w-0">{fx}</span>
-                                    <button
-                                      type="button"
-                                      onClick={() => setConfirmedFix({ causeId: cause.id, causeTitle: cause.title, fix: fx })}
-                                      className={cn("ml-auto shrink-0 rounded-xl px-2.5 py-1 text-[11px] font-semibold transition-all", t("border border-white/10 bg-white/10 text-slate-300 hover:bg-blue-500/20 hover:text-blue-300", "border border-slate-200 bg-white text-slate-600 hover:bg-blue-50 hover:text-blue-600"))}
-                                    >
-                                      Choose
-                                    </button>
-                                  </li>
-                                ))
-                              ) : (
-                                <li className={t("text-slate-500", "text-slate-400")}>{tr("noFixSteps", lang)}</li>
-                              )}
-                            </ul>
-                            {confirmedFix?.causeId === cause.id && (
-                              <div className={cn("mt-3 rounded-xl p-3 text-xs", t("border border-emerald-500/20 bg-emerald-500/10 text-emerald-300", "border border-emerald-200 bg-emerald-50 text-emerald-800"))}>
-                                Confirmed fix selected: {confirmedFix.fix}
-                              </div>
-                            )}
+                            <div className={cn("text-sm", t("text-slate-300", "text-slate-600"))}>{step.instruction}</div>
+                            <div className={cn("mt-1 text-[11px]", t("text-slate-400", "text-slate-500"))}>{tr(CHECK_LEVEL_KEY[step.level] || "checkProfessional", lang)}</div>
                           </div>
-                        )}
-                      </div>
-                      <div className="shrink-0 flex flex-col gap-2">
-                        {!guideFixMode ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (guideStepIdx + 1 < tests.length) {
-                                  setGuideStepIdx(guideStepIdx + 1);
-                                } else {
-                                  setGuideCauseIdx((i) => Math.min(i + 1, rankedCauses.length - 1));
-                                  setGuideStepIdx(0);
-                                }
-                              }}
-                              className="rounded-xl bg-emerald-500 px-3 py-2 text-xs font-semibold text-white shadow-md shadow-emerald-500/25 transition-all hover:bg-emerald-400"
-                            >
-                              Pass
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setGuideFixMode(true)}
-                              className={cn("rounded-xl px-3 py-2 text-xs font-semibold transition-all", t("border border-white/10 bg-white/10 text-slate-300 hover:bg-red-500/20 hover:text-red-300", "border border-slate-200 bg-white text-slate-600 hover:bg-red-50 hover:text-red-600"))}
-                            >
-                              Fail
-                            </button>
-                          </>
                         ) : (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setGuideFixMode(false);
-                                setGuideCauseIdx((i) => Math.min(i + 1, rankedCauses.length - 1));
-                                setGuideStepIdx(0);
-                              }}
-                              className={cn("rounded-xl px-3 py-2 text-xs font-semibold transition-all", t("border border-white/10 bg-white/10 text-slate-300 hover:bg-white/20", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"))}
-                            >
-                              Next cause
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setGuideFixMode(false)}
-                              className={cn("rounded-xl px-3 py-2 text-xs font-semibold transition-all", t("border border-white/10 bg-white/10 text-slate-300 hover:bg-white/20", "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"))}
-                            >
-                              Back to tests
-                            </button>
-                          </>
-                        )}
-                      </div>
+                          <div className={cn("mt-3 text-sm", t("text-slate-500", "text-slate-400"))}>{tr("noConfirmSteps", lang)}</div>
+                        )
+                      ) : (
+                        <div className="mt-3">
+                          <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>{tr("recommendedAction", lang)}</div>
+                          {cause.recommended_action ? (
+                            <div className={cn("mt-2 flex items-start gap-2 text-sm", t("text-slate-300", "text-slate-600"))}>
+                              <span className="min-w-0">{cause.recommended_action}</span>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmedFix({ causeId: cause.id, causeTitle: cause.title, fix: cause.recommended_action })}
+                                className={cn("ml-auto shrink-0 rounded-xl px-2.5 py-1 text-[11px] font-semibold transition-all", t("border border-white/10 bg-white/10 text-slate-300 hover:bg-blue-500/20 hover:text-blue-300", "border border-slate-200 bg-white text-slate-600 hover:bg-blue-50 hover:text-blue-600"))}
+                              >
+                                Choose
+                              </button>
+                            </div>
+                          ) : (
+                            <div className={cn("mt-2 text-sm", t("text-slate-500", "text-slate-400"))}>{tr("noFixSteps", lang)}</div>
+                          )}
+                          {confirmedFix?.causeId === cause.id && (
+                            <div className={cn("mt-3 rounded-xl p-3 text-xs", t("border border-emerald-500/20 bg-emerald-500/10 text-emerald-300", "border border-emerald-200 bg-emerald-50 text-emerald-800"))}>
+                              Selected: {confirmedFix.fix}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <div className="shrink-0 flex flex-col gap-2">
+                      {!guideFixMode ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (guideStepIdx + 1 < tests.length) setGuideStepIdx(guideStepIdx + 1);
+                              else nextCause();
+                            }}
+                            className="rounded-xl bg-emerald-500 px-3 py-2 text-xs font-semibold text-white shadow-md shadow-emerald-500/25 transition-all hover:bg-emerald-400"
+                          >
+                            Pass
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setGuideFixMode(true)}
+                            className={cn("rounded-xl px-3 py-2 text-xs font-semibold transition-all", t("border border-white/10 bg-white/10 text-slate-300 hover:bg-red-500/20 hover:text-red-300", "border border-slate-200 bg-white text-slate-600 hover:bg-red-50 hover:text-red-600"))}
+                          >
+                            Fail
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button type="button" onClick={nextCause} className={plainButton}>Next cause</button>
+                          <button type="button" onClick={() => setGuideFixMode(false)} className={plainButton}>Back to tests</button>
+                        </>
+                      )}
                     </div>
                   </div>
-                );
-              })()}
-            </div>
-          )}
+                </div>
+              );
+            })()}
+          </div>
         </div>
       )}
 
       <div className="space-y-3 [&>div]:transition-all [&>div]:duration-300 [&>div]:ease-out">
-        {rankedCauses.map((c, idx) => {
+        {causes.map((c, idx) => {
           const isOpen = openCauseId === c.id;
-          const severityConfig = {
-            high: { label: tr("mostLikely", lang), bg: t("bg-red-500/15 text-red-300 border-red-500/30", "bg-red-50 text-red-600 border-red-200"), dot: "bg-red-400" },
-            medium: { label: tr("possible", lang), bg: t("bg-yellow-500/15 text-yellow-300 border-yellow-500/30", "bg-yellow-50 text-yellow-600 border-yellow-200"), dot: "bg-yellow-400" },
-            low: { label: tr("lessLikely", lang), bg: t("bg-slate-500/15 text-slate-300 border-slate-500/30", "bg-slate-100 text-slate-500 border-slate-200"), dot: "bg-slate-400" },
-          };
-          // Use rank to determine visible tier tags so re-ranking is obvious.
-          const rankTier = idx === 0 ? "high" : idx <= 2 ? "medium" : "low";
-          const sev = severityConfig[rankTier];
-          const diffConfig: Record<string, { icon: React.ReactNode; color: string }> = {
-            "DIY Easy": { icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>, color: t("text-emerald-400", "text-emerald-600") },
-            "DIY Moderate": { icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>, color: t("text-yellow-400", "text-yellow-600") },
-            "Mechanic Recommended": { icon: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/></svg>, color: t("text-orange-400", "text-orange-600") },
-          };
-          const diff = diffConfig[c.difficulty || "DIY Moderate"] || diffConfig["DIY Moderate"];
-
           return (
-            <div key={c.id} className={cn("rounded-3xl animate-scale-in", t("glass-card", "bg-white border border-slate-200 shadow-sm"))} style={{ animationDelay: `${idx * 0.05}s` }}>
+            <div key={c.id} data-cause-rank={c.rank} className={cn("rounded-3xl animate-scale-in", t("glass-card", "bg-white border border-slate-200 shadow-sm"))} style={{ animationDelay: `${idx * 0.05}s` }}>
               <button
                 type="button"
                 onClick={() => setOpenCauseId(isOpen ? null : c.id)}
+                aria-expanded={isOpen}
                 className={cn(
                   "w-full rounded-3xl border border-transparent bg-transparent px-5 py-4 text-left transition",
                   t("hover:bg-blue-500/20 hover:border-blue-400/30", "hover:bg-blue-50 hover:border-blue-200"),
@@ -1308,21 +960,21 @@ function LikelyCausesResults({
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{c.title}</div>
-                      <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold", sev.bg)}>
-                        <span className={cn("h-1.5 w-1.5 rounded-full", sev.dot)} />
-                        {sev.label}
+                      <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>
+                        <span className={cn("mr-1.5", t("text-slate-400", "text-slate-400"))}>{c.rank}.</span>
+                        {c.title}
+                      </div>
+                      <span data-likelihood={c.likelihood} className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold", likelihoodTone[c.likelihood] || likelihoodTone.possible)}>
+                        {tr(LIKELIHOOD_KEY[c.likelihood] || "likelihoodPossible", lang)}
+                      </span>
+                      <span data-urgency={c.urgency} className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold", urgencyTone[c.urgency] || urgencyTone.unknown)}>
+                        {tr(URGENCY_KEY[c.urgency] || "urgencyUnknown", lang)}
                       </span>
                     </div>
-                    {c.why && <div className={cn("mt-1 text-sm", t("text-slate-400", "text-slate-500"))}>{c.why}</div>}
-                    {c.difficulty && (
-                      <div className="mt-2 flex items-center gap-3 flex-wrap">
-                        <span className={cn("inline-flex items-center gap-1 text-xs", diff.color)}>
-                          {diff.icon}
-                          {c.difficulty}
-                        </span>
-                      </div>
-                    )}
+                    {c.explanation && <div className={cn("mt-1 text-sm", t("text-slate-400", "text-slate-500"))}>{c.explanation}</div>}
+                    <div className={cn("mt-2 text-xs", repairTone[c.repair_level] || repairTone.professional)}>
+                      {tr(REPAIR_LEVEL_KEY[c.repair_level] || "repairProfessional", lang)}
+                    </div>
                   </div>
                   <div className={cn("shrink-0 mt-1 text-sm font-semibold", t("text-slate-400", "text-slate-500"))}>{isOpen ? "−" : "+"}</div>
                 </div>
@@ -1330,32 +982,35 @@ function LikelyCausesResults({
 
               {isOpen && (
                 <div className={cn("border-t px-5 py-5", t("border-white/10", "border-slate-200"))}>
-                  <div className="grid grid-cols-1 gap-4">
-                    <div className={cn("rounded-2xl p-4", t("border border-white/10 bg-white/5", "border border-slate-200 bg-slate-50"))}>
-                      <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>{tr("whyLikely", lang)}</div>
-                      <ul className={cn("mt-2 space-y-2 text-sm", t("text-slate-300", "text-slate-600"))}>
-                        {(c.whyLikely || []).map((w: string, i: number) => (
-                          <li key={i} className="flex items-start gap-2">
-                            <span className="mt-2 h-2 w-2 rounded-full bg-blue-400 shrink-0" />
-                            {w}
-                          </li>
-                        ))}
-                      </ul>
-                      <div className={cn("mt-3 text-[11px] leading-relaxed", t("text-slate-400", "text-slate-500"))}>
-                        This is guidance, not an inspection. If symptoms are severe or safety-related, stop driving and have the vehicle towed.
-                      </div>
+                  <div className={cn("rounded-2xl p-4", subCard)}>
+                    <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>{tr("whyLikely", lang)}</div>
+                    <ul className={cn("mt-2 space-y-2 text-sm", t("text-slate-300", "text-slate-600"))}>
+                      {c.why_it_fits.map((w, i) => (
+                        <li key={i} className="flex items-start gap-2">
+                          <span className="mt-2 h-2 w-2 rounded-full bg-blue-400 shrink-0" />
+                          {w}
+                        </li>
+                      ))}
+                    </ul>
+                    <div className={cn("mt-3 text-[11px] leading-relaxed", t("text-slate-400", "text-slate-500"))}>
+                      This is guidance, not an inspection. If symptoms are severe or safety-related, stop driving and have the vehicle towed.
                     </div>
                   </div>
 
                   <div className="grid grid-cols-1 gap-4 md:grid-cols-2 mt-4">
-                    <div className={cn("rounded-2xl p-4", t("border border-white/10 bg-white/5", "border border-slate-200 bg-slate-50"))}>
+                    <div className={cn("rounded-2xl p-4", subCard)}>
                       <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>{tr("howToConfirm", lang)}</div>
-                      <ul className={cn("mt-2 space-y-2 text-sm", t("text-slate-300", "text-slate-600"))}>
-                        {(c.confirm || []).length ? (
-                          c.confirm!.map((v: string, i: number) => (
+                      <ul className={cn("mt-2 space-y-3 text-sm", t("text-slate-300", "text-slate-600"))}>
+                        {c.checks.length ? (
+                          c.checks.map((k, i) => (
                             <li key={i} className="flex items-start gap-2">
                               <span className="mt-2 h-2 w-2 rounded-full bg-blue-400 shrink-0" />
-                              {v}
+                              <span className="min-w-0">
+                                {k.instruction}
+                                <span data-check-level={k.level} className={cn("mt-0.5 block text-[11px]", t("text-slate-400", "text-slate-500"))}>
+                                  {tr(CHECK_LEVEL_KEY[k.level] || "checkProfessional", lang)}
+                                </span>
+                              </span>
                             </li>
                           ))
                         ) : (
@@ -1364,20 +1019,11 @@ function LikelyCausesResults({
                       </ul>
                     </div>
 
-                    <div className={cn("rounded-2xl p-4", t("border border-white/10 bg-white/5", "border border-slate-200 bg-slate-50"))}>
-                      <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>{tr("howToFix", lang)}</div>
-                      <ul className={cn("mt-2 space-y-2 text-sm", t("text-slate-300", "text-slate-600"))}>
-                        {(c.fix || []).length ? (
-                          c.fix!.map((v: string, i: number) => (
-                            <li key={i} className="flex items-start gap-2">
-                              <span className="mt-2 h-2 w-2 rounded-full bg-blue-400 shrink-0" />
-                              {v}
-                            </li>
-                          ))
-                        ) : (
-                          <li className={t("text-slate-500", "text-slate-400")}>{tr("noFixSteps", lang)}</li>
-                        )}
-                      </ul>
+                    <div className={cn("rounded-2xl p-4", subCard)}>
+                      <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>{tr("recommendedAction", lang)}</div>
+                      <p className={cn("mt-2 text-sm", c.recommended_action ? t("text-slate-300", "text-slate-600") : t("text-slate-500", "text-slate-400"))}>
+                        {c.recommended_action || tr("noFixSteps", lang)}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -1386,6 +1032,20 @@ function LikelyCausesResults({
           );
         })}
       </div>
+
+      {limitations.length > 0 && (
+        <div className={cn("rounded-3xl p-5", t("glass-card", "bg-white border border-slate-200 shadow-sm"))}>
+          <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>{tr("diagnosisLimits", lang)}</div>
+          <ul className={cn("mt-2 space-y-1.5 text-sm", t("text-slate-400", "text-slate-500"))}>
+            {limitations.map((l, i) => (
+              <li key={i} className="flex items-start gap-2">
+                <span className="mt-2 h-1.5 w-1.5 rounded-full bg-slate-400 shrink-0" />
+                {l}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
@@ -1496,6 +1156,11 @@ export default function Home() {
   const [lastVehicle, setLastVehicle] = useState<{ year: string; make: string; model: string; engine?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // The last diagnosis request, kept so follow-up answers can be added to it.
+  const [lastRequest, setLastRequest] = useState<DiagnosePayload | null>(null);
+  const [lastFollowUps, setLastFollowUps] = useState<{ question: string; answer: string }[]>([]);
+  const [refining, setRefining] = useState(false);
+  const [refineError, setRefineError] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [searchPanelOpen, setSearchPanelOpen] = useState(true);
 
@@ -1706,9 +1371,42 @@ export default function Home() {
     setServiceVehicleFilter((prev) => (prev === id ? null : prev));
   }
 
+  /**
+   * One request to /api/diagnose. Returns the result or a message that is safe
+   * to show. Never throws, so a failed diagnosis cannot crash the page.
+   */
+  async function postDiagnosis(payload: DiagnosePayload): Promise<{ ok: true; data: ApiOk | ApiNoDefinition } | { ok: false; error: string }> {
+    try {
+      const res = await fetch("/api/diagnose", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const raw = await res.text();
+      let data: unknown;
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        return { ok: false, error: res.ok ? "Invalid response from server." : `Request failed (${res.status}).` };
+      }
+      const body = (data && typeof data === "object" ? data : {}) as Partial<ApiOk> & Partial<ApiNoDefinition> & Partial<ApiErr>;
+
+      if (!res.ok) return { ok: false, error: typeof body.error === "string" ? body.error : "Request failed." };
+      // Only a complete result is accepted. Anything else is an error, not a diagnosis.
+      if (body.noDefinition === true || Array.isArray(body.diagnosis?.causes)) {
+        return { ok: true, data: body as ApiOk | ApiNoDefinition };
+      }
+      return { ok: false, error: "Invalid response from server." };
+    } catch {
+      return { ok: false, error: "Couldn't reach the server. Check your internet connection and try again." };
+    }
+  }
+
   async function runDiagnostic(fd: FormData) {
     setLoading(true);
     setError(null);
+    setRefineError(null);
     setResult(null);
     setHasSearched(true);
 
@@ -1721,6 +1419,8 @@ export default function Home() {
 
     const code = String(fd.get("code") || "").trim();
     const symptoms = String(fd.get("symptoms") || "").trim();
+    const mileage = String(fd.get("mileage") || "").trim();
+    const mileageUnit = String(fd.get("mileageUnit") || "km") === "mi" ? "mi" : "km";
 
     if (!code && !symptoms) {
       setError(tr("enterCodeOrSymptom", lang));
@@ -1732,49 +1432,50 @@ export default function Home() {
     setLastSymptoms(symptoms);
     setLastVehicle({ year: activeVehicle.year, make: activeVehicle.make, model: activeVehicle.model, engine: activeVehicle.engine });
 
-    const payload = {
+    const payload: DiagnosePayload = {
       year: activeVehicle.year,
       make: activeVehicle.make,
       model: activeVehicle.model,
       engine: activeVehicle.engine || "",
+      // Used on the server to look up vehicle details. It is not sent to the AI model.
+      vin: activeVehicle.vin || "",
+      mileage,
+      mileageUnit,
       code,
       symptoms,
       lang,
     };
+    setLastRequest(payload);
+    setLastFollowUps([]);
 
-    try {
-      const res = await fetch("/api/diagnose", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const raw = await res.text();
-      let data: ApiOk | ApiNoDefinition | ApiErr;
-      try {
-        data = (raw ? JSON.parse(raw) : {}) as ApiOk | ApiNoDefinition | ApiErr;
-      } catch {
-        setError(res.ok ? "Invalid response from server." : `Request failed (${res.status}).`);
-        setLoading(false);
-        return;
-      }
-
-      if (!res.ok) {
-        setError("error" in data ? data.error : "Request failed.");
-      } else {
-        setResult(data as ApiOk | ApiNoDefinition);
-        setSearchPanelOpen(false);
-      }
-    } catch (e: unknown) {
-      const msg = (e instanceof Error && e.message) || "Network error.";
-      const isFetchFailed = /failed to fetch|network error|load failed/i.test(String(msg));
-      setError(isFetchFailed
-        ? "Couldn't reach the server. Make sure the app is running (e.g. npm run dev), and check your internet connection."
-        : msg
-      );
-    } finally {
-      setLoading(false);
+    const outcome = await postDiagnosis(payload);
+    if (outcome.ok) {
+      setResult(outcome.data);
+      setSearchPanelOpen(false);
+    } else {
+      setError(outcome.error);
     }
+    setLoading(false);
+  }
+
+  /**
+   * Ask for an updated diagnosis that takes the user's follow-up answers into
+   * account. The ranking always comes from the server; nothing is re-ranked in
+   * the browser. If the update fails, the current diagnosis stays on screen.
+   */
+  async function refineDiagnosis(newAnswers: { question: string; answer: string }[]) {
+    if (!lastRequest || refining || newAnswers.length === 0) return;
+    const followUps = [...lastFollowUps, ...newAnswers].slice(-6);
+    setRefining(true);
+    setRefineError(null);
+    const outcome = await postDiagnosis({ ...lastRequest, lang, followUps });
+    if (outcome.ok) {
+      setResult(outcome.data);
+      setLastFollowUps(followUps);
+    } else {
+      setRefineError(outcome.error);
+    }
+    setRefining(false);
   }
 
   function generateShareText(): string {
@@ -1784,19 +1485,23 @@ export default function Home() {
       `Vehicle: ${veh.year} ${veh.make} ${veh.model}${veh.engine ? ` (${veh.engine})` : ""}`,
       `Code: ${lastCode || "N/A"} | Symptoms: ${lastSymptoms || "N/A"}`,
       "---",
-      result && "noDefinition" in result ? result.message : (result?.summary_title || "Likely Causes"),
-      "",
     ];
-    if (result && "causes" in result && result.causes?.length) {
-    result.causes.forEach((c, i) => {
-      const sev = c.severity === "high" ? "Most Likely" : c.severity === "low" ? "Less Likely" : "Possible";
-      lines.push(`Cause ${i + 1}: ${c.title} [${sev}]`);
-      if (c.why) lines.push(`  Why: ${c.why}`);
-      if (c.difficulty) lines.push(`  Difficulty: ${c.difficulty}`);
-      if (c.confirm?.length) lines.push(`  Confirm: ${c.confirm.join("; ")}`);
-      if (c.fix?.length) lines.push(`  Fix: ${c.fix.join("; ")}`);
-      lines.push("");
-    });
+    if (result && "noDefinition" in result) {
+      lines.push(result.message, "");
+    } else if (result && "diagnosis" in result) {
+      const d = result.diagnosis;
+      if (d.summary) lines.push(d.summary);
+      lines.push(`${tr("driveGuidance", lang)}: ${tr(DRIVE_KEY[d.drive_guidance.level] || "driveUnknown", lang)}${d.drive_guidance.reason ? `. ${d.drive_guidance.reason}` : ""}`, "");
+      d.causes.forEach((c) => {
+        lines.push(`${c.rank}. ${c.title} [${tr(LIKELIHOOD_KEY[c.likelihood] || "likelihoodPossible", lang)}] [${tr(URGENCY_KEY[c.urgency] || "urgencyUnknown", lang)}]`);
+        if (c.explanation) lines.push(`  ${c.explanation}`);
+        if (c.why_it_fits.length) lines.push(`  ${tr("whyLikely", lang)}: ${c.why_it_fits.join("; ")}`);
+        if (c.checks.length) lines.push(`  ${tr("howToConfirm", lang)}: ${c.checks.map((k) => k.instruction).join("; ")}`);
+        if (c.recommended_action) lines.push(`  ${tr("recommendedAction", lang)}: ${c.recommended_action}`);
+        lines.push("");
+      });
+      if (d.limitations.length) lines.push(`${tr("diagnosisLimits", lang)}: ${d.limitations.join("; ")}`, "");
+      lines.push(tr("hypothesisNote", lang));
     }
     return lines.join("\n");
   }
@@ -2250,6 +1955,10 @@ export default function Home() {
                     onSaveToHistory={saveDiagnosisSession}
                     onShare={result ? handleShare : undefined}
                     onDownload={result ? handleDownload : undefined}
+                    followUpAnswers={Object.fromEntries(lastFollowUps.map((f) => [f.question, f.answer]))}
+                    onRefine={refineDiagnosis}
+                    refining={refining}
+                    refineError={refineError}
                     lang={lang}
                   />
                 </div>
@@ -2299,6 +2008,29 @@ export default function Home() {
                     <form className="mt-5 grid gap-3" onSubmit={(e) => { e.preventDefault(); runDiagnostic(new FormData(e.currentTarget)); }}>
                       <input name="code" maxLength={120} autoComplete="off" placeholder={tr("codePlaceholder", lang)} className={cn(inputClass, "rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")} />
                       <textarea name="symptoms" maxLength={800} placeholder={tr("symptomsPlaceholder", lang)} value={symptomsValue} onChange={(e) => setSymptomsValue(e.target.value)} className={cn(inputClass, "min-h-[100px] rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors resize-none")} />
+                      <div className="flex gap-2">
+                        <input
+                          name="mileage"
+                          inputMode="numeric"
+                          type="number"
+                          min={1}
+                          max={2000000}
+                          step={1}
+                          placeholder={tr("mileageOptional", lang)}
+                          aria-label={tr("mileageOptional", lang)}
+                          className={cn(inputClass, "w-full rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")}
+                        />
+                        <select
+                          name="mileageUnit"
+                          defaultValue="km"
+                          className={cn(inputClass, "rounded-2xl px-3 py-3 text-sm transition-colors appearance-none")}
+                          style={{ colorScheme: "dark" }}
+                          aria-label="Mileage unit"
+                        >
+                          <option value="km" className="bg-slate-800 text-slate-200">km</option>
+                          <option value="mi" className="bg-slate-800 text-slate-200">mi</option>
+                        </select>
+                      </div>
 
                       <div className="flex flex-wrap gap-2">
                         {quickSymptoms.map((qs) => (
@@ -2340,6 +2072,10 @@ export default function Home() {
                         onSaveToHistory={saveDiagnosisSession}
                         onShare={result ? handleShare : undefined}
                         onDownload={result ? handleDownload : undefined}
+                    followUpAnswers={Object.fromEntries(lastFollowUps.map((f) => [f.question, f.answer]))}
+                    onRefine={refineDiagnosis}
+                    refining={refining}
+                    refineError={refineError}
                         lang={lang}
                       />
                     </div>

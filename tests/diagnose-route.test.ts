@@ -11,14 +11,12 @@ vi.mock("../app/lib/auth-config", () => ({ auth: authMock }));
 
 import { POST } from "../app/api/diagnose/route";
 import { resetMemoryRateLimits } from "../app/lib/rate-limit";
+import { modelDiagnosis, modelReply } from "./helpers/diagnosis-fixture";
 
-const GOOD_OUTPUT = {
-  output_text: JSON.stringify({
-    causes: [{ title: "Worn spark plugs", why: "Old plugs.", severity: "high", difficulty: "DIY Easy", confirm: ["Inspect"], fix: ["Replace"] }],
-  }),
-};
+const GOOD_OUTPUT = modelReply(modelDiagnosis());
 
-const VALID = { year: "2015", make: "Toyota", model: "Camry", engine: "2.5L I4", code: "P0300", symptoms: "", lang: "en" };
+// Symptoms are included because a hand-entered code title alone is no longer enough to call the model.
+const VALID = { year: "2015", make: "Toyota", model: "Camry", engine: "2.5L I4", code: "P0300", symptoms: "rough idle", lang: "en" };
 
 function makeReq(body: unknown, headers: Record<string, string> = {}) {
   return new Request("http://localhost/api/diagnose", {
@@ -38,6 +36,7 @@ const ENV_KEYS = [
   "DIAGNOSE_USER_DAILY_LIMIT",
   "DIAGNOSE_GLOBAL_DAILY_LIMIT",
   "DIAGNOSE_MAX_BODY_BYTES",
+  "DIAGNOSE_FOLLOWUPS_PER_DIAGNOSIS",
 ];
 const savedEnv: Record<string, string | undefined> = {};
 
@@ -68,7 +67,7 @@ describe("POST /api/diagnose — validation", () => {
     const res = await POST(makeReq(VALID));
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data.causes).toHaveLength(1);
+    expect(data.diagnosis.causes).toHaveLength(1);
     expect(data.debug).toBeUndefined();
     expect(createMock).toHaveBeenCalledTimes(1);
   });
@@ -201,5 +200,29 @@ describe("POST /api/diagnose — rate limits and quotas", () => {
   it("treats an auth failure as a guest instead of failing the request", async () => {
     authMock.mockRejectedValue(new Error("auth exploded"));
     expect((await POST(makeReq(VALID))).status).toBe(200);
+  });
+});
+
+describe("POST /api/diagnose — default guest allowance", () => {
+  it("is 5 new diagnoses a day when nothing is configured", async () => {
+    for (let i = 0; i < 5; i++) {
+      expect((await POST(makeReq(VALID))).status, `diagnosis ${i + 1}`).toBe(200);
+    }
+    const blocked = await POST(makeReq(VALID));
+    expect(blocked.status).toBe(429);
+    expect((await blocked.json()).code).toBe("guest_quota");
+    expect(createMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("can be changed with DIAGNOSE_GUEST_DAILY_LIMIT, and the signed-in limits stay configurable", async () => {
+    process.env.DIAGNOSE_GUEST_DAILY_LIMIT = "7";
+    for (let i = 0; i < 7; i++) expect((await POST(makeReq(VALID))).status).toBe(200);
+    expect((await POST(makeReq(VALID))).status).toBe(429);
+
+    process.env.DIAGNOSE_USER_HOURLY_LIMIT = "1";
+    process.env.DIAGNOSE_USER_DAILY_LIMIT = "1";
+    authMock.mockResolvedValue({ user: { id: "user-9" } });
+    expect((await POST(makeReq(VALID))).status).toBe(200);
+    expect((await (await POST(makeReq(VALID))).json()).code).toBe("user_quota");
   });
 });

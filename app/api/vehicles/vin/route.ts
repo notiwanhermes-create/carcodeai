@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { canonicalMakeName } from "@/app/data/vehicle-makes";
 import { buildEngineDescription, isValidVinFormat, normalizeVin, vinCheckDigitValid } from "@/app/lib/vin";
+import { fetchVinRow } from "@/app/lib/vin-lookup";
 
 const UPSTREAM_TIMEOUT_MS = 8000;
 
@@ -35,19 +36,8 @@ export async function GET(request: Request) {
     return respond({ ok: false, decoded: null, suggestions: [], code: "invalid_format" });
   }
 
-  let row: Record<string, unknown>;
-  try {
-    const r = await fetch(`https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValuesExtended/${encodeURIComponent(vin)}?format=json`, {
-      // A VIN always decodes to the same vehicle.
-      next: { revalidate: 60 * 60 * 24 * 30 },
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-    });
-    if (!r.ok) return respond({ ok: false, decoded: null, suggestions: [], code: "unavailable" });
-    const data = (await r.json()) as { Results?: Array<Record<string, unknown>> };
-    row = data.Results?.[0] ?? {};
-  } catch {
-    return respond({ ok: false, decoded: null, suggestions: [], code: "unavailable" });
-  }
+  const row = await fetchVinRow(vin, UPSTREAM_TIMEOUT_MS);
+  if (!row) return respond({ ok: false, decoded: null, suggestions: [], code: "unavailable" });
 
   const year = clean(row.ModelYear);
   const make = canonicalMakeName(clean(row.Make));

@@ -1,0 +1,9 @@
+{
+  "_note": "Quarantined 2026-10-07. These four BMW entries were hard-coded in app/lib/oem-fault-codes.ts and labelled 'BMW fault code list (verified)', but no source document is recorded. They are internally inconsistent: the same 480Axx prefix is used for a brake-pad wear sensor and for three engine-control (DME) faults. They are NOT loaded by the app. Restore an entry only with a citable BMW source.",
+  "records": [
+    { "make": "BMW", "code": "480A12", "definition": "Rear brake pad wear sensor: wear limit reached / circuit open", "verification": "unverified" },
+    { "make": "BMW", "code": "480A0C", "definition": "DME: Mass air flow sensor, plausibility", "verification": "unverified" },
+    { "make": "BMW", "code": "480A11", "definition": "DME: Oxygen sensor before catalytic converter, signal", "verification": "unverified" },
+    { "make": "BMW", "code": "481A01", "definition": "DME: Crankshaft sensor, signal", "verification": "unverified" }
+  ]
+}

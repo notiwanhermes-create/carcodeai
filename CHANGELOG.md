@@ -1,5 +1,138 @@
 # Changelog
 
+## Phase 2C — diagnosis quality — 2026-10-08
+
+Branch `fix/phase-2c-diagnosis-quality`, built on top of the Phase 2B branch.
+No database changes. New optional settings: `DIAGNOSE_FOLLOWUPS_PER_DIAGNOSIS`,
+`DIAGNOSE_TICKET_SECRET` and the development-only `DIAGNOSE_LOG_CONTEXT`.
+`zod` is now a direct dependency (it was already installed as part of the
+OpenAI SDK).
+
+- **Structured output:** the diagnosis is requested with OpenAI Structured
+  Outputs (a strict JSON schema), not free text that the server then picked
+  apart. One schema, `app/lib/diagnosis-schema.ts`, is shared by the server and
+  the page. The server checks every reply before it is sent on.
+- **What a diagnosis contains:** a summary, driving guidance, ranked causes,
+  follow-up questions and limits. Each cause has a rank, a likelihood category
+  (very likely, likely, possible, unlikely), an urgency (normal, caution, stop,
+  unknown), why it fits, checks labelled by who can safely do them, a
+  recommended next step and a repair level. No percentages, prices or labour
+  times exist anywhere in the schema.
+- **Driving guidance and urgency** come only from the structured result.
+  "Unknown" is shown when the model cannot justify a level. Nothing is inferred
+  from words such as "fire" or "leak".
+- **Safety-consistency check:** the server compares the overall guidance with
+  the causes. A likely or very likely "stop" cause makes the overall level
+  "stop". If the model said "normal" but a cause says "stop" at any likelihood,
+  or a likely cause says "caution", the overall level becomes "caution". If the
+  urgency of a likely cause could not be judged, "normal" becomes "unknown".
+  The level is never lowered and "unknown" is never shown as safe.
+- **Unsupported code numbers are kept from the AI model.** A code number
+  reaches the model only when a definition for it is on file. Otherwise the
+  model is told, in plain words, that an additional code could not be reliably
+  verified, and nothing more, including when the user repeats the code in the
+  symptoms box. The page tells the user the same thing in its own wording.
+- **Three levels of trust for a code:** verified, locally entered reference
+  title, or unavailable. The 8 hand-entered titles are labelled as a commonly
+  published title, to the user and to the model, and are never called verified.
+- **A code needs symptoms unless it is verified.** A hand-entered reference
+  code on its own shows its title and asks for symptoms, with no AI call. Only
+  a code with a verified definition can be diagnosed alone.
+- **Codes and symptoms are used together**, with vehicle details: year, make,
+  model, engine, optional mileage, and details decoded from the saved VIN
+  (trim, drive type, fuel, transmission, engine code, turbo). The VIN itself is
+  never sent to the model.
+- **User text is data:** the model receives fixed rules in one message and a
+  single JSON document in another. Quotes, braces and line breaks in what the
+  user typed cannot change the structure of the request.
+- **Follow-up questions come from the diagnosis.** Answering them and pressing
+  "Update diagnosis" asks the server again with the answers; nothing is
+  re-ranked in the browser.
+- **Allowance:** a new diagnosis uses one unit of the daily allowance and comes
+  with a signed ticket good for 2 updates. Updates do not use the allowance,
+  cannot be chained, and are refused without a genuine ticket for the same
+  vehicle, codes and symptoms. The guest default is now 5 new diagnoses a day
+  (was 20). All limits remain configurable.
+- **At most two AI calls per diagnosis:** the request, plus one retry only for
+  a dropped connection, a timeout, a server error or an unreadable reply. The
+  SDK's own hidden retries are switched off. Before this, one diagnosis could
+  trigger up to 15 calls (5 app attempts, each retried twice by the SDK).
+- **No queue:** the one-request-at-a-time lock is gone, so visitors no longer
+  wait behind each other. Each attempt has a 25 second timeout, the model step
+  48 seconds in total, and the route 60 seconds.
+- **Failures are clean:** timeout, rate limit, outage, refusal, cut-off or
+  invalid reply each return a short generic message. No provider text, prompt
+  or raw reply reaches the browser, and no diagnosis is ever made up.
+- **Removed from the browser:** keyword scoring of causes, the hard-coded
+  follow-up questions, the hard-coded quick checks, "why likely" text built
+  from the user's own input, likelihood tags based on list position, and
+  leftover debug logging.
+- **Languages:** the structure and identifiers are the same in all 7
+  languages; only the text differs. New interface labels are translated.
+- Tests: 315 (was 146), including 8 database-backed tests (7 account tests and the follow-up counter).
+
+## Phase 2B — trouble-code reliability — 2026-10-08
+
+Branch `fix/phase-2b-dtc-reliability`. No database or environment changes.
+
+Rule introduced: **a missing answer is better than a wrong one.** An exact code
+definition is only ever shown from data on file; manufacturer-specific
+definitions are tied to a make; nothing is marked verified without a source.
+
+- **One module for codes:** `app/lib/dtc.ts` replaces five older files. It parses
+  what the user typed, classifies each code, looks it up and writes the note
+  the AI model receives. It has no database or network access.
+- **Classification by block, not "P0 vs P1":** standardized are P0, P2, B0, C0,
+  U0; manufacturer-specific are P1, B1, B2, C1, C2, U1, U2. Hybrid/EV codes
+  with letters (P0A80) are ordinary P0 codes. Every P3, B3, C3 and U3 code is
+  **uncertain**: public descriptions of the standard do not settle those
+  ranges, so the app does not call them either kind.
+- **The classification is an assumption, not verified data.** It restates
+  public block-level descriptions of SAE J2012 and was not taken from the
+  standard or its Digital Annex. The rules are a replaceable table, documented
+  in the code.
+- **Parser:** codes can be separated by spaces, commas, semicolons or new
+  lines; case, dashes, "P 0300" and duplicates are normalised; codes run
+  together by a multi-line paste are separated. Unknown or invalid entries are
+  reported, never dropped, and never fail the whole request.
+- **Every code gets a result** with one of six statuses: standard definition
+  on file, standard range but definition not verified, manufacturer definition
+  (for that make), manufacturer-specific with no verified definition,
+  uncertain with no definition, or invalid.
+- **Diagnosis:** the model receives a per-code note. It gets an exact
+  definition only when one is on file. For every other code it is told the
+  definition is unavailable and that it must not state, guess or imply one.
+  Codes and symptoms are sent together.
+- **No definition, no guess:** if no entered code has a definition on file and
+  there are no symptoms, the app says "definition not verified yet" and does
+  not call the model or use the visitor's allowance. This applies to standard
+  codes as well as manufacturer-specific ones. With symptoms, the diagnosis is
+  based on the symptoms and the vehicle only.
+- **An unknown code no longer fails the request** with an error; it is reported
+  alongside the others.
+- **Data sources are pluggable:** `app/data/dtc/sources.ts` lists where
+  definitions come from, and every record is checked before it can be served.
+  Two future provider roles are documented (SAE J2012-DA for standardized
+  codes; a licensed OEM provider such as MOTOR for manufacturer codes).
+  Neither has been purchased or integrated.
+- **Data cleanup:** the old 3,082-entry database was quarantined in full
+  (`data/quarantine/`). 2,589 entries were manufacturer-range codes with no
+  manufacturer recorded, served to every make as SAE data. The 493 entries in
+  standardized ranges contained runs of definitions shifted by one code
+  (P0234, P0401, P0136–P0141 and others). The four hard-coded BMW codes were
+  quarantined too: no source is recorded and they are inconsistent.
+- **Data on file now:** 8 hand-entered standard codes (P0011, P0016, P0171,
+  P0300, P0420, P0455, P0A80, U0100), shown as "standard code", not "verified".
+  They are recorded as entered by hand and not checked against licensed SAE
+  data, and the set is not to be extended by hand. The manufacturer store is
+  empty.
+- **UI:** each code shows a short plain-language note on how far its definition
+  can be trusted (7 languages).
+- Removed `/api/dtc/verify` (a public self-test for the old data) and the
+  database pool used only for the BMW codes. The `oem_fault_codes` table is
+  left untouched in the database but is no longer read.
+- Tests: 146 (was 87), including the 7 database-backed account tests.
+
 ## Phase 2A — vehicle data — 2026-10-06
 
 Branch `fix/phase-2a-vehicle-data`. No database or environment changes.

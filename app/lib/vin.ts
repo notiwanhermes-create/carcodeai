@@ -92,3 +92,52 @@ export function buildEngineDescription(row: Row): string {
 
   return parts.join(" ").slice(0, 100);
 }
+
+/** Decoded details that help a diagnosis. Only what NHTSA actually returned. */
+export type VinAttributes = {
+  trim?: string;
+  drive_type?: string;
+  fuel_type?: string;
+  fuel_injection?: string;
+  electrification?: string;
+  transmission?: string;
+  engine_code?: string;
+  turbocharged?: boolean;
+};
+
+/**
+ * The diagnostic-relevant subset of NHTSA's decoded VIN fields. Nothing that
+ * identifies the car or its owner (the VIN itself, plant, serial) is included.
+ */
+export function vinAttributesFromRow(row: Row): VinAttributes {
+  const out: VinAttributes = {};
+  const short = (key: string, max = 60) => field(row, key).replace(/\s+/g, " ").slice(0, max);
+
+  const trim = short("Trim") || short("Series");
+  if (trim) out.trim = trim;
+
+  const drive = short("DriveType");
+  if (drive) out.drive_type = drive;
+
+  const fuel = short("FuelTypePrimary");
+  if (fuel) out.fuel_type = fuel;
+
+  const injection = short("FuelInjectionType", 80);
+  if (injection) out.fuel_injection = injection;
+
+  const electrification = short("ElectrificationLevel", 80);
+  if (electrification) out.electrification = electrification;
+
+  const style = short("TransmissionStyle");
+  const speeds = short("TransmissionSpeeds", 4);
+  if (style) out.transmission = speeds ? `${style}, ${speeds}-speed` : style;
+
+  const engineCode = short("EngineModel", 24);
+  if (engineCode) out.engine_code = engineCode;
+
+  const turbo = field(row, "Turbo");
+  if (/^yes$/i.test(turbo)) out.turbocharged = true;
+  else if (/^no$/i.test(turbo)) out.turbocharged = false;
+
+  return out;
+}

@@ -96,5 +96,4 @@ All API routes live under `app/api/` using Next.js Route Handlers:
 - `openai` (6.x) — OpenAI SDK
 - `bcryptjs` — Password hashing for authentication
 - `react-markdown` (10.x) — Markdown rendering for AI responses
-- `memoizee` — Function memoization
 - `tailwindcss` (4.x) — CSS framework

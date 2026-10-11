@@ -8,6 +8,11 @@
 // Table and column names are the ones the database has always used (`@@map` /
 // `@map`), so adopting migrations renamed nothing.
 //
+// An existing database (production) also still holds a few things that older
+// versions of the app created and nothing uses any more: see docs/database.md,
+// "Left for a later clean-up". They are deliberately not described here, so
+// the app cannot come to depend on them.
+//
 // Not expressible here, but created by the migrations and worth knowing:
 //   users.users_email_lowercase              CHECK (email = lower(email))
 //   garage_vehicles_model_year_check         CHECK (model_year between 1900 and 2100)
@@ -79,8 +84,9 @@ model Vehicle {
   engine    String?
   vin       String?
   nickname  String?
-  /// Never read or written by the app. Hidden from the client here so that the
-  /// column can be dropped in the next release without breaking a rollback.
+  /// Never read or written by the app, but the previous version still selects
+  /// it, so it stays for now. Hidden from the client here; a later clean-up
+  /// migration drops it once rolling back to that version is no longer needed.
   isActive  Boolean  @default(false) @map("is_active") @ignore
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
 

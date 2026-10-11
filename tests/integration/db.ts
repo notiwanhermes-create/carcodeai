@@ -33,7 +33,17 @@ export const ROOT = path.resolve(__dirname, "../..");
 export const MIGRATIONS_DIR = path.join(ROOT, "prisma", "migrations");
 export const BASELINE = "20260101000000_baseline";
 export const CONVERGE = "20261011010000_converge_and_expand";
-export const REMOVE_LEGACY = "20261011020000_remove_legacy";
+
+/** The tables the app uses. A database built from nothing holds exactly these. */
+export const APP_TABLES = ["email_verification_tokens", "feedback", "garage_vehicles", "maintenance_records", "rate_limits", "users"];
+
+/**
+ * Things older versions of the app created inside the app's own tables, which
+ * this release deliberately leaves in place on an existing database. (Whole
+ * tables left over from older versions are simply every table not in APP_TABLES.)
+ */
+export const LEFTOVER_COLUMNS = ["feedback.page"];
+export const LEFTOVER_INDEXES = ["users_email_unique", "users_google_id_unique"];
 
 /** Migration folder names, in the order they are applied. */
 export function migrationNames(): string[] {
@@ -133,6 +143,42 @@ export async function schemaSnapshot(pool: Pool) {
        WHERE n.nspname = 'public' AND c.conrelid::regclass::text <> '_prisma_migrations'
        ORDER BY 1, 2`),
   };
+}
+
+type Snapshot = Awaited<ReturnType<typeof schemaSnapshot>>;
+
+/**
+ * The part of a snapshot that describes the app's own tables, ignoring what
+ * older versions left behind. Every database, old or new, must be equal here.
+ */
+export function appShape(snapshot: Snapshot): Snapshot {
+  const isApp = (table: string) => APP_TABLES.includes(table);
+  return {
+    columns: snapshot.columns.filter((c) => isApp(c.table_name) && !LEFTOVER_COLUMNS.includes(`${c.table_name}.${c.column_name}`)),
+    indexes: snapshot.indexes.filter((i) => isApp(i.tablename) && !LEFTOVER_INDEXES.includes(i.indexname)),
+    constraints: snapshot.constraints.filter((c) => isApp(c.table_name)),
+  };
+}
+
+/**
+ * Everything older versions left behind, with its contents: every row of every
+ * table the app does not use, every value in a leftover column, and the
+ * definition of every leftover index. Equal before and after means untouched.
+ */
+export async function leftovers(pool: Pool) {
+  const q = async (sql: string, params: unknown[] = []) => (await pool.query(sql, params)).rows;
+  const tables: Record<string, unknown[]> = {};
+  for (const table of await tableNames(pool)) {
+    if (!APP_TABLES.includes(table)) tables[table] = await q(`SELECT * FROM "${table}" ORDER BY 1, 2`);
+  }
+  const columns: Record<string, unknown[]> = {};
+  for (const name of LEFTOVER_COLUMNS) {
+    const [table, column] = name.split(".");
+    const exists = await q(`SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2`, [table, column]);
+    if (exists.length > 0) columns[name] = (await q(`SELECT id, "${column}" AS value FROM "${table}" ORDER BY id`)).map((r) => [r.id, r.value]);
+  }
+  const indexes = await q(`SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = ANY($1) ORDER BY 1`, [LEFTOVER_INDEXES]);
+  return { tables, columns, indexes };
 }
 
 export async function tableNames(pool: Pool): Promise<string[]> {

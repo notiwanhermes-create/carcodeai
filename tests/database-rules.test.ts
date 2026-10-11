@@ -45,7 +45,6 @@ const filesContaining = (pattern: RegExp) => appSourceFiles().filter((f) => patt
 const migrationDir = (name: string) => `prisma/migrations/${name}/migration.sql`;
 const BASELINE = "20260101000000_baseline";
 const CONVERGE = "20261011010000_converge_and_expand";
-const REMOVE_LEGACY = "20261011020000_remove_legacy";
 /** SQL with `--` comments removed. */
 const sql = (name: string) => read(migrationDir(name)).replace(/--.*$/gm, "");
 
@@ -116,7 +115,9 @@ describe("one way into the database", () => {
   it("never switches off TLS certificate checks", () => {
     expect(filesContaining(/rejectUnauthorized/)).toEqual([]);
     expect(filesContaining(/NODE_TLS_REJECT_UNAUTHORIZED/)).toEqual([]);
-    for (const script of fs.readdirSync(path.join(ROOT, "scripts"))) {
+    const scripts = (fs.readdirSync(path.join(ROOT, "scripts"), { recursive: true }) as string[]).filter((f) => f.endsWith(".mjs"));
+    expect(scripts.length).toBeGreaterThanOrEqual(5);
+    for (const script of scripts) {
       expect(read(`scripts/${script}`), script).not.toMatch(/rejectUnauthorized|NODE_TLS_REJECT_UNAUTHORIZED/);
     }
     expect(read("prisma.config.ts")).not.toMatch(/rejectUnauthorized/);
@@ -144,45 +145,60 @@ describe("one way into the database", () => {
 describe("migrations", () => {
   it("are plain SQL files, applied in name order, for PostgreSQL", () => {
     const names = fs.readdirSync(path.join(ROOT, "prisma/migrations"), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
-    expect(names).toEqual([BASELINE, CONVERGE, REMOVE_LEGACY]);
+    // Exactly these two. The clean-up of what older versions left behind is a
+    // later release, written after this one has run in production.
+    expect(names).toEqual([BASELINE, CONVERGE]);
     expect(read("prisma/migrations/migration_lock.toml")).toMatch(/provider = "postgresql"/);
     for (const name of names) expect(read(migrationDir(name)).length, name).toBeGreaterThan(200);
   });
 
-  it("each say what they create, change and drop", () => {
-    for (const name of [CONVERGE, REMOVE_LEGACY]) {
-      const header = read(migrationDir(name)).split("\n").filter((l) => l.startsWith("--")).join("\n");
-      expect(header, name).toMatch(/Drops/);
-      expect(header, name).toMatch(/Data loss/);
-      expect(header, name).toMatch(/Locks/);
-      expect(header, name).toMatch(/Deploy order/);
-    }
+  it("say what they create, change and drop", () => {
+    const header = read(migrationDir(CONVERGE)).split("\n").filter((l) => l.startsWith("--")).join("\n");
+    for (const heading of [/Creates/, /Changes/, /Backfills/, /Drops/, /Data loss/, /Locks/, /Deploy order/]) expect(header).toMatch(heading);
     expect(read(migrationDir(BASELINE))).toMatch(/this migration is NOT run/);
   });
 
-  it("only the last one removes anything", () => {
-    const destructive = /\bDROP\s+(TABLE|COLUMN|INDEX|CONSTRAINT|SCHEMA)\b|\bDROP\s+COLUMN\b|\bTRUNCATE\b|\bDELETE\s+FROM\b|\bRENAME\s+(TO|COLUMN)\b/i;
-    expect(sql(BASELINE)).not.toMatch(destructive);
-    expect(sql(CONVERGE)).not.toMatch(destructive);
-    expect(sql(REMOVE_LEGACY)).toMatch(destructive);
-    // The additive one cannot change a column's type either.
-    expect(sql(CONVERGE)).not.toMatch(/ALTER\s+COLUMN\s+"?\w+"?\s+(SET\s+DATA\s+)?TYPE\b/i);
+  it("remove nothing: no table, column, index, constraint or row", () => {
+    for (const name of [BASELINE, CONVERGE]) {
+      const text = sql(name);
+      // The only thing ever dropped is a temporary helper function the migration itself created.
+      const drops = [...text.matchAll(/\bDROP\s+[^;]+;/gi)].map((m) => m[0].replace(/\s+/g, " "));
+      expect(drops, name).toEqual(name === CONVERGE ? ["DROP FUNCTION pg_temp.carcode_to_date(TEXT);"] : []);
+      expect(text, name).not.toMatch(/\bTRUNCATE\b|\bDELETE\s+FROM\b|\bRENAME\b/i);
+      // No column changes type, and nothing is made stricter without a default behind it.
+      expect(text, name).not.toMatch(/ALTER\s+COLUMN\s+"?\w+"?\s+(SET\s+DATA\s+)?TYPE\b/i);
+      expect(text, name).not.toMatch(/DROP\s+(DEFAULT|NOT\s+NULL)/i);
+    }
   });
 
-  it("never remove a table that holds user content", () => {
-    const dropped = [...sql(REMOVE_LEGACY).matchAll(/DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?"?(\w+)"?/gi)].map((m) => m[1]).sort();
-    expect(dropped).toEqual(["auth_pending", "auth_tokens", "feedback_auto_reply_log", "oem_fault_codes", "sessions"]);
-    expect(sql(REMOVE_LEGACY)).toMatch(/RENAME TO "legacy_oem_fault_codes_archive"/);
-    const droppedColumns = [...sql(REMOVE_LEGACY).matchAll(/ALTER\s+TABLE\s+"?(\w+)"?\s+DROP\s+COLUMN\s+"?(\w+)"?/gi)].map((m) => `${m[1]}.${m[2]}`);
-    expect(droppedColumns).toEqual(["feedback.page"]);
+  it("change existing rows only to fill in what was empty or to add a typed copy", () => {
+    const updated = [...sql(CONVERGE).matchAll(/UPDATE\s+"(\w+)"(?:\s+AS\s+\w+)?\s+SET\s+"(\w+)"/gi)].map((m) => `${m[1]}.${m[2]}`);
+    expect([...new Set(updated)].sort()).toEqual([
+      "feedback.created_at", //                  only where it was empty
+      "feedback.page_url", //                    only where it was empty, from the old "page" column
+      "garage_vehicles.created_at", //           only where it was empty
+      "garage_vehicles.is_active", //            only where it was empty
+      "garage_vehicles.model_year", //           new column
+      "maintenance_records.cost_amount", //      new column
+      "maintenance_records.created_at", //       only where it was empty
+      "maintenance_records.odometer_value", //   new column (with odometer_unit)
+      "maintenance_records.service_date", //     new column
+      "rate_limits.expires_at", //               new column
+      "users.created_at", //                     only where it was empty
+      "users.email", //                          trimmed and lower-cased
+      "users.email_verified", //                 only on a database that never had the column
+      "users.legacy_unverified", //              only on a database that never had the column
+    ]);
+    // The text a user typed is never written to.
+    for (const column of ["year", "date", "mileage", "cost", "notes", "message", "password_hash", "google_id"]) {
+      expect(updated.filter((u) => u.endsWith(`.${column}`)), column).toEqual([]);
+    }
   });
 
   it("stop rather than wait behind a busy table, and build nothing concurrently", () => {
-    for (const name of [CONVERGE, REMOVE_LEGACY]) {
-      expect(sql(name), name).toMatch(/SET LOCAL lock_timeout = '15s';/);
-      // Each file must stay one transaction, so a failure leaves nothing half-done.
-      expect(sql(name), name).not.toMatch(/\bCONCURRENTLY\b|^\s*(BEGIN|COMMIT|ROLLBACK)\s*;/im);
-    }
+    expect(sql(CONVERGE)).toMatch(/SET LOCAL lock_timeout = '15s';/);
+    // The file must stay one transaction, so a failure leaves nothing half-done.
+    expect(sql(CONVERGE)).not.toMatch(/\bCONCURRENTLY\b|^\s*(BEGIN|COMMIT|ROLLBACK)\s*;/im);
   });
 });
 

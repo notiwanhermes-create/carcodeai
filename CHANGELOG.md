@@ -3,10 +3,10 @@
 ## Phase 2D — database foundation — 2026-10-11
 
 Branch `fix/phase-2d-database-foundation`. **This release changes the
-production database.** Read `docs/database.md` ("First production deployment of
-Phase 2D") before merging. New optional settings: `DIRECT_URL`,
-`DATABASE_POOL_MAX`, `SKIP_DB_MIGRATE`, `DB_MIGRATE_RETRY`. No change to what
-users see.
+production database, by adding to it only.** Nothing is dropped or deleted.
+Read `docs/database.md` ("First production deployment of Phase 2D") before
+merging. New optional settings: `DIRECT_URL`, `DATABASE_POOL_MAX`,
+`SKIP_DB_MIGRATE`, `DB_MIGRATE_RETRY`. No change to what users see.
 
 - **One definition of the database.** `prisma/schema.prisma` now describes
   every table the app uses, and SQL migrations in `prisma/migrations` are the
@@ -19,22 +19,34 @@ users see.
   client in `app/lib/prisma.ts`. The four separate `pg` pools are removed, and
   with them every `rejectUnauthorized: false`: the database's TLS certificate
   is now always verified.
-- **Three migrations.** `baseline` (the database as it stood; recorded on
-  production, not run), `converge_and_expand` (adds only: missing columns,
-  typed copies, indexes, constraints, counter expiry) and `remove_legacy` (the
-  only one that deletes: dead tables, the duplicate feedback column, two
-  replaced indexes). Each runs as one transaction with a 15-second lock
-  timeout.
+- **Two migrations, both additive.** `baseline` (the six tables the app uses,
+  as they stood; recorded on production, not run) and `converge_and_expand`
+  (missing columns, typed copies, indexes, constraints, counter expiry,
+  backfills). `converge_and_expand` runs as one transaction with a 15-second
+  lock timeout. A test reads the SQL and fails if a drop, delete, rename or
+  column type change ever appears in it.
+- **Destructive clean-up is postponed to a later release.** The tables, column
+  and indexes left over from older versions (`sessions`, `auth_pending`,
+  `auth_tokens`, `feedback_auto_reply_log`, `oem_fault_codes`, `feedback.page`,
+  `users_email_unique`, `users_google_id_unique`, `garage_vehicles.is_active`)
+  all stay exactly as they are. They will be removed by a separate migration,
+  in a separate pull request, after this release has run in production. See
+  "Left for a later clean-up" in `docs/database.md`.
+- **Rollback to Phase 2C stays possible without touching the database.**
+  `npm run db:rollback-check` runs the real Phase 2C code against a database
+  migrated by this release: it builds and fills a database with that version,
+  applies these migrations, then starts that version again and exercises
+  accounts, garage, service records, feedback and counters. It also runs as
+  part of the database tests.
 - **Typed values next to the text users type.** Vehicle year, service date,
   odometer and cost keep their text exactly as entered and gain a typed copy
   (`model_year`, `service_date`, `odometer_value` + `odometer_unit`,
   `cost_amount`), filled in only when the text is unambiguous. Nothing is
   guessed and nothing a user entered is altered.
-- **Feedback uses one page column, `page_url`.** The old `page` column is
-  copied into it and removed. The form, the admin page and the admin API read
-  and write the same field.
-- **`oem_fault_codes` is removed** if it holds only the four rows the old code
-  inserted by itself. If it holds anything else it is kept and renamed.
+- **Feedback uses one page column, `page_url`.** The form, the admin page and
+  the admin API read and write the same field. Values that existed only in the
+  old `page` column are copied into `page_url`; the old column and its values
+  remain until the clean-up.
 - **Counters expire.** Each `rate_limits` row carries `expires_at`. Expired rows
   are cleared as the app runs and by `npm run db:prune`, so the table cannot
   grow without limit.
@@ -46,23 +58,27 @@ users see.
 - **Deploying:** `npm run build` now starts with the migration step, which
   acts only on a Vercel production build. Preview builds and local builds never
   migrate. A failed migration fails the build and leaves the live site as it was.
-- **Rollback-safe:** the previous version of the app works against the migrated
-  database, so the app can be rolled back without touching the database.
-- **Tools:** `npm run db:inspect` (read-only report), `db:status`,
-  `db:migrate`, `db:prune`.
+- **Tools:** `npm run db:inspect` (read-only report, including what older
+  versions left behind), `db:status`, `db:migrate`, `db:prune`,
+  `db:rollback-check`.
+- **Removed from the repository:** the stale copy `app/page.tsx.backup`; the
+  dead cookie-session module `app/lib/auth.ts`; and eight packages that nothing
+  imported: `connect-pg-simple`, `express-session`, `passport`, `memoizee` and
+  their type packages `@types/connect-pg-simple`, `@types/express-session`,
+  `@types/passport`, `@types/memoizee`.
 - **Smaller changes made on the way:** deleting a vehicle is one statement
   instead of three (the database removes its service records with it); service
   records now check field types and lengths before saving (notes up to 2,000
-  characters, other fields 40 to 80); the dead cookie-session module
-  `app/lib/auth.ts` is deleted.
+  characters, other fields 40 to 80).
 - **Tests:** a database test suite (`tests/integration/`) that rebuilds three
   older database shapes with sample data and proves every row survives the
-  migrations, plus source checks that fail if runtime table creation, a second
-  pool or disabled certificate checks ever come back.
+  migrations and that nothing older versions left behind is touched, plus
+  source checks that fail if runtime table creation, a second pool or disabled
+  certificate checks ever come back.
 
-Not changed, on purpose: `garage_vehicles.is_active` stays for one more release
-(the previous version still selects it); the text columns stay for good; unused
-packages in `package.json` are listed in the report but not removed.
+Not changed, on purpose: the text columns stay for good; the odometer display
+on the dashboard ("km miles") is left for Phase 2E, which can now use the
+stored unit.
 
 ## Phase 2C — diagnosis quality — 2026-10-08
 

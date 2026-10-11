@@ -31,6 +31,10 @@ How the database is defined, changed, backed up and tested. Written in Phase 2D
 | `feedback` | `Feedback` | Messages from the feedback form | never automatically |
 | `_prisma_migrations` | (Prisma's own) | Which migrations have been applied | never |
 
+An existing database also still holds a few things older versions created and
+nothing uses (see "Left for a later clean-up"). They are not listed above
+because the app does not use them.
+
 Diagnosis history is **not** in the database. It is kept in the visitor's
 browser. Moving it to the server is Phase 2E.
 
@@ -104,10 +108,11 @@ Prisma query API.
 
 | Command | What it does | Changes the database? |
 | --- | --- | --- |
-| `npm run db:inspect` | Report: tables, columns, indexes, migration history, and counts of rows a migration must be careful with. Add `-- --json` for JSON. | No. Runs inside a read-only transaction. Prints structure and counts, never row contents. |
+| `npm run db:inspect` | Report: tables, columns, indexes, migration history, counts of rows a migration must be careful with, and what older versions left behind. Add `-- --json` for JSON. | No. Runs inside a read-only transaction. Prints structure and counts, never row contents. |
 | `npm run db:status` | Which migrations are applied and which are pending. | No |
 | `npm run db:migrate` | Apply pending migrations. | Yes |
 | `npm run db:prune` | Delete expired counters, and verification tokens that expired more than 7 days ago. Add `-- --dry-run` to only count. | Deletes expired rows only |
+| `npm run db:rollback-check` | Run the previous version of the app, for real, against a database migrated by this release (see "Rollback check"). | Only a local test database, which it empties |
 
 Each uses `DIRECT_URL` if set, then `DATABASE_URL_UNPOOLED`, then `DATABASE_URL`.
 
@@ -120,20 +125,27 @@ $env:DIRECT_URL = "<address>"; npm run db:inspect; Remove-Item Env:DIRECT_URL
 
 ## The migrations
 
-Each file runs as **one transaction**: if any statement in it fails, nothing in
-that file is applied. Each also sets a 15-second lock timeout, so it stops
-instead of queueing behind a busy table.
+This release has two, and **neither removes anything**. Each file runs as **one
+transaction**: if any statement in it fails, nothing in that file is applied.
+`converge_and_expand` also sets a 15-second lock timeout, so it stops instead of
+queueing behind a busy table.
+
+The approach is expand → backfill → switch → clean up, with the clean-up held
+back for a later release (see "Left for a later clean-up").
 
 ### 1. `20260101000000_baseline`
 
-The database exactly as the old start-up code built it (Phase 2C shape).
+The six tables the app uses, as the old start-up code created them (Phase 2C).
 
 - **Production:** it is **not run**. The tables already exist, so it is only
   recorded as applied (`prisma migrate resolve --applied`). `db:migrate` does
   this by itself when it finds the app's tables and no migration history.
 - **An empty database** (a test database, a new environment): it runs and
   creates the same starting point.
-- Creates 7 tables and 2 indexes. Changes nothing. Drops nothing. No data-loss risk.
+- It deliberately leaves out what older versions created and nothing uses any
+  more (the `sessions` table, `feedback.page`, two superseded indexes). An
+  existing database keeps those; a new database never gets them.
+- Creates 6 tables. Changes nothing. Drops nothing. No data-loss risk.
 
 ### 2. `20261011010000_converge_and_expand`
 
@@ -151,12 +163,15 @@ statement does nothing if its work is already done.
   - account emails are trimmed and lower-cased; an empty email becomes "none";
   - a missing `created_at` becomes the time of the migration (the real time is unknown);
   - typed copies are filled in where the text converts cleanly (rules above);
-  - `feedback.page_url` receives the value of the old `page` column where it was empty;
+  - `feedback.page_url` receives the value of the old `page` column where it was
+    empty. The `page` column itself, and every value in it, stays;
   - existing counters get `expires_at` = window start + 2 days;
   - **only on a database that never had email verification** (not production):
     Google-only accounts are marked verified and password accounts are marked
     "legacy". No password is changed.
-- **Drops:** nothing.
+- **Drops:** nothing. No table, column, index, constraint or row. A test reads
+  the SQL and fails if a `DROP TABLE`, `DROP COLUMN`, `DROP INDEX`, `DELETE`,
+  `TRUNCATE`, `RENAME` or a column type change ever appears in it.
 - **Data-loss risk:** none. Text values stay exactly as they are.
 - **It refuses to guess:** if two accounts share an email address (ignoring
   letter case), or two accounts share a Google identity, it stops and changes
@@ -166,33 +181,76 @@ statement does nothing if its work is already done.
   so this is milliseconds. For a table of millions of rows the indexes would be
   built concurrently in their own migration instead.
 
-### 3. `20261011020000_remove_legacy`
-
-The only migration that deletes anything.
-
-- **Drops tables:** `sessions` (cookie log-ins from the first prototype; the app
-  has used Auth.js tokens since), `auth_pending` and `auth_tokens` (temporary
-  sign-in state from the prototype), `feedback_auto_reply_log` (a log for an
-  auto-reply removed in Phase 1).
-- **`oem_fault_codes`:** dropped only if every row is one of the four BMW rows
-  the old code inserted by itself (also saved in
-  `data/quarantine/oem-bmw-seed.unverified.json`). If it holds anything else it
-  is **kept** and renamed `legacy_oem_fault_codes_archive`.
-- **Drops column:** `feedback.page`, after every value in it is in `page_url`.
-  A row with two different values keeps both, joined with ` | `.
-- **Drops indexes:** `users_email_unique`, `users_google_id_unique` (replaced in migration 2).
-- **Deletes rows:** counters that have already expired.
-- **Data-loss risk:** none that a user or the app can see. No user content is in
-  the dropped tables. Nothing that either the previous or the new version of the
-  app reads is removed.
-
 ### Order
 
-`baseline` (recorded) → `converge_and_expand` → `remove_legacy` → new app code
-goes live. This is safe because **the previous version of the app works against
-the fully migrated database** (there is a test for exactly that), so it does
-not matter that the old code is still serving for a minute or two after the
-migrations finish, and rolling the app back needs no database change.
+`baseline` (recorded) → `converge_and_expand` → new app code goes live →
+(later, separately) clean-up.
+
+The previous version of the app keeps working against the migrated database, so
+it does not matter that the old code is still serving for a minute or two after
+the migration finishes, and rolling the app back needs no database change. See
+"Rollback check".
+
+## Left for a later clean-up
+
+On an existing database, this release leaves the following in place, untouched.
+The app does not use any of it. `npm run db:inspect` lists what a given database
+actually has under **LEFT FROM OLDER VERSIONS**.
+
+| Left in place | What it is |
+| --- | --- |
+| table `sessions` | Cookie log-ins from the first prototype. The app has used Auth.js tokens since. |
+| tables `auth_pending`, `auth_tokens` | Temporary sign-in state from the prototype (may not exist). |
+| table `feedback_auto_reply_log` | A log for an auto-reply removed in Phase 1 (may not exist). |
+| table `oem_fault_codes` | The old manufacturer-code table, unused since Phase 2B (may not exist). |
+| column `feedback.page` | The older of the two page columns. Its values are copied to `page_url` where that was empty; the originals stay. |
+| indexes `users_email_unique`, `users_google_id_unique` | Superseded by `users_email_key` and `users_google_id_key`. Both sets exist for now. |
+| column `garage_vehicles.is_active` | Never read or written, but the previous version's queries still select it. Hidden from the Prisma client with `@ignore`. |
+| expired rows in `rate_limits` | No migration deletes them. The running app clears expired counters itself. |
+
+The clean-up will be its own migration in its own pull request, written **after**
+this release has run in production and `db:inspect` has shown what production
+really contains. Conditions for it:
+
+- this release has been live long enough that rolling back to Phase 2C is no
+  longer wanted (the previous version's schema still names `sessions`,
+  `feedback.page` and `is_active`);
+- `oem_fault_codes` is dropped only if it holds nothing but the four BMW rows
+  the old code inserted by itself (saved in
+  `data/quarantine/oem-bmw-seed.unverified.json`); anything else is kept;
+- `feedback.page` is dropped only after every value in it is in `page_url`
+  (a row with two different values keeps both);
+- a fresh backup first.
+
+The text columns (`year`, `date`, `mileage`, `cost`) are **not** on this list and
+never will be. They are what the user typed and what the app shows.
+
+## Rollback check
+
+`npm run db:rollback-check` answers one question with the real code: after this
+release's migrations, does the previous version of the app (Phase 2C, commit
+`e79758c`) still work, as it would after a Vercel Instant Rollback?
+
+It copies the previous version's source out of git into a temporary folder and
+runs it for real:
+
+1. the previous version builds its own database and stores accounts, vehicles,
+   service records, feedback and counters in it;
+2. this release's migrations are applied on top, and every row is compared;
+3. the previous version is started again and must find all its data and keep
+   working: its start-up routine (which must find nothing to create or change),
+   Google sign-in, sign-up, garage, service records, feedback through its own
+   connection pool, the admin list, the daily allowance and follow-up counters;
+4. the migration command is run again and must find nothing to do.
+
+It empties the database it uses, so it only accepts `TEST_DATABASE_URL` on this
+machine. It also runs as part of the database tests whenever that commit is
+present in the local copy of the repository.
+
+Two further tests in `tests/integration` check the same thing structurally:
+every column the previous version's database client names still exists with the
+type it expects, and every column this release added is optional or has a
+default.
 
 ## How a deployment applies migrations
 
@@ -231,16 +289,16 @@ Do these in order. Steps 1 to 3 change nothing in production.
 
    ```powershell
    $env:DIRECT_URL = "<rehearse-2d direct address>"
-   npm run db:inspect      # the "before" report; read the two sections at the bottom
+   npm run db:inspect      # the "before" report; read the sections at the bottom
    npm run db:migrate      # applies the migrations to the COPY
    npm run db:inspect      # the "after" report
    Remove-Item Env:DIRECT_URL
    ```
 
    Expected in the "before" report: `MIGRATION HISTORY: none` and
-   `NEEDS A DECISION BEFORE MIGRATING: nothing`. Expected after: three
-   migrations applied, six app tables, the same row counts for `users`,
-   `garage_vehicles`, `maintenance_records` and `feedback` as before. Then
+   `NEEDS A DECISION BEFORE MIGRATING: nothing`. Expected after: two migrations
+   applied; the same row counts as before for **every** table; and the same
+   list under `LEFT FROM OLDER VERSIONS` as before (nothing was removed). Then
    delete the `rehearse-2d` branch.
 3. **Stop if** the "before" report lists anything under *NEEDS A DECISION*, or
    the migration fails on the copy. Production has not been touched.
@@ -256,7 +314,7 @@ Do these in order. Steps 1 to 3 change nothing in production.
 6. **Check the live site:** sign in; open the garage (vehicles and service
    records are there); add and delete a test vehicle; send feedback and see it
    on the admin page; run one diagnosis.
-7. Keep `backup-before-2d` for at least a week, then delete it.
+7. Keep `backup-before-2d` until the clean-up release has also gone out.
 
 ## Backup and rollback
 
@@ -266,16 +324,16 @@ back is the backup, so step 1 above is not optional.
 | Situation | What to do |
 | --- | --- |
 | The build failed on a migration | Nothing is live and nothing in that migration was applied. See "If a migration fails". |
-| The new version is live but misbehaves, data is fine | Vercel → Deployments → the previous deployment → *Instant Rollback* (or *Promote*). **No database change is needed:** the previous version works against the migrated database. |
+| The new version is live but misbehaves, data is fine | Vercel → Deployments → the previous deployment → *Instant Rollback* (or *Promote*). **No database change is needed:** the previous version works against the migrated database, and nothing it uses was removed (see "Rollback check"). |
 | Data looks wrong after the migration | Roll the app back as above first. Then compare with the backup branch. To return the database to the backup, use Neon's restore feature to restore the production branch from the branch `backup-before-2d` (Neon console → *Restore*; the exact labels change from time to time, so follow Neon's "Instant restore" guide). **This discards everything written since the backup** (new accounts, vehicles, feedback), so check what would be lost first. |
 
-After rolling the app back, the old version's start-up routine recreates an
-empty `sessions` table and the two old indexes. That is harmless. `npm run
-db:inspect` lists them as `[legacy]`, and the next clean-up migration removes
-them again. The same can happen if anyone opens an old deployment's own address.
+What stays in the database after an application rollback: the columns and
+indexes this release added. They are harmless to the previous version, which
+ignores them, and they are already in place when the new version is deployed
+again (the migration command then finds nothing to do).
 
 Confirming success after a deployment: `npm run db:status` says
-`Database schema is up to date!`, and `npm run db:inspect` shows three applied
+`Database schema is up to date!`, and `npm run db:inspect` shows two applied
 migrations and no table marked `[unknown]`.
 
 ## If a migration fails
@@ -380,27 +438,16 @@ What they cover (`tests/integration/`):
   `schema.prisma`; three older database shapes (the February 2026 prototype, the
   database before Phase 1, and production as of Phase 2C) are filled with sample
   accounts, vehicles, service records, feedback, counters and tokens, migrated,
-  and compared row by row; all end with the identical structure; a second run
-  changes nothing; duplicate accounts stop the migration with nothing changed;
-  a failure is retried only when named; the previous version's own SQL still
-  works afterwards; previews never migrate.
+  and compared row by row; the app's own tables all end with the identical
+  structure; **everything older versions left behind is still there, row for
+  row**; a second run changes nothing; duplicate accounts stop the migration
+  with nothing changed; a failure is retried only when named; previews never
+  migrate.
+- **Rollback** — the previous version's real code is run against the migrated
+  database (`db:rollback-check`), and its schema is checked column by column.
 - **Database rules** — foreign keys, cascades, uniqueness, check constraints,
   required values, indexes, column types.
 - **Accounts** — Google linking and claiming, registration.
 - **The app** — sign-up, emailed link, sign-in, garage, service records,
   feedback and the admin view, the diagnosis allowance and follow-up counters,
   and that no request changes the database structure.
-
-## Still to remove, in a later release
-
-Kept on purpose so that rolling the app back stays safe; to be dropped once
-Phase 2D has been live long enough that no rollback to Phase 2C is possible:
-
-- `garage_vehicles.is_active` — never read or written by the app. The previous
-  version's queries still select it, so it stays for now, hidden from the
-  Prisma client with `@ignore`.
-- Any `sessions` table or `users_email_unique` / `users_google_id_unique`
-  indexes recreated by an old deployment (see "Backup and rollback").
-
-The text columns (`year`, `date`, `mileage`, `cost`) are **not** on this list.
-They are what the user typed and what the app shows.

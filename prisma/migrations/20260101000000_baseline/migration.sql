@@ -1,8 +1,8 @@
 -- BASELINE
 --
--- The database exactly as the application's old start-up code built it (the
--- `ensureDB()` function and the table check in the feedback route, as they
--- stood at Phase 2C).
+-- The six tables the app uses, as the application's old start-up code created
+-- them (the `ensureDB()` function and the table check in the feedback route,
+-- as they stood at Phase 2C).
 --
 -- On a database that already exists (production), this migration is NOT run.
 -- It is recorded as already applied, because those tables are already there:
@@ -14,7 +14,13 @@
 -- and creates the same starting point, so every database then goes through the
 -- same later migrations.
 --
--- Creates: 7 tables, 2 indexes.  Changes: nothing.  Drops: nothing.
+-- Deliberately NOT here: things older versions of the app created and nothing
+-- uses any more (the `sessions` table, the `feedback.page` column, two
+-- superseded indexes on `users`, tables from the first prototypes). An
+-- existing database keeps all of them, untouched, until a later clean-up
+-- migration. A new database never gets them.
+--
+-- Creates: 6 tables.  Changes: nothing.  Drops: nothing.
 
 CREATE TABLE "users" (
     "id" TEXT NOT NULL,
@@ -30,18 +36,6 @@ CREATE TABLE "users" (
     "legacy_unverified" BOOLEAN NOT NULL DEFAULT FALSE,
 
     CONSTRAINT "users_pkey" PRIMARY KEY ("id")
-);
-
-CREATE UNIQUE INDEX "users_email_unique" ON "users" (LOWER("email")) WHERE "email" IS NOT NULL;
-CREATE UNIQUE INDEX "users_google_id_unique" ON "users" ("google_id") WHERE "google_id" IS NOT NULL;
-
-CREATE TABLE "sessions" (
-    "sid" TEXT NOT NULL,
-    "user_id" TEXT NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
-    "expires_at" TIMESTAMPTZ NOT NULL,
-    "created_at" TIMESTAMPTZ DEFAULT NOW(),
-
-    CONSTRAINT "sessions_pkey" PRIMARY KEY ("sid")
 );
 
 CREATE TABLE "garage_vehicles" (
@@ -79,7 +73,6 @@ CREATE TABLE "feedback" (
     "email" TEXT,
     "rating" INTEGER,
     "message" TEXT NOT NULL,
-    "page" TEXT,
     "created_at" TIMESTAMPTZ DEFAULT NOW(),
     "page_url" TEXT,
 

@@ -1,25 +1,36 @@
 /**
  * Migration tests: databases shaped the way older versions of the app left
  * them are taken through the migrations, and every row is checked afterwards.
+ *
+ * This release's migrations only ADD. So the tests check three things about
+ * every older database: the app's own tables end up in one known shape, no row
+ * is lost, and everything older versions left behind is still exactly as it was.
  */
+import { spawnSync } from "node:child_process";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import type { Pool } from "pg";
 import * as db from "../db";
 import * as legacy from "../legacy-shapes";
 import { parseCost, parseModelYear, parseOdometer, parseServiceDate } from "../../../app/lib/maintenance-values";
 
-const APP_TABLES = ["email_verification_tokens", "feedback", "garage_vehicles", "maintenance_records", "rate_limits", "users"];
+const APP_TABLES = db.APP_TABLES;
+
+/** The release a rollback returns to (Phase 2C). Its code is run for real when this copy of the repository has it. */
+const PREVIOUS_RELEASE = "e79758c";
+const hasPreviousRelease = spawnSync("git", ["cat-file", "-e", `${PREVIOUS_RELEASE}^{commit}`], { cwd: db.ROOT }).status === 0;
 
 export function migrationSuite() {
   db.dbDescribe("migrations", () => {
     let pool: Pool;
-    /** The structure every database must end up with: built from nothing by all the migrations. */
+    /** The shape of the app's tables in a database built from nothing by all the migrations. */
     let expectedShape: Awaited<ReturnType<typeof db.schemaSnapshot>>;
 
     const rows = async (sql: string, params: unknown[] = []) => (await pool.query(sql, params)).rows;
     const one = async (sql: string, params: unknown[] = []) => (await rows(sql, params))[0];
     const hasColumn = async (table: string, column: string) =>
       (await rows(`SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2`, [table, column])).length > 0;
+    /** The app's own tables, as they are now. */
+    const appShapeNow = async () => db.appShape(await db.schemaSnapshot(pool));
 
     beforeAll(async () => {
       pool = db.newPool();
@@ -63,9 +74,12 @@ export function migrationSuite() {
       await pool.query(`INSERT INTO feedback_auto_reply_log (email_lower, ip_hash) VALUES ('someone@example.test', 'iphash')`);
     }
 
-    /** Production as of Phase 2C: the baseline, plus the tables later code stopped creating. */
+    /**
+     * Production as of Phase 2C: built by that version's own start-up SQL, plus
+     * the tables that earlier versions created and later ones stopped creating.
+     */
     async function buildPhase2c() {
-      await db.applyMigration(pool, db.BASELINE);
+      await pool.query(legacy.PREVIOUS_VERSION_STARTUP_SQL);
       await pool.query(legacy.PHASE_2C_EXTRAS);
       await pool.query(legacy.OEM_SEED_ROWS);
       await pool.query(legacy.SAMPLE_ACCOUNTS);
@@ -74,6 +88,7 @@ export function migrationSuite() {
       await pool.query(legacy.SAMPLE_SESSIONS);
       await pool.query(legacy.SAMPLE_FEEDBACK);
       await pool.query(legacy.SAMPLE_PHASE_1_ROWS);
+      await pool.query(`INSERT INTO feedback_auto_reply_log (email_lower, ip_hash) VALUES ('someone@example.test', 'iphash')`);
       // Phase 1 classified the accounts that existed then, and one person has signed up since.
       await pool.query(`
         UPDATE users SET legacy_unverified = TRUE WHERE password_hash IS NOT NULL;
@@ -82,10 +97,19 @@ export function migrationSuite() {
       `);
     }
 
-    const SHAPES: Array<{ name: string; build: () => Promise<void>; hasPasswords: boolean; hasCosts: boolean; hasFeedback: boolean }> = [
-      { name: "the February 2026 prototype", build: buildPrototype, hasPasswords: false, hasCosts: false, hasFeedback: false },
-      { name: "the database just before Phase 1", build: buildBeforePhase1, hasPasswords: true, hasCosts: true, hasFeedback: true },
-      { name: "production as of Phase 2C", build: buildPhase2c, hasPasswords: true, hasCosts: true, hasFeedback: true },
+    type Shape = {
+      name: string;
+      build: () => Promise<void>;
+      hasPasswords: boolean;
+      hasCosts: boolean;
+      hasFeedback: boolean;
+      /** Tables this shape holds that the app no longer uses. All must survive. */
+      leftoverTables: string[];
+    };
+    const SHAPES: Shape[] = [
+      { name: "the February 2026 prototype", build: buildPrototype, hasPasswords: false, hasCosts: false, hasFeedback: false, leftoverTables: ["auth_pending", "auth_tokens", "sessions"] },
+      { name: "the database just before Phase 1", build: buildBeforePhase1, hasPasswords: true, hasCosts: true, hasFeedback: true, leftoverTables: ["feedback_auto_reply_log", "oem_fault_codes", "sessions"] },
+      { name: "production as of Phase 2C", build: buildPhase2c, hasPasswords: true, hasCosts: true, hasFeedback: true, leftoverTables: ["feedback_auto_reply_log", "oem_fault_codes", "sessions"] },
     ];
 
     /* ───────────── the real tool, end to end ───────────── */
@@ -95,9 +119,14 @@ export function migrationSuite() {
       expect(run.output).toContain("empty database: all migrations will be applied");
       expect(run.status, run.output).toBe(0);
 
+      // A new database holds the app's six tables and nothing from older versions.
       expect(await db.tableNames(pool)).toEqual(APP_TABLES);
+      expect(await db.leftovers(pool)).toEqual({ tables: {}, columns: {}, indexes: [] });
       const applied = await rows(`SELECT migration_name, finished_at IS NOT NULL AS done FROM _prisma_migrations ORDER BY started_at`);
-      expect(applied).toEqual(db.migrationNames().map((migration_name) => ({ migration_name, done: true })));
+      expect(applied).toEqual([
+        { migration_name: db.BASELINE, done: true },
+        { migration_name: db.CONVERGE, done: true },
+      ]);
 
       const drift = db.schemaMatchesPrisma();
       expect(drift.matches, drift.output).toBe(true);
@@ -107,6 +136,7 @@ export function migrationSuite() {
     it("records the baseline on an existing database instead of rebuilding it, then applies the rest", async () => {
       await buildPhase2c();
       const usersBefore = await rows(`SELECT id, password_hash, google_id FROM users ORDER BY id`);
+      const leftBehind = await db.leftovers(pool);
 
       // Prisma on its own refuses a database that has tables but no history...
       const refused = db.runPrisma(["migrate", "deploy"]);
@@ -120,23 +150,25 @@ export function migrationSuite() {
       expect(run.status, run.output).toBe(0);
 
       expect(await rows(`SELECT id, password_hash, google_id FROM users ORDER BY id`)).toEqual(usersBefore);
-      expect((await rows(`SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL ORDER BY started_at`)).map((r) => r.migration_name)).toEqual(
-        db.migrationNames(),
-      );
-      const drift = db.schemaMatchesPrisma();
-      expect(drift.matches, drift.output).toBe(true);
+      expect((await rows(`SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL ORDER BY started_at`)).map((r) => r.migration_name)).toEqual([
+        db.BASELINE,
+        db.CONVERGE,
+      ]);
+      expect(await appShapeNow()).toEqual(db.appShape(expectedShape));
+      expect(await db.leftovers(pool)).toEqual(leftBehind);
 
       // Running it again finds nothing to do.
       const again = db.runScript("db-migrate.mjs");
       expect(again.status, again.output).toBe(0);
       expect(again.output).toMatch(/No pending migrations to apply/);
-      expect(await db.schemaSnapshot(pool)).toEqual(expectedShape);
+      expect(await appShapeNow()).toEqual(db.appShape(expectedShape));
+      expect(await db.leftovers(pool)).toEqual(leftBehind);
     });
 
-    /* ───────────── every legacy shape: same result, nothing lost ───────────── */
+    /* ───────────── every legacy shape: same result, nothing lost, nothing removed ───────────── */
 
     for (const shape of SHAPES) {
-      it(`upgrades ${shape.name} without losing a row`, async () => {
+      it(`upgrades ${shape.name} without losing a row or removing anything`, async () => {
         await shape.build();
         const before = {
           users: await rows(`SELECT id, email, first_name, created_at FROM users ORDER BY id`),
@@ -144,14 +176,19 @@ export function migrationSuite() {
           vehicles: await rows(`SELECT id, user_id, year, make, model, engine, vin, created_at FROM garage_vehicles ORDER BY id`),
           records: await rows(`SELECT id, user_id, vehicle_id, type, date, mileage, notes, created_at FROM maintenance_records ORDER BY id`),
           costs: shape.hasCosts ? await rows(`SELECT id, cost FROM maintenance_records ORDER BY id`) : null,
-          feedback: shape.hasFeedback ? await rows(`SELECT id, name, email, rating, message FROM feedback ORDER BY id`) : null,
+          feedback: shape.hasFeedback ? await rows(`SELECT id, name, email, rating, message, page FROM feedback ORDER BY id`) : null,
+          leftBehind: await db.leftovers(pool),
         };
+        expect(Object.keys(before.leftBehind.tables).sort()).toEqual(shape.leftoverTables);
 
         await db.upgradeExistingDatabase(pool);
 
-        // The same structure as a database built from nothing.
-        expect(await db.schemaSnapshot(pool)).toEqual(expectedShape);
-        expect(await db.tableNames(pool)).toEqual(APP_TABLES);
+        // The app's own tables: the same structure as a database built from nothing.
+        expect(await appShapeNow()).toEqual(db.appShape(expectedShape));
+
+        // Everything older versions left behind is still there, row for row.
+        expect(await db.tableNames(pool)).toEqual([...APP_TABLES, ...shape.leftoverTables].sort());
+        expect(await db.leftovers(pool)).toEqual(before.leftBehind);
 
         // Accounts: every one is still there, with the same password and Google identity.
         const users = await rows(`SELECT id, email, first_name, created_at FROM users ORDER BY id`);
@@ -204,18 +241,18 @@ export function migrationSuite() {
           "m-nomiles": ["2026-03-05", null, null, null],
         });
 
-        // Feedback: one page column, and no value lost from either of the old two.
+        // Feedback: "page_url" is filled where it was empty, and the old "page" column keeps every value it had.
         if (before.feedback) {
-          expect(await rows(`SELECT id, name, email, rating, message FROM feedback ORDER BY id`)).toEqual(before.feedback);
+          expect(await rows(`SELECT id, name, email, rating, message, page FROM feedback ORDER BY id`)).toEqual(before.feedback);
           expect((await rows(`SELECT page_url FROM feedback ORDER BY id`)).map((r) => r.page_url)).toEqual([
-            "/diagnose", //                                    only in the old "page" column
-            "https://www.carcodeai.com/", //                   only in "page_url"
+            "/diagnose", //                     was only in the old "page" column: copied across
+            "https://www.carcodeai.com/", //    already in "page_url"
             null,
-            "https://www.carcodeai.com/new | /old-path", //    different values in both: both kept
+            "https://www.carcodeai.com/new", // both columns had a value: "page_url" is left alone
           ]);
           expect((await rows(`SELECT 1 FROM feedback WHERE created_at IS NULL`)).length).toBe(0);
         }
-        expect(await hasColumn("feedback", "page")).toBe(false);
+        expect(await hasColumn("feedback", "page")).toBe(shape.hasFeedback);
         expect(await hasColumn("feedback", "page_url")).toBe(true);
       });
     }
@@ -243,29 +280,38 @@ export function migrationSuite() {
       expect(await one(`SELECT email_verified, legacy_unverified FROM users WHERE id = 'u-pending'`)).toEqual({ email_verified: null, legacy_unverified: false });
     });
 
-    it("removes the legacy tables, keeps the live ones, and clears only expired counters", async () => {
+    it("removes nothing: legacy tables, the old feedback column, old indexes and old counters all stay", async () => {
       await buildPhase2c();
-      expect(await db.tableNames(pool)).toEqual(expect.arrayContaining(["sessions", "oem_fault_codes", "feedback_auto_reply_log"]));
-      await db.upgradeExistingDatabase(pool);
-      expect(await db.tableNames(pool)).toEqual(APP_TABLES);
-
-      // A counter from an hour ago is live and kept; one from ten days ago has expired and is gone.
-      expect((await rows(`SELECT key, count FROM rate_limits ORDER BY key`))).toEqual([{ key: "diag:guest:day:ip:abc", count: 3 }]);
-      expect((await one(`SELECT COUNT(*)::int AS n FROM rate_limits WHERE expires_at IS NULL`)).n).toBe(0);
-      // Verification tokens are untouched.
-      expect((await rows(`SELECT token_hash, user_id FROM email_verification_tokens`))).toEqual([{ token_hash: "token-hash-1", user_id: "u-password" }]);
-    });
-
-    it("keeps oem_fault_codes, renamed, if it holds anything the app did not put there", async () => {
-      await buildPhase2c();
+      // Something a person may have added by hand, which no clean-up may ever throw away unseen.
       await pool.query(`INSERT INTO oem_fault_codes (make, code, title) VALUES ('Ford', 'P1000', 'Entered by hand')`);
+      const count = async (table: string) => Number((await one(`SELECT COUNT(*)::int AS n FROM "${table}"`)).n);
+      const tablesBefore = await db.tableNames(pool);
+      const countsBefore = Object.fromEntries(await Promise.all(tablesBefore.map(async (t) => [t, await count(t)] as const)));
+
       await db.upgradeExistingDatabase(pool);
 
-      const tables = await db.tableNames(pool);
-      expect(tables).not.toContain("oem_fault_codes");
-      expect(tables).toContain("legacy_oem_fault_codes_archive");
-      expect((await one(`SELECT COUNT(*)::int AS n FROM legacy_oem_fault_codes_archive`)).n).toBe(5);
-      expect((await one(`SELECT title FROM legacy_oem_fault_codes_archive WHERE make = 'Ford'`)).title).toBe("Entered by hand");
+      // No table went away, and no table lost a row.
+      expect(await db.tableNames(pool)).toEqual(tablesBefore);
+      expect(Object.fromEntries(await Promise.all(tablesBefore.map(async (t) => [t, await count(t)] as const)))).toEqual(countsBefore);
+      expect(countsBefore).toMatchObject({ sessions: 2, oem_fault_codes: 5, feedback_auto_reply_log: 1, feedback: 4, rate_limits: 2, email_verification_tokens: 1 });
+
+      // The old feedback column and both old indexes are still there.
+      expect((await rows(`SELECT page FROM feedback ORDER BY id`)).map((r) => r.page)).toEqual(["/diagnose", null, null, "/old-path"]);
+      expect((await rows(`SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'users' ORDER BY 1`)).map((r) => r.indexname)).toEqual([
+        "users_email_key", //         new
+        "users_email_unique", //      old, kept
+        "users_google_id_key", //     new
+        "users_google_id_unique", //  old, kept
+        "users_pkey",
+      ]);
+
+      // Counters are all kept, each now with the time it stops mattering. (The
+      // running app clears expired ones itself; the migration deletes none.)
+      expect(await rows(`SELECT key, count, expires_at > NOW() AS live FROM rate_limits ORDER BY key`)).toEqual([
+        { key: "diag:guest:day:ip:abc", count: 3, live: true }, // from an hour ago
+        { key: "login:ip:abc", count: 9, live: false }, //         from ten days ago
+      ]);
+      expect((await rows(`SELECT token_hash, user_id FROM email_verification_tokens`))).toEqual([{ token_hash: "token-hash-1", user_id: "u-password" }]);
     });
 
     it("changes nothing when run a second time", async () => {
@@ -278,10 +324,10 @@ export function migrationSuite() {
         records: await rows(`SELECT * FROM maintenance_records ORDER BY id`),
         feedback: await rows(`SELECT * FROM feedback ORDER BY id`),
         counters: await rows(`SELECT * FROM rate_limits ORDER BY key`),
+        leftBehind: await db.leftovers(pool),
       });
       const first = await dump();
       await db.applyMigration(pool, db.CONVERGE);
-      await db.applyMigration(pool, db.REMOVE_LEGACY);
       expect(await dump()).toEqual(first);
     });
 
@@ -324,7 +370,7 @@ export function migrationSuite() {
       expect(blocked.output).toContain(`an earlier attempt at ${db.CONVERGE} failed and has not been cleared`);
       expect(blocked.output).toContain(`DB_MIGRATE_RETRY=${db.CONVERGE}`);
       // Naming a different migration clears nothing.
-      expect(db.runScript("db-migrate.mjs", [], { DB_MIGRATE_RETRY: db.REMOVE_LEGACY }).status).not.toBe(0);
+      expect(db.runScript("db-migrate.mjs", [], { DB_MIGRATE_RETRY: db.BASELINE }).status).not.toBe(0);
       expect(await db.schemaSnapshot(pool)).toEqual(before);
 
       // Fix the cause, name the migration, run again.
@@ -332,9 +378,10 @@ export function migrationSuite() {
       const retried = db.runScript("db-migrate.mjs", [], { DB_MIGRATE_RETRY: db.CONVERGE });
       expect(retried.output).toContain(`retrying ${db.CONVERGE}`);
       expect(retried.status, retried.output).toBe(0);
-      expect(await db.schemaSnapshot(pool)).toEqual(expectedShape);
+      expect(await appShapeNow()).toEqual(db.appShape(expectedShape));
       expect((await one(`SELECT email FROM users WHERE id = 'a'`)).email).toBe("same@example.test");
-      expect(db.schemaMatchesPrisma().matches).toBe(true);
+      // The prototype's own tables were not touched by any of this.
+      expect(Object.keys((await db.leftovers(pool)).tables).sort()).toEqual(["auth_pending", "auth_tokens", "sessions"]);
 
       // Leaving the setting in place afterwards does nothing.
       const after = db.runScript("db-migrate.mjs", [], { DB_MIGRATE_RETRY: db.CONVERGE });
@@ -342,28 +389,89 @@ export function migrationSuite() {
       expect(after.output).toMatch(/No pending migrations to apply/);
     });
 
-    /* ───────────── rollback safety ───────────── */
+    /* ───────────── rollback: the previous version against the migrated database ───────────── */
 
-    it("the previous version of the app still works against a migrated database", async () => {
+    it("leaves in place everything the previous version (Phase 2C) reads and writes", async () => {
       await buildPhase2c();
       await db.upgradeExistingDatabase(pool);
 
-      // Its start-up routine runs on every cold start. It must not fail...
+      const columns = await rows(
+        `SELECT table_name, column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public'`,
+      );
+      for (const [table, model] of Object.entries(legacy.PHASE_2C_PRISMA_MODELS)) {
+        const present = columns.filter((c) => c.table_name === table);
+        // Every column that version's queries name still exists, with the type it expects.
+        for (const [column, type] of Object.entries(model.columns)) {
+          expect(present.find((c) => c.column_name === column)?.data_type, `${table}.${column}`).toBe(type);
+        }
+        // Every column that must have a value either has a default, or is one that version always supplies.
+        for (const c of present) {
+          if (c.is_nullable === "NO" && c.column_default === null) {
+            expect(model.alwaysSupplied, `${table}.${c.column_name} is required and has no default`).toContain(c.column_name);
+          }
+        }
+      }
+      // What this release added is optional or has a default, so writes that do not mention it still succeed.
+      const added = columns.filter((c) => legacy.PHASE_2C_PRISMA_MODELS[c.table_name] && !(c.column_name in legacy.PHASE_2C_PRISMA_MODELS[c.table_name].columns));
+      expect(added.map((c) => `${c.table_name}.${c.column_name}`).sort()).toEqual([
+        "feedback.page_url", // (that version writes this one with plain SQL)
+        "garage_vehicles.model_year",
+        "maintenance_records.cost_amount",
+        "maintenance_records.odometer_unit",
+        "maintenance_records.odometer_value",
+        "maintenance_records.service_date",
+        "rate_limits.expires_at",
+      ]);
+      for (const c of added) expect(c.is_nullable === "YES" || c.column_default !== null, `${c.table_name}.${c.column_name}`).toBe(true);
+    });
+
+    it("the previous version's start-up routine and its own statements still work, and change nothing in the structure", async () => {
+      await buildPhase2c();
+      await db.upgradeExistingDatabase(pool);
+      const structure = await db.schemaSnapshot(pool);
+
+      // Its start-up routine runs on every cold start. It must not fail, and since
+      // nothing it expects was removed, it must find nothing to create...
       await pool.query(legacy.PREVIOUS_VERSION_STARTUP_SQL);
+      await pool.query(legacy.PREVIOUS_VERSION_STARTUP_SQL);
+      expect(await db.schemaSnapshot(pool)).toEqual(structure);
       // ...and it must not re-classify anyone.
       expect(await one(`SELECT email_verified, legacy_unverified FROM users WHERE id = 'u-pending'`)).toEqual({ email_verified: null, legacy_unverified: false });
 
-      // The statements it uses to write and read, which know nothing of the new columns.
-      await pool.query(`INSERT INTO users (id, email, password_hash, first_name, last_name, session_version, legacy_unverified) VALUES ('old-user', 'old.code@example.test', 'H', NULL, NULL, 0, FALSE)`);
-      await pool.query(`INSERT INTO garage_vehicles (id, user_id, year, make, model, engine, vin, nickname, is_active) VALUES ('old-veh', 'old-user', '2019', 'Kia', 'Soul', NULL, NULL, NULL, FALSE)`);
-      await pool.query(`INSERT INTO maintenance_records (id, user_id, vehicle_id, type, date, mileage, notes, cost) VALUES ('old-rec', 'old-user', 'old-veh', 'Oil Change', '2026-10-01', '50000', NULL, '80')`);
-      await pool.query(`INSERT INTO feedback (name, email, rating, message, page_url) VALUES (NULL, NULL, 5, 'from the old code', 'https://www.carcodeai.com/')`);
-      await pool.query(`INSERT INTO rate_limits (key, window_start, count) VALUES ('old:key', NOW(), 1) ON CONFLICT (key, window_start) DO UPDATE SET count = rate_limits.count + 1`);
-      await pool.query(`INSERT INTO email_verification_tokens (token_hash, user_id, expires_at) VALUES ('old-token', 'old-user', NOW() + INTERVAL '1 day')`);
+      // Its reads: every column of every table it knows, the way its database client asks for them.
+      for (const [table, model] of Object.entries(legacy.PHASE_2C_PRISMA_MODELS)) {
+        await pool.query(`SELECT ${Object.keys(model.columns).map((c) => `"${c}"`).join(", ")} FROM "${table}" LIMIT 5`);
+      }
 
-      expect((await one(`SELECT id, year, is_active, created_at IS NOT NULL AS stamped FROM garage_vehicles WHERE id = 'old-veh'`))).toEqual({ id: "old-veh", year: "2019", is_active: false, stamped: true });
+      // Its writes, which know nothing of the new columns.
+      await pool.query(`INSERT INTO users (id, email, password_hash, first_name, last_name, created_at, session_version, legacy_unverified) VALUES ('old-user', 'old.code@example.test', 'H', NULL, NULL, NOW(), 0, FALSE)`);
+      await pool.query(`INSERT INTO garage_vehicles (id, user_id, year, make, model, engine, vin, nickname, is_active, created_at) VALUES ('old-veh', 'old-user', '2019', 'Kia', 'Soul', NULL, NULL, NULL, FALSE, NOW())`);
+      await pool.query(`INSERT INTO maintenance_records (id, user_id, vehicle_id, type, date, mileage, notes, cost, created_at) VALUES ('old-rec', 'old-user', 'old-veh', 'Oil Change', '2026-10-01', '50000', NULL, '80', NOW())`);
+      await pool.query(`INSERT INTO feedback (name, email, rating, message, page_url) VALUES (NULL, NULL, 5, 'from the old code', 'https://www.carcodeai.com/')`);
+      await pool.query(`INSERT INTO rate_limits (key, window_start, count) VALUES ('old:key', NOW(), 1) ON CONFLICT (key, window_start) DO UPDATE SET count = rate_limits.count + 1 RETURNING count`);
+      await pool.query(`INSERT INTO email_verification_tokens (token_hash, user_id, expires_at, created_at) VALUES ('old-token', 'old-user', NOW() + INTERVAL '1 day', NOW())`);
+      await pool.query(`UPDATE users SET email_verified = NOW() WHERE id = 'old-user'`);
+      await pool.query(`DELETE FROM email_verification_tokens WHERE user_id = 'old-user'`);
+
+      expect(await one(`SELECT id, year, is_active, model_year FROM garage_vehicles WHERE id = 'old-veh'`)).toEqual({ id: "old-veh", year: "2019", is_active: false, model_year: null });
       expect((await one(`SELECT expires_at > NOW() AS live FROM rate_limits WHERE key = 'old:key'`)).live).toBe(true);
+      // Its admin page query.
       expect((await rows(`SELECT created_at, rating, name, email, page_url, message FROM feedback ORDER BY created_at DESC LIMIT 200`)).length).toBe(5);
+      // Its vehicle delete: the vehicle's records first, then the vehicle.
+      await pool.query(`DELETE FROM maintenance_records WHERE vehicle_id = 'old-veh' AND user_id = 'old-user'`);
+      await pool.query(`DELETE FROM garage_vehicles WHERE id = 'old-veh'`);
+
+      // The structure is still exactly what the migrations left.
+      expect(await db.schemaSnapshot(pool)).toEqual(structure);
+    });
+
+    it.skipIf(!hasPreviousRelease)("the real previous version (Phase 2C code) runs against a database migrated by this release", () => {
+      // scripts/rollback-check: the previous version builds and fills a database,
+      // this release's migrations are applied, and the previous version is then
+      // started again and exercised. See docs/database.md, "Rollback check".
+      const run = db.runScript("rollback-check/run.mjs", [PREVIOUS_RELEASE]);
+      expect(run.output).toContain("PASSED: the previous version");
+      expect(run.status, run.output).toBe(0);
     });
 
     it("refuses an account email that is not lower case, so a lookup can never miss it", async () => {
@@ -407,6 +515,8 @@ export function migrationSuite() {
         expect([r.odometer_value, r.odometer_unit], `odometer ${JSON.stringify(r.mileage)}`).toEqual([reading?.value ?? null, reading?.unit ?? null]);
         expect(r.cost_amount, `cost ${JSON.stringify(r.cost)}`).toBe(parseCost(r.cost));
       }
+      // The original text of every value is exactly as it was entered.
+      expect((await rows(`SELECT date FROM maintenance_records ORDER BY id`)).map((r) => r.date).sort()).toEqual([...dates, ...Array(n - dates.length).fill("")].sort());
       // And the samples really do exercise both outcomes.
       expect(converted.filter((r) => r.service_date).length).toBeGreaterThan(2);
       expect(converted.filter((r) => r.service_date === null).length).toBeGreaterThan(2);
@@ -440,6 +550,7 @@ export function migrationSuite() {
 
     it("migrates on a production build, preferring the direct connection address", async () => {
       await buildPhase2c();
+      const leftBehind = await db.leftovers(pool);
       // The app's pooled address is unusable here; the direct one must be the one used.
       const run = db.runScript("db-migrate.mjs", ["--vercel"], {
         VERCEL_ENV: "production",
@@ -447,7 +558,8 @@ export function migrationSuite() {
         DIRECT_URL: db.TEST_DB,
       });
       expect(run.status, run.output).toBe(0);
-      expect(await db.schemaSnapshot(pool)).toEqual(expectedShape);
+      expect(await appShapeNow()).toEqual(db.appShape(expectedShape));
+      expect(await db.leftovers(pool)).toEqual(leftBehind);
     });
 
     it("reports on a database without changing it, and names what needs a decision", async () => {
@@ -468,10 +580,33 @@ export function migrationSuite() {
       expect(report.checks.users).toMatchObject({ total: 5, emailsNotLowerCaseOrTrimmed: 2, emailsSharedByMoreThanOneAccount: 1 });
       expect(report.checks.garage_vehicles).toMatchObject({ total: 4, yearNotAFourDigitYear: 2 });
       expect(report.checks.maintenance_records).toMatchObject({ total: 6, dateNotYearMonthDay: 1, odometerPresentButNotConvertible: 2, costPresentButNotConvertible: 2 });
-      expect(report.checks.feedback).toMatchObject({ total: 4, valueOnlyInOldPageColumn: 1, bothColumnsWithDifferentValues: 1 });
+      expect(report.checks.feedback).toMatchObject({ total: 4, valuesInOldPageColumn: 2, valueOnlyInOldPageColumn: 1, bothColumnsWithDifferentValues: 1 });
       expect(report.tables.find((t: { name: string }) => t.name === "sessions")).toMatchObject({ kind: "legacy", rows: 2 });
 
       expect({ shape: await db.schemaSnapshot(pool), users: await rows(`SELECT * FROM users ORDER BY id`) }).toEqual(before);
+    });
+
+    it("lists what older versions left behind, before and after migrating", async () => {
+      await buildPhase2c();
+      const expected = [
+        "table feedback_auto_reply_log (1 row(s))",
+        "table oem_fault_codes (4 row(s))",
+        "table sessions (2 row(s))",
+        "column feedback.page (2 value(s))",
+        "index users_email_unique",
+        "index users_google_id_unique",
+      ];
+      expect(JSON.parse(db.runScript("db-inspect.mjs", ["--json"]).output).leftovers).toEqual(expected);
+
+      await db.upgradeExistingDatabase(pool);
+      const after = db.runScript("db-inspect.mjs");
+      expect(JSON.parse(db.runScript("db-inspect.mjs", ["--json"]).output).leftovers).toEqual(expected);
+      expect(after.output).toContain("LEFT FROM OLDER VERSIONS (not used by the app; kept until a later clean-up)");
+      expect(after.output).toContain("  - table sessions (2 row(s))");
+
+      // A database built from nothing has none.
+      await db.buildFromEmpty(pool);
+      expect(JSON.parse(db.runScript("db-inspect.mjs", ["--json"]).output).leftovers).toEqual([]);
     });
 
     it("the report cannot write, even if it tried", async () => {

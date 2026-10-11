@@ -15,7 +15,11 @@
 -- Changes : `created_at` and `is_active` become NOT NULL with a default;
 --           account emails are stored trimmed and in lower case.
 -- Backfills: see each section.
--- Drops   : nothing.
+-- Drops   : nothing. Tables, columns and indexes left over from older versions
+--           of the app (`sessions`, `feedback.page`, `oem_fault_codes`, the
+--           old `users_email_unique` index and so on) are not touched here.
+--           They stay exactly as they are until a later clean-up migration,
+--           written after this release has run in production.
 -- Data loss: none. Text values are kept exactly as they are next to their
 --           typed copies.
 -- Locks   : each ALTER/CREATE INDEX briefly locks one table. These tables are
@@ -23,7 +27,8 @@
 --           On a table of millions of rows the indexes would be built with
 --           CREATE INDEX CONCURRENTLY instead.
 -- Deploy order: run this BEFORE the new application code goes live. The old
---           code is unaffected by it.
+--           code is unaffected by it, so the application can be rolled back to
+--           the previous version afterwards without changing the database.
 -- Atomic  : the whole file runs as one transaction. If any statement fails,
 --           nothing in this file is applied.
 
@@ -299,7 +304,7 @@ END $$;
 -- Two versions of the app disagreed: one wrote "page", the other "page_url".
 -- "page_url" is the one in use and is now the only one the app knows.
 -- Backfill: copy any value that exists only in the old "page" column.
--- The old column itself is removed in the next migration.
+-- The old column is left in place, with its values, for a later clean-up.
 
 DO $$
 BEGIN

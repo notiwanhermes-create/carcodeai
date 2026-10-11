@@ -20,6 +20,8 @@ const asJson = process.argv.includes("--json");
 
 const APP_TABLES = ["users", "email_verification_tokens", "garage_vehicles", "maintenance_records", "rate_limits", "feedback"];
 const LEGACY_TABLES = ["sessions", "auth_pending", "auth_tokens", "feedback_auto_reply_log", "oem_fault_codes", "legacy_oem_fault_codes_archive"];
+/** Indexes older versions created that the current ones replace. */
+const LEGACY_INDEXES = ["users_email_unique", "users_google_id_unique"];
 const OEM_SEED = "UPPER(BTRIM(make)) = 'BMW' AND UPPER(BTRIM(code)) IN ('480A12', '480A0C', '480A11', '481A01')";
 
 // The same patterns the converge_and_expand migration uses.
@@ -159,6 +161,7 @@ async function main() {
         total: await count(`feedback`),
         hasPageColumn: hasPage,
         hasPageUrlColumn: hasPageUrl,
+        valuesInOldPageColumn: hasPage ? await count(`feedback WHERE page IS NOT NULL`) : 0,
         valueOnlyInOldPageColumn: hasPage ? await count(`feedback WHERE page IS NOT NULL ${hasPageUrl ? "AND page_url IS NULL" : ""}`) : 0,
         bothColumnsWithDifferentValues: hasPage && hasPageUrl ? await count(`feedback WHERE page IS NOT NULL AND page_url IS NOT NULL AND page <> page_url`) : 0,
       };
@@ -187,14 +190,21 @@ async function main() {
     if (checks.users?.emailsSharedByMoreThanOneAccount) blockers.push(`${checks.users.emailsSharedByMoreThanOneAccount} email address(es) are used by more than one account: the migration will stop until this is resolved.`);
     if (checks.users?.googleIdsSharedByMoreThanOneAccount) blockers.push(`${checks.users.googleIdsSharedByMoreThanOneAccount} Google identity(ies) are linked to more than one account: the migration will stop until this is resolved.`);
     const notes = [];
-    if (checks.oem_fault_codes?.rowsTheAppDidNotCreate) notes.push(`oem_fault_codes holds ${checks.oem_fault_codes.rowsTheAppDidNotCreate} row(s) the app did not create: it will be kept and renamed, not dropped.`);
-    if (checks.feedback?.bothColumnsWithDifferentValues) notes.push(`${checks.feedback.bothColumnsWithDifferentValues} feedback row(s) have different values in "page" and "page_url": both values will be kept, joined with " | ".`);
+    if (checks.oem_fault_codes?.rowsTheAppDidNotCreate) notes.push(`oem_fault_codes holds ${checks.oem_fault_codes.rowsTheAppDidNotCreate} row(s) the app did not create: a clean-up must keep them, not drop the table.`);
+    if (checks.feedback?.bothColumnsWithDifferentValues) notes.push(`${checks.feedback.bothColumnsWithDifferentValues} feedback row(s) have different values in "page" and "page_url": the app shows "page_url"; the "page" value stays in the database.`);
     if (checks.maintenance_records?.orphanedFromVehicle) notes.push(`${checks.maintenance_records.orphanedFromVehicle} service record(s) point at a vehicle that no longer exists.`);
     if (checks.maintenance_records?.ownerDiffersFromVehicleOwner) notes.push(`${checks.maintenance_records.ownerDiffersFromVehicleOwner} service record(s) belong to a different account than their vehicle.`);
     const unknown = report.tables.filter((t) => t.kind === "unknown").map((t) => t.name);
     if (unknown.length) notes.push(`Tables the app does not know about: ${unknown.join(", ")}. They are left untouched.`);
     report.blockers = blockers;
     report.notes = notes;
+
+    // ── left over from older versions of the app (nothing here is used any more) ──
+    const leftovers = report.tables.filter((t) => t.kind === "legacy").map((t) => `table ${t.name} (${t.rows} row(s))`);
+    if (checks.feedback?.hasPageColumn) leftovers.push(`column feedback.page (${checks.feedback.valuesInOldPageColumn} value(s))`);
+    const oldIndexes = (await rows(`SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND indexname = ANY($1) ORDER BY 1`, [LEGACY_INDEXES])).map((r) => r.indexname);
+    for (const name of oldIndexes) leftovers.push(`index ${name}`);
+    report.leftovers = leftovers;
   } finally {
     await client.query("ROLLBACK").catch(() => {});
     await client.end();
@@ -231,6 +241,10 @@ async function main() {
   line(`NEEDS A DECISION BEFORE MIGRATING`);
   if (report.blockers.length === 0) line(`  nothing`);
   for (const b of report.blockers) line(`  - ${b}`);
+  line();
+  line(`LEFT FROM OLDER VERSIONS (not used by the app; kept until a later clean-up)`);
+  if (report.leftovers.length === 0) line(`  nothing`);
+  for (const l of report.leftovers) line(`  - ${l}`);
   line();
   line(`WORTH KNOWING`);
   if (report.notes.length === 0) line(`  nothing`);

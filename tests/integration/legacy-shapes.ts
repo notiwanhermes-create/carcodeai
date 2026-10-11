@@ -144,7 +144,8 @@ export const OEM_SEED_ROWS = `
 
 /**
  * Extra tables that exist in a production database of the Phase 2C era on top
- * of the baseline migration: the ones later code stopped creating.
+ * of what that version's own start-up code creates: the ones later code stopped
+ * creating.
  */
 export const PHASE_2C_EXTRAS = `
   CREATE TABLE feedback_auto_reply_log (
@@ -314,3 +315,52 @@ export const PREVIOUS_VERSION_STARTUP_SQL = `
   );
   ALTER TABLE feedback ADD COLUMN IF NOT EXISTS page_url TEXT;
 `;
+
+/**
+ * What the previous version of the app (Phase 2C, the one a rollback returns
+ * to) reads and writes through Prisma: every column of every model in its
+ * `prisma/schema.prisma`, with the column type it expects, and the columns it
+ * always supplies when it creates a row (the required fields of the model).
+ * Copied from that file as it stood at commit e79758c.
+ *
+ * Used to prove that this release's migrations leave all of it in place.
+ */
+export const PHASE_2C_PRISMA_MODELS: Record<string, { columns: Record<string, string>; alwaysSupplied: string[] }> = {
+  users: {
+    columns: {
+      id: "text", email: "text", password_hash: "text", google_id: "text", first_name: "text", last_name: "text", profile_image: "text",
+      created_at: "timestamp with time zone", email_verified: "timestamp with time zone", session_version: "integer", legacy_unverified: "boolean",
+    },
+    alwaysSupplied: ["id", "created_at", "session_version", "legacy_unverified"],
+  },
+  email_verification_tokens: {
+    columns: { token_hash: "text", user_id: "text", expires_at: "timestamp with time zone", created_at: "timestamp with time zone" },
+    alwaysSupplied: ["token_hash", "user_id", "expires_at", "created_at"],
+  },
+  sessions: {
+    columns: { sid: "text", user_id: "text", expires_at: "timestamp with time zone", created_at: "timestamp with time zone" },
+    alwaysSupplied: ["sid", "user_id", "expires_at", "created_at"],
+  },
+  garage_vehicles: {
+    columns: {
+      id: "text", user_id: "text", year: "text", make: "text", model: "text", engine: "text", vin: "text", nickname: "text",
+      is_active: "boolean", created_at: "timestamp with time zone",
+    },
+    alwaysSupplied: ["id", "user_id", "year", "make", "model", "is_active", "created_at"],
+  },
+  maintenance_records: {
+    columns: {
+      id: "text", user_id: "text", vehicle_id: "text", type: "text", date: "text", mileage: "text", notes: "text", cost: "text",
+      created_at: "timestamp with time zone",
+    },
+    alwaysSupplied: ["id", "user_id", "vehicle_id", "type", "date", "created_at"],
+  },
+  rate_limits: {
+    columns: { key: "text", window_start: "timestamp with time zone", count: "integer" },
+    alwaysSupplied: ["key", "window_start", "count"],
+  },
+  feedback: {
+    columns: { id: "integer", name: "text", email: "text", rating: "integer", message: "text", page: "text", created_at: "timestamp with time zone" },
+    alwaysSupplied: ["message", "created_at"],
+  },
+};

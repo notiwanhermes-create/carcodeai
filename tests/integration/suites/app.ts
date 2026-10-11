@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vite
 import { NextRequest } from "next/server";
 import type { Pool } from "pg";
 import * as db from "../db";
+import * as legacy from "../legacy-shapes";
 
 type SessionUser = { id: string; email: string | null };
 
@@ -53,6 +54,7 @@ export function appSuite() {
         register: await import("../../../app/api/account/register/route"),
         resend: await import("../../../app/api/account/resend-verification/route"),
         signIn: await import("../../../app/lib/password-sign-in"),
+        accounts: await import("../../../app/lib/account-store"),
         guard: await import("../../../app/lib/diagnose-guard"),
         tickets: await import("../../../app/lib/diagnosis-ticket"),
         limits: await import("../../../app/lib/rate-limit"),
@@ -416,6 +418,68 @@ export function appSuite() {
       expect(await db.tableNames(pool)).toEqual(["email_verification_tokens", "feedback", "garage_vehicles", "maintenance_records", "rate_limits", "users"]);
       // And it was all done through one client.
       expect((globalThis as { prisma?: unknown }).prisma).toBe(app.prisma);
+    });
+
+    it("works on a production-shaped database that still holds what older versions left behind", async () => {
+      // Production as the previous version built it, with data, then this release's migrations.
+      await db.emptyDatabase(pool);
+      await pool.query(legacy.PREVIOUS_VERSION_STARTUP_SQL);
+      await pool.query(legacy.PHASE_2C_EXTRAS);
+      await pool.query(legacy.OEM_SEED_ROWS);
+      await pool.query(legacy.SAMPLE_ACCOUNTS);
+      await pool.query(legacy.SAMPLE_GARAGE);
+      await pool.query(legacy.SAMPLE_COSTS);
+      await pool.query(legacy.SAMPLE_SESSIONS);
+      await pool.query(legacy.SAMPLE_FEEDBACK);
+      await pool.query(legacy.SAMPLE_PHASE_1_ROWS);
+      // Phase 1 classified the accounts that existed then.
+      await pool.query(`
+        UPDATE users SET legacy_unverified = TRUE WHERE password_hash IS NOT NULL;
+        UPDATE users SET email_verified = COALESCE(created_at, NOW()) WHERE google_id IS NOT NULL AND password_hash IS NULL;
+      `);
+      await db.upgradeExistingDatabase(pool);
+      const structure = await db.schemaSnapshot(pool);
+      const leftBehind = await db.leftovers(pool);
+      expect(Object.keys(leftBehind.tables).sort()).toEqual(["feedback_auto_reply_log", "oem_fault_codes", "sessions"]);
+
+      const app = await startApp();
+
+      // An existing Google account signs in as before.
+      const viaGoogle = await app.accounts.resolveGoogleAccount({ googleId: "g-1001", email: "google.user@example.test", emailVerified: true, picture: null, givenName: null, familyName: null });
+      expect(viaGoogle).toMatchObject({ ok: true, action: "sign_in", user: { id: "u-google", email: "google.user@example.test" } });
+      // An account whose address was stored in mixed case can now be found by it.
+      expect((await app.prisma.user.findUnique({ where: { email: "both.user@example.test" }, select: { id: true, passwordHash: true } }))).toEqual({ id: "u-both", passwordHash: "HASH-BOTH" });
+      expect(await app.signIn.signInWithPassword({ email: "Both.User@Example.TEST", password: "not-the-password", verifyToken: "", ipKey: "ip" })).toEqual({ ok: false, code: "invalid_credentials" });
+
+      // The garage and service history that were there before are all shown, as typed.
+      signedIn = { id: "u-password", email: "pw.user@example.test" };
+      const vehicles = (await (await app.garage.GET()).json()).vehicles as Array<{ id: string; year: string }>;
+      expect(vehicles.map((v) => v.id).sort()).toEqual(["v-accord", "v-camry"]);
+      expect(vehicles.find((v) => v.id === "v-accord")?.year).toBe(" 2003 ");
+      const history = (await (await app.maintenance.GET(request("/api/maintenance"))).json()).records as Array<{ id: string; odometer?: string; cost?: string }>;
+      expect(history.map((r) => r.id).sort()).toEqual(["m-clean", "m-commas", "m-miles"]);
+      expect(history.find((r) => r.id === "m-commas")).toMatchObject({ odometer: "121,500 km", cost: "$1,250.50" });
+
+      // New writes work with the old column and tables still present.
+      expect((await app.maintenance.POST(request("/api/maintenance", "POST", { vehicleId: "v-camry", date: "2026-10-11", serviceType: "Inspection", odometer: "122,000 km" }))).status).toBe(200);
+      expect((await app.feedback.POST(request("/api/feedback", "POST", { message: "After the first deploy", pageUrl: "https://www.carcodeai.com/dashboard" }))).status).toBe(200);
+      expect(await one(`SELECT page, page_url FROM feedback WHERE message = 'After the first deploy'`)).toEqual({ page: null, page_url: "https://www.carcodeai.com/dashboard" });
+      // The admin view shows the entry whose address was only in the old column.
+      const listed = await app.adminFeedbackLib.getFeedbackRows();
+      expect(listed).toHaveLength(5);
+      expect(listed.find((r) => r.message === "Written by the first version")?.page_url).toBe("/diagnose");
+
+      expect(await app.guard.consumeDiagnosisQuota({ ipKey: "abc", userId: null })).toEqual({ allowed: true });
+      expect((await app.garageItem.DELETE(request("/api/garage/v-camry", "DELETE"), withId("v-camry"))).status).toBe(200);
+      expect(await count(`maintenance_records WHERE vehicle_id = 'v-camry'`)).toBe(0);
+
+      // The app touched nothing that older versions left behind, and changed no structure.
+      const now = await db.leftovers(pool);
+      expect(now.tables).toEqual(leftBehind.tables);
+      expect(now.indexes).toEqual(leftBehind.indexes);
+      // The old feedback column keeps its values; the app wrote nothing into it for the new entry.
+      expect(now.columns["feedback.page"]).toEqual([...leftBehind.columns["feedback.page"], [5, null]]);
+      expect(await db.schemaSnapshot(pool)).toEqual(structure);
     });
 
     /* ───────────── diagnosis allowance and follow-ups ───────────── */

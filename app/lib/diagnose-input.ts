@@ -21,6 +21,7 @@ export const DIAGNOSE_LIMITS = {
   followUps: 6,
   followUpQuestion: 240,
   followUpAnswer: 240,
+  diagnosisToken: 600,
 } as const;
 
 /** An answer the user gave to a follow-up question from an earlier diagnosis. */
@@ -38,6 +39,8 @@ export type DiagnoseInput = {
   vin: string;
   mileage: { value: number; unit: "km" | "mi" } | null;
   followUps: FollowUpAnswer[];
+  /** The ticket issued with the diagnosis these follow-up answers belong to, or "". Checked by the route. */
+  diagnosisToken: string;
 };
 
 export type DiagnoseParseResult =
@@ -194,5 +197,14 @@ export function parseDiagnoseBody(raw: unknown, now: Date = new Date()): Diagnos
   const followUps = parseFollowUps(body);
   if (!followUps.ok) return { ok: false, error: followUps.error, field: "followUps" };
 
-  return { ok: true, value: { year, make, model, engine, code, symptoms, lang, vin, mileage: mileage.value, followUps: followUps.value } };
+  const tokenRaw = body.diagnosisToken;
+  if (tokenRaw !== undefined && tokenRaw !== null && (typeof tokenRaw !== "string" || tokenRaw.length > DIAGNOSE_LIMITS.diagnosisToken)) {
+    return { ok: false, error: "Invalid request.", field: "diagnosisToken" };
+  }
+  const diagnosisToken = typeof tokenRaw === "string" ? tokenRaw.trim() : "";
+
+  return {
+    ok: true,
+    value: { year, make, model, engine, code, symptoms, lang, vin, mileage: mileage.value, followUps: followUps.value, diagnosisToken },
+  };
 }

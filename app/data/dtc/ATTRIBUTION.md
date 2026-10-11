@@ -73,8 +73,8 @@ about (`trust` on every lookup result):
 | Trust | Where it comes from | Shown to the user as | Given to the AI model as |
 |---|---|---|---|
 | `verified` | a licensed source | "Verified definition" | `definition_status: "verified"`, may be relied on |
-| `local_reference` | a `curated` entry | "Commonly published title for this code. Not yet checked against the official standard" | `definition_status: "local_reference"`, a working meaning that must not be called official or verified |
-| `none` | nothing on file | "Definition not verified yet" | nothing: the code number is withheld |
+| `local_reference` | a `curated` entry | "Commonly published title for this code. Not yet checked against the official standard" | Only together with symptoms: `definition_status: "local_reference"` plus a note that it is not verified and not authoritative. On its own it does not start a diagnosis |
+| `none` | nothing on file | "Definition not verified yet" | nothing: the code number is left out |
 
 Current contents: 8 hand-entered codes (P0011, P0016, P0171, P0300, P0420,
 P0455, P0A80, U0100). They were written from the widely published titles of

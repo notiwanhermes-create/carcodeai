@@ -58,6 +58,8 @@ type DiagnosePayload = {
   symptoms: string;
   lang: LangCode;
   followUps?: { question: string; answer: string }[];
+  /** The ticket issued with the diagnosis being updated. The server checks it and counts the updates. */
+  diagnosisToken?: string;
 };
 
 type MaintenanceRecord = {
@@ -436,10 +438,42 @@ const YES_NO_ANSWERS = [
   { id: "not_sure", key: "answerNotSure", text: "Not sure" },
 ] as const;
 
+/**
+ * The explanation shown under the driving guidance. Normally the model's own
+ * sentence. When the server's safety check raised the level, the model's
+ * sentence no longer applies, so a fixed sentence naming the cause is shown.
+ */
+function driveGuidanceReason(diagnosis: Diagnosis, lang: LangCode): string {
+  const { reason, adjusted, level } = diagnosis.drive_guidance;
+  if (!adjusted) return reason;
+  const cause = diagnosis.causes.find((c) => c.id === adjusted.cause_id)?.title || "";
+  const key = level === "stop" ? "driveAdjustedStop" : level === "caution" ? "driveAdjustedCaution" : "driveAdjustedUnknown";
+  return tr(key, lang).replace("{cause}", cause);
+}
+
+/** Codes the user supplied that could not be identified, and so played no part in the diagnosis. */
+function unidentifiedCodeCount(codes: DtcResult[] | undefined): number {
+  return (codes || []).filter((c) => c.trust === "none" && c.status !== "invalid").length;
+}
+
+/**
+ * The limits shown with a diagnosis: the model's own notes, plus one in the
+ * app's own plain words when a supplied code could not be used.
+ */
+function diagnosisLimitations(result: DiagnoseOk, lang: LangCode): string[] {
+  const notes = [...(result.diagnosis.limitations || [])];
+  const unidentified = unidentifiedCodeCount(result.codes);
+  if (unidentified > 0) notes.push(tr(unidentified === 1 ? "unidentifiedCodeNote" : "unidentifiedCodesNote", lang));
+  return notes;
+}
+
 /** The safety level shown for the whole diagnosis. Read from the structured result, never inferred. */
-function DriveGuidanceBanner({ guidance, theme, lang }: { guidance: Diagnosis["drive_guidance"]; theme: "dark" | "light"; lang: LangCode }) {
+function DriveGuidanceBanner({ diagnosis, theme, lang }: { diagnosis: Diagnosis; theme: "dark" | "light"; lang: LangCode }) {
   const t = (dark: string, light: string) => (theme === "dark" ? dark : light);
+  const guidance = diagnosis.drive_guidance;
+  // Anything unrecognised is shown as "could not be assessed", never as fine to drive.
   const level: Urgency = guidance.level in DRIVE_KEY ? guidance.level : "unknown";
+  const reason = driveGuidanceReason(diagnosis, lang);
   const tone = {
     stop: { box: t("bg-red-500/15 border border-red-500/40", "bg-red-50 border border-red-200"), title: t("text-red-200", "text-red-800"), body: t("text-red-200/90", "text-red-700") },
     caution: { box: t("bg-amber-500/15 border border-amber-500/30", "bg-amber-50 border border-amber-200"), title: t("text-amber-200", "text-amber-800"), body: t("text-amber-200/90", "text-amber-700") },
@@ -447,10 +481,10 @@ function DriveGuidanceBanner({ guidance, theme, lang }: { guidance: Diagnosis["d
     unknown: { box: t("glass-card", "bg-white border border-slate-200 shadow-sm"), title: t("text-slate-100", "text-slate-900"), body: t("text-slate-300", "text-slate-600") },
   }[level];
   return (
-    <div data-drive-guidance={level} className={cn("rounded-3xl p-5", tone.box)}>
+    <div data-drive-guidance={level} data-drive-adjusted={guidance.adjusted ? "yes" : "no"} className={cn("rounded-3xl p-5", tone.box)}>
       <div className={cn("text-[11px] font-medium uppercase tracking-wide", tone.body)}>{tr("driveGuidance", lang)}</div>
       <div className={cn("mt-1 text-sm font-semibold", tone.title)}>{tr(DRIVE_KEY[level], lang)}</div>
-      {guidance.reason && <p className={cn("mt-1 text-sm", tone.body)}>{guidance.reason}</p>}
+      {reason && <p data-drive-reason className={cn("mt-1 text-sm", tone.body)}>{reason}</p>}
       <p className={cn("mt-2 text-[11px] leading-relaxed", tone.body)}>{tr("driveGuidanceNote", lang)}</p>
     </div>
   );
@@ -542,7 +576,9 @@ function LikelyCausesResults({
   // Already ranked by the server from the model's own ranking. The page keeps that order.
   const causes = diagnosis.causes;
   const followUps = diagnosis.follow_up_questions || [];
-  const limitations = diagnosis.limitations || [];
+  const limitations = diagnosisLimitations(result, lang);
+  // How many more times this diagnosis can be updated. The server decides and enforces it.
+  const updatesLeft = result.followUp?.remaining ?? 0;
 
   const [openCauseId, setOpenCauseId] = useState<string | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -641,7 +677,7 @@ function LikelyCausesResults({
       addWrapped(session.issueText, 10, false, 10);
 
       if (diagnosis.summary) addWrapped(diagnosis.summary, 10, false, 6);
-      addWrapped(`${tr("driveGuidance", "en")}: ${tr(DRIVE_KEY[diagnosis.drive_guidance.level] || "driveUnknown", "en")}${diagnosis.drive_guidance.reason ? `. ${diagnosis.drive_guidance.reason}` : ""}`, 10, false, 10);
+      addWrapped(`${tr("driveGuidance", "en")}: ${tr(DRIVE_KEY[diagnosis.drive_guidance.level] || "driveUnknown", "en")}${driveGuidanceReason(diagnosis, "en") ? `. ${driveGuidanceReason(diagnosis, "en")}` : ""}`, 10, false, 10);
 
       if (session.confirmedFix) {
         addWrapped("Confirmed fix (from guided flow):", 11, true, 2);
@@ -779,12 +815,18 @@ function LikelyCausesResults({
         </div>
       </div>
 
-      <DriveGuidanceBanner guidance={diagnosis.drive_guidance} theme={theme} lang={lang} />
+      <DriveGuidanceBanner diagnosis={diagnosis} theme={theme} lang={lang} />
 
-      {followUps.length > 0 && (
-        <div id="refine-diagnosis" className={cn("rounded-3xl p-6", t("glass-card", "bg-white border border-slate-200 shadow-sm"))}>
+      {followUps.length > 0 && updatesLeft === 0 && result.refined && (
+        <div data-updates-left="0" className={cn("rounded-3xl p-4 text-xs", t("glass-card text-slate-400", "bg-white border border-slate-200 shadow-sm text-slate-500"))}>
+          {tr("noUpdatesLeft", lang)}
+        </div>
+      )}
+
+      {followUps.length > 0 && updatesLeft > 0 && (
+        <div id="refine-diagnosis" data-updates-left={updatesLeft} className={cn("rounded-3xl p-6", t("glass-card", "bg-white border border-slate-200 shadow-sm"))}>
           <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("refineDiagnosis", lang)}</div>
-          <div className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>{tr("refineHint", lang)}</div>
+          <div className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>{tr("refineHint", lang).replace("{count}", String(updatesLeft))}</div>
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             {followUps.map((fq) => (
               <div key={fq.id} data-follow-up={fq.answer_type} className={cn("rounded-2xl p-4", subCard)}>
@@ -1462,13 +1504,16 @@ export default function Home() {
    * Ask for an updated diagnosis that takes the user's follow-up answers into
    * account. The ranking always comes from the server; nothing is re-ranked in
    * the browser. If the update fails, the current diagnosis stays on screen.
+   * An update does not use the daily allowance: it presents the ticket that
+   * came with the diagnosis, and the server allows a fixed number per diagnosis.
    */
   async function refineDiagnosis(newAnswers: { question: string; answer: string }[]) {
-    if (!lastRequest || refining || newAnswers.length === 0) return;
+    const ticket = result && "diagnosis" in result ? result.followUp : null;
+    if (!lastRequest || refining || newAnswers.length === 0 || !ticket || ticket.remaining <= 0) return;
     const followUps = [...lastFollowUps, ...newAnswers].slice(-6);
     setRefining(true);
     setRefineError(null);
-    const outcome = await postDiagnosis({ ...lastRequest, lang, followUps });
+    const outcome = await postDiagnosis({ ...lastRequest, lang, followUps, diagnosisToken: ticket.token });
     if (outcome.ok) {
       setResult(outcome.data);
       setLastFollowUps(followUps);
@@ -1491,7 +1536,7 @@ export default function Home() {
     } else if (result && "diagnosis" in result) {
       const d = result.diagnosis;
       if (d.summary) lines.push(d.summary);
-      lines.push(`${tr("driveGuidance", lang)}: ${tr(DRIVE_KEY[d.drive_guidance.level] || "driveUnknown", lang)}${d.drive_guidance.reason ? `. ${d.drive_guidance.reason}` : ""}`, "");
+      lines.push(`${tr("driveGuidance", lang)}: ${tr(DRIVE_KEY[d.drive_guidance.level] || "driveUnknown", lang)}${driveGuidanceReason(d, lang) ? `. ${driveGuidanceReason(d, lang)}` : ""}`, "");
       d.causes.forEach((c) => {
         lines.push(`${c.rank}. ${c.title} [${tr(LIKELIHOOD_KEY[c.likelihood] || "likelihoodPossible", lang)}] [${tr(URGENCY_KEY[c.urgency] || "urgencyUnknown", lang)}]`);
         if (c.explanation) lines.push(`  ${c.explanation}`);
@@ -1500,7 +1545,8 @@ export default function Home() {
         if (c.recommended_action) lines.push(`  ${tr("recommendedAction", lang)}: ${c.recommended_action}`);
         lines.push("");
       });
-      if (d.limitations.length) lines.push(`${tr("diagnosisLimits", lang)}: ${d.limitations.join("; ")}`, "");
+      const limits = diagnosisLimitations(result, lang);
+      if (limits.length) lines.push(`${tr("diagnosisLimits", lang)}: ${limits.join("; ")}`, "");
       lines.push(tr("hypothesisNote", lang));
     }
     return lines.join("\n");

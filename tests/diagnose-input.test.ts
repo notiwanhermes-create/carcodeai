@@ -94,7 +94,16 @@ describe("parseDiagnoseBody", () => {
 describe("optional diagnosis context", () => {
   it("defaults to nothing extra", () => {
     const r = parse({});
-    expect(r.ok && r.value).toMatchObject({ vin: "", mileage: null, followUps: [] });
+    expect(r.ok && r.value).toMatchObject({ vin: "", mileage: null, followUps: [], diagnosisToken: "" });
+  });
+
+  it("accepts a diagnosis ticket as text and rejects anything else", () => {
+    const ok = parse({ diagnosisToken: "  abc.def  " });
+    expect(ok.ok && ok.value.diagnosisToken).toBe("abc.def");
+    for (const diagnosisToken of [123, { a: 1 }, ["x"], "x".repeat(DIAGNOSE_LIMITS.diagnosisToken + 1)]) {
+      const r = parse({ diagnosisToken });
+      expect(r.ok, JSON.stringify(diagnosisToken).slice(0, 40)).toBe(false);
+    }
   });
 
   it("accepts a well-formed VIN and quietly ignores a malformed one", () => {

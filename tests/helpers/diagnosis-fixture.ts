@@ -21,13 +21,18 @@ export function modelCause(overrides: Partial<Cause> = {}): Cause {
   };
 }
 
+/** A limitation note as the model returns it. */
+export function limitation(text: string, topic: ModelDiagnosis["limitations"][number]["topic"] = "evidence") {
+  return { text, topic };
+}
+
 export function modelDiagnosis(overrides: Partial<ModelDiagnosis> = {}): ModelDiagnosis {
   return {
     summary: "The most likely explanation is an ignition problem, but this is not confirmed.",
     drive_guidance: { level: "caution", reason: "A misfire can damage the catalytic converter if ignored." },
     causes: [modelCause()],
     follow_up_questions: [],
-    limitations: ["The vehicle has not been inspected."],
+    limitations: [limitation("The vehicle has not been inspected.")],
     ...overrides,
   };
 }

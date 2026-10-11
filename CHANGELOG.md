@@ -3,9 +3,10 @@
 ## Phase 2C — diagnosis quality — 2026-10-08
 
 Branch `fix/phase-2c-diagnosis-quality`, built on top of the Phase 2B branch.
-No database changes. One optional, development-only setting
-(`DIAGNOSE_LOG_CONTEXT`). `zod` is now a direct dependency (it was already
-installed as part of the OpenAI SDK).
+No database changes. New optional settings: `DIAGNOSE_FOLLOWUPS_PER_DIAGNOSIS`,
+`DIAGNOSE_TICKET_SECRET` and the development-only `DIAGNOSE_LOG_CONTEXT`.
+`zod` is now a direct dependency (it was already installed as part of the
+OpenAI SDK).
 
 - **Structured output:** the diagnosis is requested with OpenAI Structured
   Outputs (a strict JSON schema), not free text that the server then picked
@@ -20,14 +21,23 @@ installed as part of the OpenAI SDK).
 - **Driving guidance and urgency** come only from the structured result.
   "Unknown" is shown when the model cannot justify a level. Nothing is inferred
   from words such as "fire" or "leak".
-- **Unsupported code numbers are withheld from the AI model.** A code number
+- **Safety-consistency check:** the server compares the overall guidance with
+  the causes. A likely or very likely "stop" cause makes the overall level
+  "stop". If the model said "normal" but a cause says "stop" at any likelihood,
+  or a likely cause says "caution", the overall level becomes "caution". If the
+  urgency of a likely cause could not be judged, "normal" becomes "unknown".
+  The level is never lowered and "unknown" is never shown as safe.
+- **Unsupported code numbers are kept from the AI model.** A code number
   reaches the model only when a definition for it is on file. Otherwise the
-  model is told that a code with no available definition was supplied, and
-  nothing more, including when the user repeats the code in the symptoms box.
-  A code alone with no usable symptoms still makes no AI call.
+  model is told, in plain words, that an additional code could not be reliably
+  verified, and nothing more, including when the user repeats the code in the
+  symptoms box. The page tells the user the same thing in its own wording.
 - **Three levels of trust for a code:** verified, locally entered reference
   title, or unavailable. The 8 hand-entered titles are labelled as a commonly
   published title, to the user and to the model, and are never called verified.
+- **A code needs symptoms unless it is verified.** A hand-entered reference
+  code on its own shows its title and asks for symptoms, with no AI call. Only
+  a code with a verified definition can be diagnosed alone.
 - **Codes and symptoms are used together**, with vehicle details: year, make,
   model, engine, optional mileage, and details decoded from the saved VIN
   (trim, drive type, fuel, transmission, engine code, turbo). The VIN itself is
@@ -37,7 +47,12 @@ installed as part of the OpenAI SDK).
   user typed cannot change the structure of the request.
 - **Follow-up questions come from the diagnosis.** Answering them and pressing
   "Update diagnosis" asks the server again with the answers; nothing is
-  re-ranked in the browser. Each update counts as one diagnosis.
+  re-ranked in the browser.
+- **Allowance:** a new diagnosis uses one unit of the daily allowance and comes
+  with a signed ticket good for 2 updates. Updates do not use the allowance,
+  cannot be chained, and are refused without a genuine ticket for the same
+  vehicle, codes and symptoms. The guest default is now 5 new diagnoses a day
+  (was 20). All limits remain configurable.
 - **At most two AI calls per diagnosis:** the request, plus one retry only for
   a dropped connection, a timeout, a server error or an unreadable reply. The
   SDK's own hidden retries are switched off. Before this, one diagnosis could
@@ -54,7 +69,7 @@ installed as part of the OpenAI SDK).
   leftover debug logging.
 - **Languages:** the structure and identifiers are the same in all 7
   languages; only the text differs. New interface labels are translated.
-- Tests: 266 (was 146), including the 7 database-backed account tests.
+- Tests: 315 (was 146), including 8 database-backed tests (7 account tests and the follow-up counter).
 
 ## Phase 2B — trouble-code reliability — 2026-10-08
 

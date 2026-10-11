@@ -12,18 +12,21 @@
  *
  * Trust rule for codes (see dtc.ts): a code number is shown to the model only
  * when a definition for it is on file. For every other code the model is told
- * that a code was supplied, and nothing else. Its number is withheld, including
+ * that a code was supplied, and nothing else. Its number is left out, including
  * where the user repeated it in the symptoms box, so the model's own memory of
  * that code cannot quietly steer a diagnosis that is meant to rest on symptoms.
+ *
+ * Wording rule: nothing the model reads describes how the app handles a request
+ * ("withheld", "unsupported" and the like). It would repeat that to the user.
  *
  * This module is pure (no network, no database).
  */
 import { classifyCode, hasDefinitionOnFile, lookupCode, type DtcRegistry, type DtcResult } from "./dtc";
 import type { FollowUpAnswer, SupportedLang } from "./diagnose-input";
+import { CODE_PLACEHOLDER } from "./diagnosis-schema";
 import type { VinAttributes } from "./vin";
 
-/** What replaces a withheld code number in text the model sees. */
-export const WITHHELD = "[code withheld]";
+export { CODE_PLACEHOLDER };
 
 const LANGUAGE_NAMES: Record<SupportedLang, string> = {
   en: "English",
@@ -66,18 +69,18 @@ export function findCodesInText(text: string, vehicleModel = ""): string[] {
 export function redactCodes(text: string, withheld: readonly string[]): string {
   if (!text || withheld.length === 0) return text;
   const hidden = new Set(withheld.map((c) => c.toUpperCase()));
-  let out = text.replace(CODE_IN_TEXT, (match, letter: string, rest: string) => (hidden.has((letter + rest).toUpperCase()) ? WITHHELD : match));
+  let out = text.replace(CODE_IN_TEXT, (match, letter: string, rest: string) => (hidden.has((letter + rest).toUpperCase()) ? CODE_PLACEHOLDER : match));
   for (const code of hidden) {
     if (/^[PBCU][0-3][0-9A-F]{3}$/.test(code)) continue; // handled above
     if (!/^[A-Z0-9]{3,12}$/.test(code) || !/\d/.test(code)) continue; // not something to search for
-    out = out.replace(new RegExp(`(?<![A-Za-z0-9])${code}(?![A-Za-z0-9])`, "gi"), WITHHELD);
+    out = out.replace(new RegExp(`(?<![A-Za-z0-9])${code}(?![A-Za-z0-9])`, "gi"), CODE_PLACEHOLDER);
   }
   return out;
 }
 
 /** True when the text says something beyond a withheld code: at least two letters. */
 export function hasUsefulText(text: string): boolean {
-  const rest = text.split(WITHHELD).join(" ");
+  const rest = text.split(CODE_PLACEHOLDER).join(" ");
   return (rest.match(/\p{L}/gu) || []).length >= 2;
 }
 
@@ -137,7 +140,12 @@ export type TrustedCode = {
   scope: "standardized" | "manufacturer_specific";
   /** Present for manufacturer-specific definitions: the only make it applies to. */
   applies_to_make?: string;
+  /** Present for a local reference: a plain reminder of how little weight the title carries. */
+  note?: string;
 };
+
+/** Attached to every hand-entered title the model is shown. */
+export const LOCAL_REFERENCE_NOTE = "Reference title entered locally. It is not verified and not authoritative.";
 
 export type DiagnosisContext = {
   vehicle: {
@@ -149,10 +157,11 @@ export type DiagnosisContext = {
     decoded_from_vin?: VinAttributes;
   };
   trouble_codes: TrustedCode[];
-  unsupported_codes?: {
+  /** Codes the owner supplied that we cannot vouch for. Only their number is given, never which codes they are. */
+  unidentified_codes?: {
     count: number;
     manufacturer_specific: number;
-    notice: string;
+    note: string;
   };
   symptoms: string | null;
   follow_up_answers?: FollowUpAnswer[];
@@ -178,6 +187,7 @@ function toTrustedCode(r: DtcResult): TrustedCode {
     definition_status: r.trust === "verified" ? "verified" : "local_reference",
     scope: manufacturer ? "manufacturer_specific" : "standardized",
     ...(manufacturer && r.make ? { applies_to_make: r.make } : {}),
+    ...(r.trust === "verified" ? {} : { note: LOCAL_REFERENCE_NOTE }),
   };
 }
 
@@ -204,10 +214,13 @@ export function buildDiagnosisContext(input: ContextInput): DiagnosisContext {
 
   if (plan.unsupported.length > 0) {
     const count = plan.unsupported.length;
-    context.unsupported_codes = {
+    context.unidentified_codes = {
       count,
       manufacturer_specific: plan.unsupported.filter((r) => r.status === "manufacturer_unavailable").length,
-      notice: `The owner also supplied ${count} diagnostic trouble code${count === 1 ? "" : "s"} whose definition is unavailable. The number${count === 1 ? " is" : "s are"} withheld. Do not infer ${count === 1 ? "its" : "their"} meaning.`,
+      note:
+        count === 1
+          ? "An additional diagnostic trouble code was supplied, but its definition could not be reliably verified. Its identifier and meaning are intentionally not provided and must not be inferred."
+          : `${count} additional diagnostic trouble codes were supplied, but their definitions could not be reliably verified. Their identifiers and meanings are intentionally not provided and must not be inferred.`,
     };
   }
 
@@ -235,9 +248,9 @@ export function buildInstructions(lang: SupportedLang): string {
     "EVIDENCE",
     "- Weigh everything together: vehicle, trouble codes, symptoms and follow-up answers. Symptoms count even when codes are present.",
     '- "vehicle" is trusted. Do not invent facts about the vehicle (equipment, mileage, history, recalls) that are not given.',
-    '- "trouble_codes" are the only codes you know about. A definition with status "verified" may be relied on. One with status "local_reference" is a commonly published title that has not been verified: use it as the working meaning and never call it official or verified.',
+    '- "trouble_codes" are the only codes you know about. A definition with status "verified" may be relied on. One with status "local_reference" is only a commonly published title entered by hand: it is not verified and not authoritative. Treat it as a working assumption that may be wrong, give the symptoms at least as much weight, and never call it official or verified.',
     '- A manufacturer-specific definition applies only to the make in "applies_to_make". Never borrow a code meaning from another make.',
-    '- "unsupported_codes" means the owner supplied codes whose definitions are unavailable. Their numbers are withheld on purpose. Do not guess which codes they are, do not infer their meaning, and do not let them change the diagnosis.',
+    '- "unidentified_codes" means the owner supplied additional trouble codes whose definitions could not be reliably verified. Their identifiers and meanings are intentionally not provided. Do not guess which codes they are, do not infer their meaning, and do not let them change the diagnosis. Do not bring them up in the summary, causes or questions. If you note them at all, do it once, in "limitations", with topic "unidentified_code".',
     '- Never state or imply the definition of a trouble code that is not in "trouble_codes".',
     "",
     "DIAGNOSIS",

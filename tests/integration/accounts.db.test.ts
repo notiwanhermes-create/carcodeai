@@ -268,3 +268,63 @@ suite("accounts against a real (local) database", () => {
     expect((await register({ email: "a@b.test", password: "123" })).status).toBe(400);
   });
 });
+
+/**
+ * In production the follow-up count lives in the database, so that it holds
+ * across server instances. Kept in this file so it runs after the account
+ * tests rather than alongside them (they drop and recreate tables).
+ */
+suite("follow-up updates against a real (local) database", () => {
+  let pool: Pool;
+  const savedUrl = process.env.DATABASE_URL;
+  const openConnections: Array<() => Promise<unknown>> = [];
+
+  /** A fresh set of modules: what a different server instance would have, with nothing in memory. */
+  async function freshInstance() {
+    for (const close of openConnections.splice(0)) await close().catch(() => {});
+    vi.resetModules();
+    const db = await import("../../app/lib/db");
+    const prismaModule = await import("../../app/lib/prisma");
+    const guard = await import("../../app/lib/diagnose-guard");
+    const tickets = await import("../../app/lib/diagnosis-ticket");
+    openConnections.push(() => db.default.end(), () => prismaModule.default.$disconnect());
+    return { guard, tickets };
+  }
+
+  beforeAll(() => {
+    process.env.DATABASE_URL = TEST_DB;
+    pool = new Pool({ connectionString: TEST_DB });
+  });
+
+  afterEach(async () => {
+    for (const close of openConnections.splice(0)) await close().catch(() => {});
+  });
+
+  afterAll(async () => {
+    await pool.end();
+    if (savedUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = savedUrl;
+  });
+
+  it("counts updates per diagnosis in the database, and the count holds across server instances", async () => {
+    const first = await freshInstance();
+    const fingerprint = first.tickets.requestFingerprint({ year: "2015", make: "Toyota", model: "Camry", engine: "2.5L I4", code: "P0300", symptoms: "rough idle" });
+    const ticket = first.tickets.issueTicket(fingerprint)!.ticket;
+
+    expect(await first.guard.consumeFollowUp(ticket)).toMatchObject({ allowed: true, remaining: 1 });
+
+    // Another instance, with empty memory, sees the update already made.
+    const second = await freshInstance();
+    expect(await second.guard.consumeFollowUp(ticket)).toMatchObject({ allowed: true, remaining: 0 });
+    expect(await second.guard.consumeFollowUp(ticket)).toMatchObject({ allowed: false, status: 429, code: "followup_limit" });
+
+    // A different diagnosis has its own count.
+    const other = second.tickets.issueTicket(fingerprint)!.ticket;
+    expect(await second.guard.consumeFollowUp(other)).toMatchObject({ allowed: true, remaining: 1 });
+
+    // The count really is in the database: one row per diagnosis, pinned to the ticket.
+    const rows = (await pool.query("SELECT key, count FROM rate_limits WHERE key = ANY($1) ORDER BY key", [[`diag:followup:${ticket.id}`, `diag:followup:${other.id}`].sort()])).rows;
+    expect(rows.map((r) => Number(r.count)).sort()).toEqual([1, 3]);
+    expect(rows).toHaveLength(2);
+  });
+});

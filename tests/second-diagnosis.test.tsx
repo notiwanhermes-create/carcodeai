@@ -55,7 +55,7 @@ function response(overrides: Partial<Diagnosis> = {}, extra: Partial<DiagnoseOk>
   return {
     diagnosis: {
       summary: "Most likely an ignition problem, but this is not confirmed.",
-      drive_guidance: { level: "unknown", reason: "Not enough information to judge." },
+      drive_guidance: { level: "unknown", reason: "Not enough information to judge.", adjusted: null },
       causes: [cause(1, "Worn spark plugs", { likelihood: "very_likely" }), cause(2, "Vacuum leak", { likelihood: "possible" })],
       follow_up_questions: [],
       limitations: [],
@@ -63,11 +63,20 @@ function response(overrides: Partial<Diagnosis> = {}, extra: Partial<DiagnoseOk>
     },
     codes: [],
     refined: false,
+    followUp: { token: "ticket-1", remaining: 2 },
     ...extra,
   };
 }
 
-type Body = { code?: string; symptoms?: string; followUps?: Array<{ question: string; answer: string }>; vin?: string; mileage?: string; lang?: string };
+type Body = {
+  code?: string;
+  symptoms?: string;
+  followUps?: Array<{ question: string; answer: string }>;
+  diagnosisToken?: string;
+  vin?: string;
+  mileage?: string;
+  lang?: string;
+};
 
 describe("diagnosis screen", () => {
   let requests: Body[] = [];
@@ -244,7 +253,7 @@ describe("diagnosis screen", () => {
     reply = () => ({
       body: response({
         summary: "A coolant leak or misfire is possible, with smoke and fire mentioned.",
-        drive_guidance: { level: "unknown", reason: "Fire, smoke and coolant leak were mentioned but cannot be judged." },
+        drive_guidance: { level: "unknown", reason: "Fire, smoke and coolant leak were mentioned but cannot be judged.", adjusted: null },
         causes: [cause(1, "Coolant leak near the misfire", { urgency: "normal", explanation: "Smoke, fire, leak, coolant, misfire." })],
       }),
     });
@@ -260,7 +269,7 @@ describe("diagnosis screen", () => {
     reply = () => ({
       body: response({
         summary: "Possibly a minor issue.",
-        drive_guidance: { level: "stop", reason: "Brakes may not work." },
+        drive_guidance: { level: "stop", reason: "Brakes may not work.", adjusted: null },
         causes: [cause(1, "Soft brake pedal", { urgency: "stop" }), cause(2, "Worn pads", { urgency: "caution" }), cause(3, "Unknown issue", { urgency: "unknown" })],
       }),
     });
@@ -309,12 +318,13 @@ describe("diagnosis screen", () => {
     ];
     reply = (body) =>
       body.followUps?.length
-        ? { body: response({ causes: [cause(1, "Failing ignition coil", { likelihood: "very_likely" }), cause(2, "Worn spark plugs")], follow_up_questions: [] }, { refined: true }) }
+        ? { body: response({ causes: [cause(1, "Failing ignition coil", { likelihood: "very_likely" }), cause(2, "Worn spark plugs")], follow_up_questions: [] }, { refined: true, followUp: { token: "ticket-1", remaining: 1 } }) }
         : { body: response({ follow_up_questions: questions }) };
 
     submit({ code: "P0300", symptoms: "rough idle" });
     await screen.findByText("Is the check engine light flashing?");
     expect(Array.from(document.querySelectorAll("[data-follow-up]")).map((e) => e.getAttribute("data-follow-up"))).toEqual(["yes_no", "single_choice", "free_text"]);
+    expect(screen.getByText(/Updates left for this diagnosis: 2\./)).toBeTruthy();
     expect(screen.getByText("A flashing light means an active misfire.")).toBeTruthy();
 
     // Nothing is sent, and nothing moves, until the user asks for an update.
@@ -334,7 +344,8 @@ describe("diagnosis screen", () => {
 
     expect(await screen.findByText("Failing ignition coil")).toBeTruthy();
     expect(requests).toHaveLength(2);
-    expect(requests[1]).toMatchObject({ code: "P0300", symptoms: "rough idle", year: "2015", make: "Toyota" });
+    expect(requests[1]).toMatchObject({ code: "P0300", symptoms: "rough idle", year: "2015", make: "Toyota", diagnosisToken: "ticket-1" });
+    expect(requests[0].diagnosisToken).toBeUndefined();
     expect(requests[1].followUps).toEqual([
       { question: "Is the check engine light flashing?", answer: "Yes" },
       { question: "When is it worst?", answer: "Cold start" },
@@ -361,6 +372,136 @@ describe("diagnosis screen", () => {
     expect(requests[1].followUps).toEqual([{ question: "Is the light flashing?", answer: "No" }]);
   });
 
+  it("offers no update once a diagnosis has used its updates, or when updates are unavailable", async () => {
+    const question: Diagnosis["follow_up_questions"] = [{ id: "q1", question: "Is the light flashing?", answer_type: "yes_no", options: [], why_it_matters: "" }];
+    render(<Home />);
+    await openDiagnose();
+
+    // Updates used up: the questions are not offered again, and a short note says why.
+    reply = () => ({ body: response({ follow_up_questions: question }, { refined: true, followUp: { token: "ticket-1", remaining: 0 } }) });
+    submit({ code: "P0300", symptoms: "rough idle" });
+    await screen.findByText("Worn spark plugs");
+    expect(document.querySelector("#refine-diagnosis")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Update diagnosis" })).toBeNull();
+    expect(screen.getByText("This diagnosis has been updated as many times as it can be. Start a new search to continue.")).toBeTruthy();
+
+    // No ticket at all (updates switched off): nothing is offered, and nothing is sent.
+    fireEvent.click(screen.getByRole("button", { name: /Search New Issue/i }));
+    reply = () => ({ body: response({ follow_up_questions: question }, { followUp: null }) });
+    submit({ code: "P0300", symptoms: "rough idle" });
+    await screen.findByText("Worn spark plugs");
+    expect(document.querySelector("#refine-diagnosis")).toBeNull();
+    expect(requests).toHaveLength(2);
+  });
+
+  it("shows the number of updates left going down", async () => {
+    const question: Diagnosis["follow_up_questions"] = [{ id: "q1", question: "Is the light flashing?", answer_type: "yes_no", options: [], why_it_matters: "" }];
+    render(<Home />);
+    await openDiagnose();
+    reply = (body) => ({
+      body: response({ follow_up_questions: question }, body.followUps?.length ? { refined: true, followUp: { token: "ticket-1", remaining: 1 } } : {}),
+    });
+    submit({ code: "P0300", symptoms: "rough idle" });
+    await screen.findByText(/Updates left for this diagnosis: 2\./);
+    fireEvent.click(screen.getByRole("button", { name: "Yes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Update diagnosis" }));
+    expect(await screen.findByText(/Updates left for this diagnosis: 1\./)).toBeTruthy();
+  });
+
+  it("shows the reconciled driving guidance with the app's own sentence, not the model's contradicted one", async () => {
+    render(<Home />);
+    await openDiagnose();
+    reply = () => ({
+      body: response({
+        drive_guidance: { level: "stop", reason: "", adjusted: { from: "normal", cause_id: "c1" } },
+        causes: [cause(1, "Brake fluid leak", { likelihood: "likely", urgency: "stop" }), cause(2, "Worn pads", { likelihood: "possible", urgency: "caution" })],
+      }),
+    });
+    submit({ symptoms: "brake pedal feels soft" });
+    await screen.findByText("Brake fluid leak");
+
+    const banner = document.querySelector("[data-drive-guidance]") as HTMLElement;
+    expect(banner.getAttribute("data-drive-guidance")).toBe("stop");
+    expect(banner.getAttribute("data-drive-adjusted")).toBe("yes");
+    expect(banner.textContent).toContain("Do not drive until it has been inspected");
+    expect(banner.querySelector("[data-drive-reason]")?.textContent).toBe("One of the likely causes (Brake fluid leak) would make the vehicle unsafe to drive.");
+
+    // A remote severe cause: caution, with its own wording.
+    fireEvent.click(screen.getByRole("button", { name: /Search New Issue/i }));
+    reply = () => ({
+      body: response({
+        drive_guidance: { level: "caution", reason: "", adjusted: { from: "normal", cause_id: "c2" } },
+        causes: [cause(1, "Loose gas cap", { likelihood: "likely", urgency: "normal" }), cause(2, "Fuel line leak", { likelihood: "possible", urgency: "stop" })],
+      }),
+    });
+    submit({ symptoms: "fuel smell" });
+    await screen.findByText("Fuel line leak");
+    const second = document.querySelector("[data-drive-guidance]") as HTMLElement;
+    expect(second.getAttribute("data-drive-guidance")).toBe("caution");
+    expect(second.querySelector("[data-drive-reason]")?.textContent).toBe(
+      "One of the possible causes (Fuel line leak) could be a safety risk, so take care until it has been checked.",
+    );
+  });
+
+  it("never shows 'unknown' driving guidance as safe, including for a value it does not recognise", async () => {
+    render(<Home />);
+    await openDiagnose();
+    for (const level of ["unknown", "safe", "", "fine"]) {
+      reply = () => ({ body: response({ drive_guidance: { level: level as "unknown", reason: "", adjusted: null } }) });
+      submit({ symptoms: "rough idle" });
+      await screen.findByText("Worn spark plugs");
+      const banner = document.querySelector("[data-drive-guidance]") as HTMLElement;
+      expect(banner.getAttribute("data-drive-guidance"), level).toBe("unknown");
+      expect(banner.textContent, level).toContain("Driving safety could not be assessed from this information");
+      expect(banner.textContent, level).not.toMatch(/No urgent safety concern|safe to drive/i);
+      fireEvent.click(screen.getByRole("button", { name: /Search New Issue/i }));
+    }
+  });
+
+  it("tells the user in plain words when a code could not be used, with no internal wording", async () => {
+    render(<Home />);
+    await openDiagnose();
+    reply = () => ({ body: response({ limitations: ["No live sensor data was available."] }, { codes: lookupCodes("P0300 P2096", "Toyota") }) });
+    submit({ code: "P0300 P2096", symptoms: "rough idle" });
+    await screen.findByText("Worn spark plugs");
+
+    expect(screen.getByText("Limits of this diagnosis")).toBeTruthy();
+    expect(screen.getByText("No live sensor data was available.")).toBeTruthy();
+    expect(screen.getByText("An additional trouble code could not be reliably identified, so its meaning was not used in this diagnosis.")).toBeTruthy();
+    expect(pageText()).not.toMatch(/withheld|redact|unsupported|unidentified_codes|\[unidentified/i);
+
+    // Several such codes: the plural sentence. None: no such note.
+    fireEvent.click(screen.getByRole("button", { name: /Search New Issue/i }));
+    reply = () => ({ body: response({}, { codes: lookupCodes("P2096 P1345 P3400", "Toyota") }) });
+    submit({ code: "P2096 P1345 P3400", symptoms: "rough idle" });
+    await screen.findByText("Worn spark plugs");
+    expect(screen.getByText("Some additional trouble codes could not be reliably identified, so their meaning was not used in this diagnosis.")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Search New Issue/i }));
+    reply = () => ({ body: response({}, { codes: lookupCodes("P0300", "Toyota") }) });
+    submit({ code: "P0300", symptoms: "rough idle" });
+    await screen.findByText("Worn spark plugs");
+    expect(pageText()).not.toMatch(/could not be reliably identified/);
+  });
+
+  it("shows a local-reference code on its own with its title and a request for symptoms", async () => {
+    render(<Home />);
+    await openDiagnose();
+    reply = () => ({
+      body: {
+        noDefinition: true,
+        codes: lookupCodes("P0300", "Toyota"),
+        message:
+          "CarCode AI has a commonly published title for this code, but it has not been verified, so the code alone is not enough for a diagnosis. Describe the symptoms as well and we can help narrow it down.",
+      },
+    });
+    submit({ code: "P0300" });
+    expect(await screen.findByText("Random/Multiple Cylinder Misfire Detected")).toBeTruthy();
+    expect(screen.getByText(/Describe the symptoms as well and we can help narrow it down\./)).toBeTruthy();
+    expect(screen.getByText(/Commonly published title for this code\. Not yet checked against the official standard/)).toBeTruthy();
+    expect(document.querySelector("[data-cause-rank]")).toBeNull();
+  });
+
   it("shows the same structured values in another language: only the labels change", async () => {
     localStorage.setItem("carcode_lang", "es");
     render(<Home />);
@@ -369,7 +510,7 @@ describe("diagnosis screen", () => {
     reply = () => ({
       body: response({
         summary: "Lo más probable es un problema de encendido, pero no está confirmado.",
-        drive_guidance: { level: "caution", reason: "Un fallo de encendido puede dañar el catalizador." },
+        drive_guidance: { level: "caution", reason: "Un fallo de encendido puede dañar el catalizador.", adjusted: null },
         causes: [cause(1, "Bujías desgastadas", { likelihood: "very_likely", urgency: "caution", repair_level: "professional" })],
         follow_up_questions: [{ id: "q1", question: "¿Parpadea la luz?", answer_type: "yes_no", options: [], why_it_matters: "Indica un fallo activo." }],
         limitations: ["El vehículo no ha sido inspeccionado."],

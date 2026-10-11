@@ -7,15 +7,21 @@
  *   if the first failed in a retryable way → checked, structured diagnosis.
  *
  * The AI model is not called at all when the input is invalid, when the caller
- * is over a limit, or when there is nothing safe to reason from (only codes
- * with no definition on file, and no symptoms).
+ * is over a limit, or when there is nothing safe to reason from: no symptoms,
+ * and no code with a VERIFIED definition. A hand-entered reference title is
+ * shown to the user but is not enough to diagnose from on its own.
+ *
+ * Allowance: a new diagnosis uses one unit of the caller's allowance and comes
+ * back with a signed ticket. An update with follow-up answers presents that
+ * ticket instead, and each ticket allows a small fixed number of updates.
  */
 import { lookupCodes, type DtcResult } from "../../lib/dtc";
 import { DIAGNOSE_LIMITS, parseDiagnoseBody } from "../../lib/diagnose-input";
-import { checkBurst, consumeDiagnosisQuota, diagnoseLimits, type DiagnoseCaller } from "../../lib/diagnose-guard";
+import { checkBurst, consumeDiagnosisQuota, consumeFollowUp, diagnoseLimits, type DiagnoseCaller } from "../../lib/diagnose-guard";
 import { buildDiagnosisContext, buildInstructions, planCodes, symptomsForModel } from "../../lib/diagnosis-context";
 import { requestDiagnosis, type ModelFailure } from "../../lib/diagnosis-model";
 import type { DiagnoseNoDefinition, DiagnoseOk } from "../../lib/diagnosis-schema";
+import { issueTicket, requestFingerprint, verifyTicket } from "../../lib/diagnosis-ticket";
 import { vinAttributesForVehicle } from "../../lib/vin-lookup";
 import { clientIpKey } from "../../lib/client-ip";
 import { readJsonBody } from "../../lib/http";
@@ -67,17 +73,28 @@ async function getSignedInUserId(): Promise<string | null> {
   }
 }
 
-function noDefinitionMessage(codes: DtcResult[]): string {
+/** Shown when the codes supplied are not enough to diagnose from and no symptoms were given. */
+function needsSymptomsMessage(codes: DtcResult[]): string {
   const recognised = codes.filter((r) => r.status !== "invalid");
+  const one = recognised.length === 1;
   if (recognised.length === 0) {
     return "We couldn't recognise that as a trouble code. Check it and try again, or describe the symptoms instead.";
+  }
+  if (recognised.every((r) => r.trust === "local_reference")) {
+    return one
+      ? "CarCode AI has a commonly published title for this code, but it has not been verified, so the code alone is not enough for a diagnosis. Describe the symptoms as well and we can help narrow it down."
+      : "CarCode AI has commonly published titles for these codes, but they have not been verified, so the codes alone are not enough for a diagnosis. Describe the symptoms as well and we can help narrow it down.";
   }
   if (recognised.every((r) => r.status === "manufacturer_unavailable")) {
     return "This code is manufacturer-specific and CarCode AI does not currently have a verified definition for this vehicle. Describe the symptoms as well and we can still help narrow it down.";
   }
-  const one = recognised.length === 1;
+  if (recognised.some((r) => r.trust === "local_reference")) {
+    return "CarCode AI does not have a verified definition for these codes yet, so the codes alone are not enough for a diagnosis. Describe the symptoms as well and we can still help narrow it down.";
+  }
   return `CarCode AI does not have a verified definition for ${one ? "this code" : "these codes"} yet, so we won't guess what ${one ? "it means" : "they mean"}. Describe the symptoms as well and we can still help narrow it down.`;
 }
+
+const FOLLOWUP_INVALID = "This diagnosis can no longer be updated. Start a new diagnosis to continue.";
 
 export async function POST(req: Request) {
   try {
@@ -115,11 +132,14 @@ export async function POST(req: Request) {
     );
     const symptoms = symptomsForModel(input.symptoms, plan.withheld);
 
-    // 4) Nothing safe to reason from: no code has a definition on file and there
-    //    are no usable symptoms. Say so. No AI call is made and no allowance is used.
-    if (plan.supported.length === 0 && !symptoms) {
+    // 4) Nothing safe to reason from: there are no usable symptoms, and no code
+    //    with a verified definition. A hand-entered reference title is not enough
+    //    on its own. Say so, show what we have, and ask for symptoms. No AI call
+    //    is made and no allowance is used.
+    const hasVerifiedCode = plan.supported.some((r) => r.trust === "verified");
+    if (!symptoms && !hasVerifiedCode) {
       if (plan.results.length > 0) {
-        const body: DiagnoseNoDefinition = { noDefinition: true, codes: plan.results, message: noDefinitionMessage(plan.results) };
+        const body: DiagnoseNoDefinition = { noDefinition: true, codes: plan.results, message: needsSymptomsMessage(plan.results) };
         return jsonResponse(body, 200);
       }
       return jsonResponse(
@@ -135,11 +155,35 @@ export async function POST(req: Request) {
     }
 
     // 5) Usage allowance. Counted only now, when the request will reach the AI model.
-    const quota = await consumeDiagnosisQuota(caller);
-    if (!quota.allowed) {
-      return jsonResponse({ error: quota.error, code: quota.code }, quota.status, {
-        "Retry-After": String(quota.retryAfterSeconds),
-      });
+    //    A new diagnosis uses the caller's allowance. An update with follow-up
+    //    answers uses the ticket of the diagnosis it belongs to instead: it must
+    //    be a genuine, unexpired ticket for this same vehicle, codes and symptoms,
+    //    and each ticket allows only a fixed number of updates.
+    const fingerprint = requestFingerprint(input);
+    let followUp: DiagnoseOk["followUp"];
+    if (input.followUps.length > 0) {
+      const check = verifyTicket(input.diagnosisToken, fingerprint);
+      if (!check.ok) {
+        return jsonResponse({ error: FOLLOWUP_INVALID, code: "followup_invalid" }, 400);
+      }
+      const allowance = await consumeFollowUp(check.ticket);
+      if (!allowance.allowed) {
+        return jsonResponse(
+          { error: allowance.error, code: allowance.code },
+          allowance.status,
+          allowance.retryAfterSeconds > 0 ? { "Retry-After": String(allowance.retryAfterSeconds) } : undefined,
+        );
+      }
+      followUp = { token: input.diagnosisToken, remaining: allowance.remaining ?? 0 };
+    } else {
+      const quota = await consumeDiagnosisQuota(caller);
+      if (!quota.allowed) {
+        return jsonResponse({ error: quota.error, code: quota.code }, quota.status, {
+          "Retry-After": String(quota.retryAfterSeconds),
+        });
+      }
+      const issued = limits.followUpsPerDiagnosis > 0 ? issueTicket(fingerprint) : null;
+      followUp = issued ? { token: issued.token, remaining: limits.followUpsPerDiagnosis } : null;
     }
 
     // 6) What the model may see. The VIN is used here to look up vehicle details
@@ -158,7 +202,7 @@ export async function POST(req: Request) {
     });
 
     // Local debugging only: print exactly what the model is about to be sent, to
-    // check by eye that withheld code numbers are absent. Never runs in production.
+    // check by eye that no unidentified code number is in it. Never runs in production.
     if (process.env.NODE_ENV !== "production" && process.env.DIAGNOSE_LOG_CONTEXT === "1") {
       console.log(`[diagnose] model input: ${JSON.stringify(context)}`);
     }
@@ -186,6 +230,7 @@ export async function POST(req: Request) {
       diagnosis: outcome.diagnosis,
       codes: plan.results,
       refined: context.follow_up_answers !== undefined,
+      followUp,
     };
     return jsonResponse(body, 200);
   } catch (e: unknown) {

@@ -32,6 +32,12 @@ export const CHECK_LEVELS = ["owner", "diy", "professional"] as const;
 export const REPAIR_LEVELS = ["diy_easy", "diy_moderate", "professional"] as const;
 /** How a follow-up question is answered. */
 export const ANSWER_TYPES = ["yes_no", "single_choice", "free_text"] as const;
+/**
+ * What a limitation note is about. The model tags a note about a trouble code
+ * it was not given, so that note can be left out in any language: the page
+ * tells the user about such a code in its own fixed wording instead.
+ */
+export const LIMITATION_TOPICS = ["evidence", "unidentified_code"] as const;
 
 export type Likelihood = (typeof LIKELIHOODS)[number];
 export type Urgency = (typeof URGENCY_LEVELS)[number];
@@ -75,6 +81,13 @@ const FollowUpSchema = z.object({
   why_it_matters: z.string().describe("One sentence on how the answer would change the diagnosis."),
 });
 
+const LimitationSchema = z.object({
+  text: z.string().describe("One short note on what cannot be known from the evidence."),
+  topic: z
+    .enum(LIMITATION_TOPICS)
+    .describe('"unidentified_code" if the note is about a trouble code that was supplied without a usable definition. Otherwise "evidence".'),
+});
+
 /** Exactly what the AI model is asked to return. */
 export const DiagnosisModelSchema = z.object({
   summary: z.string().describe("One or two sentences on the most likely explanation, worded as a hypothesis."),
@@ -86,7 +99,7 @@ export const DiagnosisModelSchema = z.object({
   }),
   causes: z.array(CauseSchema).describe("3-5 causes, most likely first."),
   follow_up_questions: z.array(FollowUpSchema).describe("0-3 questions whose answers would change the ranking. Empty if none would."),
-  limitations: z.array(z.string()).describe("0-2 short notes on what cannot be known from the evidence."),
+  limitations: z.array(LimitationSchema).describe("0-2 notes."),
 });
 
 export type ModelDiagnosis = z.infer<typeof DiagnosisModelSchema>;
@@ -94,8 +107,24 @@ export type DiagnosisCheck = z.infer<typeof CheckSchema>;
 /** A cause as the page receives it: ranked 1..n with an id the page can key on. */
 export type DiagnosisCause = z.infer<typeof CauseSchema> & { id: string };
 export type FollowUpQuestion = z.infer<typeof FollowUpSchema>;
+/** Drive guidance as the page receives it, after the server's safety check. */
+export type DriveGuidance = {
+  level: Urgency;
+  /**
+   * The model's own explanation. Empty when the server changed the level, so
+   * the text shown can never argue against the level shown.
+   */
+  reason: string;
+  /** Set when the safety check changed the level: what the model said, and the cause that triggered it. */
+  adjusted: null | { from: Urgency; cause_id: string };
+};
 /** The diagnosis as the page receives it, after the server's checks. */
-export type Diagnosis = Omit<ModelDiagnosis, "causes"> & { causes: DiagnosisCause[] };
+export type Diagnosis = Omit<ModelDiagnosis, "causes" | "drive_guidance" | "limitations"> & {
+  causes: DiagnosisCause[];
+  drive_guidance: DriveGuidance;
+  /** The model's notes about the evidence, as plain text. Notes about a code it was not given are not included. */
+  limitations: string[];
+};
 
 /** What /api/diagnose returns for a completed diagnosis. */
 export type DiagnoseOk = {
@@ -104,9 +133,15 @@ export type DiagnoseOk = {
   codes: DtcResult[];
   /** True when the user's answers to follow-up questions were part of this diagnosis. */
   refined: boolean;
+  /**
+   * What the page needs to ask for an update with follow-up answers: a signed
+   * ticket tied to this diagnosis, and how many updates it still allows.
+   * Null when updates are not available.
+   */
+  followUp: { token: string; remaining: number } | null;
 };
 
-/** Returned, without calling the model, when no supplied code has a definition on file and there are no symptoms. */
+/** Returned, without calling the model, when the codes supplied are not enough to diagnose from and there are no symptoms. */
 export type DiagnoseNoDefinition = { noDefinition: true; message: string; codes: DtcResult[] };
 
 export const DIAGNOSIS_LIMITS = {
@@ -118,13 +153,77 @@ export const DIAGNOSIS_LIMITS = {
   limitations: 3,
 } as const;
 
+/**
+ * What stands in for a trouble-code number the model is not shown, in text the
+ * user typed. Worded so that it reads naturally if the model repeats it.
+ */
+export const CODE_PLACEHOLDER = "[unidentified trouble code]";
+
+/**
+ * Words that describe how the app handles a request, not the vehicle. A
+ * limitation that uses them is dropped: the page tells the user about a code it
+ * could not identify in its own plain wording.
+ */
+const INTERNAL_WORDING = /withh[eo]ld|redact|unsupported[ _]code|unidentified_codes|not provided to (me|the model)|intentionally not provided/i;
+
 function text(value: string, max: number): string {
-  const s = value.replace(/\s+/g, " ").trim();
+  const s = value.split(CODE_PLACEHOLDER).join("a trouble code").replace(/\s+/g, " ").trim();
   return s.length <= max ? s : s.slice(0, max - 1).trimEnd() + "…";
 }
 
 function textList(values: string[], maxItems: number, maxLength: number): string[] {
   return values.map((v) => text(v, maxLength)).filter(Boolean).slice(0, maxItems);
+}
+
+const CREDIBLE: ReadonlySet<Likelihood> = new Set<Likelihood>(["very_likely", "likely"]);
+
+/**
+ * Safety-consistency check for drive guidance.
+ *
+ * The model does the diagnostic reasoning and proposes the overall level. This
+ * only stops the result from contradicting itself in an unsafe direction. It
+ * compares that level with the urgency and likelihood of the causes:
+ *
+ *  1. A cause marked "stop" that is very likely or likely makes the overall
+ *     level "stop", whatever the model said.
+ *  2. Otherwise, if the model said "normal" but any cause is marked "stop"
+ *     (even a possible or unlikely one), or a very likely or likely cause is
+ *     marked "caution", the overall level becomes "caution". A remote severe
+ *     cause justifies care, not an order to stop.
+ *  3. Otherwise, if the model said "normal" but a very likely or likely cause
+ *     has an urgency of "unknown", the overall level becomes "unknown": no
+ *     urgent concern cannot be claimed when the main suspect could not be judged.
+ *  4. In every other case the model's level stands.
+ *
+ * The level is never lowered, and "unknown" is never turned into "normal" or
+ * "caution": it can only become "stop".
+ */
+export function reconcileDriveGuidance(
+  model: { level: Urgency; reason: string },
+  causes: ReadonlyArray<Pick<DiagnosisCause, "id" | "likelihood" | "urgency">>,
+): DriveGuidance {
+  const credible = (c: { likelihood: Likelihood }) => CREDIBLE.has(c.likelihood);
+  const credibleStop = causes.find((c) => c.urgency === "stop" && credible(c));
+  const needsCare = causes.find((c) => c.urgency === "stop" || (c.urgency === "caution" && credible(c)));
+  const unjudged = causes.find((c) => c.urgency === "unknown" && credible(c));
+
+  let level: Urgency = model.level;
+  let because: { id: string } | undefined;
+  if (credibleStop) {
+    if (level !== "stop") {
+      level = "stop";
+      because = credibleStop;
+    }
+  } else if (level === "normal" && needsCare) {
+    level = "caution";
+    because = needsCare;
+  } else if (level === "normal" && unjudged) {
+    level = "unknown";
+    because = unjudged;
+  }
+
+  if (!because) return { level, reason: model.reason, adjusted: null };
+  return { level, reason: "", adjusted: { from: model.level, cause_id: because.id } };
 }
 
 /**
@@ -135,8 +234,11 @@ function textList(values: string[], maxItems: number, maxLength: number): string
  * What this does: validates the shape, trims text, drops empty items, caps the
  * list sizes, orders causes by the model's own rank and renumbers them 1..n,
  * and gives causes, questions and options ids that are safe to use as keys.
- * What it never does: add a cause, change a likelihood or an urgency, or derive
- * anything from the wording.
+ * It also runs the drive-guidance safety check (see reconcileDriveGuidance) and
+ * drops limitation notes about a code the model was not given, or written in
+ * the app's internal terms.
+ * What it never does: add a cause, change a cause's likelihood or urgency, or
+ * derive anything about the vehicle from the wording.
  */
 export function normalizeDiagnosis(raw: unknown): Diagnosis | null {
   const parsed = DiagnosisModelSchema.safeParse(raw);
@@ -196,9 +298,13 @@ export function normalizeDiagnosis(raw: unknown): Diagnosis | null {
 
   return {
     summary: text(d.summary, 600),
-    drive_guidance: { level: d.drive_guidance.level, reason: text(d.drive_guidance.reason, 400) },
+    drive_guidance: reconcileDriveGuidance({ level: d.drive_guidance.level, reason: text(d.drive_guidance.reason, 400) }, causes),
     causes,
     follow_up_questions,
-    limitations: textList(d.limitations, DIAGNOSIS_LIMITS.limitations, 300),
+    limitations: textList(
+      d.limitations.filter((l) => l.topic !== "unidentified_code" && !INTERNAL_WORDING.test(l.text)).map((l) => l.text),
+      DIAGNOSIS_LIMITS.limitations,
+      300,
+    ),
   };
 }

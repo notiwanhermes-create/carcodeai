@@ -30,9 +30,11 @@ function makeReq(body: Record<string, unknown>) {
 
 const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
-  for (const k of ["DATABASE_URL", "OPENAI_API_KEY"]) saved[k] = process.env[k];
+  for (const k of ["DATABASE_URL", "OPENAI_API_KEY", "DIAGNOSE_GUEST_DAILY_LIMIT"]) saved[k] = process.env[k];
   delete process.env.DATABASE_URL;
   process.env.OPENAI_API_KEY = "test-key-not-real";
+  // These tests are about codes, not allowances.
+  process.env.DIAGNOSE_GUEST_DAILY_LIMIT = "100";
   resetMemoryRateLimits();
   createMock.mockReset();
   createMock.mockResolvedValue(modelReply(modelDiagnosis()));
@@ -49,27 +51,61 @@ afterEach(() => {
 });
 
 describe("POST /api/diagnose: codes with a definition on file", () => {
-  it("code only: sends the definition to the model and reports it to the page", async () => {
-    const res = await POST(makeReq({ code: "P0300" }));
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.codes).toHaveLength(1);
-    expect(data.codes[0]).toMatchObject({ code: "P0300", status: "generic_definition", trust: "local_reference", verified: false, definition: "Random/Multiple Cylinder Misfire Detected" });
-    expect(data.diagnosis.causes).toHaveLength(1);
-    expect(createMock).toHaveBeenCalledTimes(1);
-
-    const { context } = sentToModel(createMock);
-    expect(context.trouble_codes).toEqual([
-      { code: "P0300", definition: "Random/Multiple Cylinder Misfire Detected", definition_status: "local_reference", scope: "standardized" },
-    ]);
-    expect(context.symptoms).toBeNull();
+  it("local-reference code alone: shows the title and its status, asks for symptoms, and makes no model call", async () => {
+    for (const code of ["P0300", "P0011", "P0016", "P0171", "P0420", "P0455", "P0A80", "U0100", "P0300 P0420"]) {
+      const res = await POST(makeReq({ code }));
+      expect(res.status, code).toBe(200); // not an error: the title is shown
+      const data = await res.json();
+      expect(data.noDefinition, code).toBe(true);
+      expect(data.diagnosis).toBeUndefined();
+      expect(data.codes[0]).toMatchObject({ status: "generic_definition", trust: "local_reference", verified: false });
+      expect(data.codes[0].definition, code).toBeTruthy();
+      expect(data.message, code).toMatch(/commonly published titles? for (this code|these codes), but (it has|they have) not been verified/);
+      expect(data.message).toMatch(/Describe the symptoms as well/);
+    }
+    expect(createMock).not.toHaveBeenCalled();
   });
 
-  it("code + symptoms: the model receives both", async () => {
-    await POST(makeReq({ code: "P0171", symptoms: "hesitates on acceleration" }));
-    const { context } = sentToModel(createMock);
-    expect(context.trouble_codes).toEqual([{ code: "P0171", definition: "System Too Lean (Bank 1)", definition_status: "local_reference", scope: "standardized" }]);
+  it("local-reference code alone does not use any allowance", async () => {
+    process.env.DIAGNOSE_GUEST_DAILY_LIMIT = "1";
+    for (let i = 0; i < 4; i++) expect((await POST(makeReq({ code: "P0300" }))).status).toBe(200);
+    // The one diagnosis the visitor is allowed is still available.
+    const res = await POST(makeReq({ code: "P0300", symptoms: "rough idle" }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).diagnosis.causes).toHaveLength(1);
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("local-reference code + symptoms: one model call, with the title marked as a non-authoritative local reference", async () => {
+    const res = await POST(makeReq({ code: "P0171", symptoms: "hesitates on acceleration" }));
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.diagnosis.causes).toHaveLength(1);
+    expect(data.codes[0]).toMatchObject({ code: "P0171", trust: "local_reference", verified: false });
+    expect(createMock).toHaveBeenCalledTimes(1);
+
+    const { context, instructions } = sentToModel(createMock);
+    expect(context.trouble_codes).toEqual([
+      {
+        code: "P0171",
+        definition: "System Too Lean (Bank 1)",
+        definition_status: "local_reference",
+        scope: "standardized",
+        note: "Reference title entered locally. It is not verified and not authoritative.",
+      },
+    ]);
     expect(context.symptoms).toBe("hesitates on acceleration");
+    expect(instructions).toMatch(/"local_reference" is only a commonly published title entered by hand: it is not verified and not authoritative/);
+  });
+
+  it("a mix of local-reference and unsupported codes, no symptoms: still no model call", async () => {
+    const res = await POST(makeReq({ code: "P0300 P2096 P1345" }));
+    const data = await res.json();
+    expect(res.status).toBe(200);
+    expect(data.noDefinition).toBe(true);
+    expect(data.codes.map((c: { trust: string }) => c.trust)).toEqual(["local_reference", "none", "none"]);
+    expect(data.message).toMatch(/does not have a verified definition for these codes yet, so the codes alone are not enough/);
+    expect(createMock).not.toHaveBeenCalled();
   });
 
   it("several codes + symptoms: all of them are sent together", async () => {
@@ -77,7 +113,7 @@ describe("POST /api/diagnose: codes with a definition on file", () => {
     const { context } = sentToModel(createMock);
     expect((context.trouble_codes as Array<{ code: string }>).map((c) => c.code)).toEqual(["P0300", "P0171", "P0420"]);
     expect(context.symptoms).toBe("rough idle around 1200 RPM, hesitation under light throttle");
-    expect(context.unsupported_codes).toBeUndefined();
+    expect(context.unidentified_codes).toBeUndefined();
   });
 
   it("symptoms only: no codes are mentioned at all", async () => {
@@ -96,17 +132,17 @@ describe("POST /api/diagnose: codes with a definition on file", () => {
   it("gives the same standard definition regardless of make", async () => {
     const definitions = new Set<string>();
     for (const make of ["BMW", "Ford", "Toyota", "Honda", "Chevrolet", "Mercedes-Benz"]) {
-      const res = await POST(makeReq({ make, code: "P0420" }));
+      const res = await POST(makeReq({ make, code: "P0420", symptoms: "sulphur smell" }));
       definitions.add((await res.json()).codes[0].definition);
     }
     expect([...definitions]).toEqual(["Catalyst System Efficiency Below Threshold (Bank 1)"]);
   });
 
   it("never tells the model a hand-entered title is verified", async () => {
-    await POST(makeReq({ code: "P0300 P0420 U0100" }));
+    await POST(makeReq({ code: "P0300 P0420 U0100", symptoms: "rough idle" }));
     const { context, userContent } = sentToModel(createMock);
     for (const c of context.trouble_codes as Array<{ definition_status: string }>) expect(c.definition_status).toBe("local_reference");
-    expect(userContent).not.toMatch(/"verified"|SAE/);
+    expect(userContent).not.toMatch(/"verified"|SAE|official/);
   });
 });
 
@@ -196,8 +232,10 @@ describe("POST /api/diagnose: codes with NO definition on file", () => {
       expect(everything.toUpperCase()).not.toContain(c.code);
       expect(context.trouble_codes).toEqual([]);
       expect(context.symptoms).toBe("rough idle when cold");
-      expect(context.unsupported_codes).toMatchObject({ count: 1, manufacturer_specific: c.manufacturer });
-      expect((context.unsupported_codes as { notice: string }).notice).toMatch(/withheld\. Do not infer its meaning\./);
+      expect(context.unidentified_codes).toMatchObject({ count: 1, manufacturer_specific: c.manufacturer });
+      expect((context.unidentified_codes as { note: string }).note).toMatch(/Its identifier and meaning are intentionally not provided and must not be inferred\./);
+      // Nothing the model reads uses the app's internal handling terms.
+      expect(everything).not.toMatch(/withheld|unsupported|redact/i);
     });
   }
 
@@ -205,7 +243,7 @@ describe("POST /api/diagnose: codes with NO definition on file", () => {
     await POST(makeReq({ make: "Honda", code: "P2096", symptoms: "p2096 keeps returning; rough idle when cold" }));
     const { everything, context } = sentToModel(createMock);
     expect(everything).not.toMatch(/p-?\s?2096/i);
-    expect(context.symptoms).toBe("[code withheld] keeps returning; rough idle when cold");
+    expect(context.symptoms).toBe("[unidentified trouble code] keeps returning; rough idle when cold");
   });
 
   it("one supported and several unsupported codes: the model gets the definition on file and none of the other numbers", async () => {
@@ -223,11 +261,11 @@ describe("POST /api/diagnose: codes with NO definition on file", () => {
     const { context, everything } = sentToModel(createMock);
     expect((context.trouble_codes as Array<{ code: string }>).map((c) => c.code)).toEqual(["P0300"]);
     for (const hidden of ["P2096", "P1345", "P3400", "P9999"]) expect(everything, hidden).not.toContain(hidden);
-    expect(context.unsupported_codes).toMatchObject({ count: 3, manufacturer_specific: 1 });
+    expect(context.unidentified_codes).toMatchObject({ count: 3, manufacturer_specific: 1 });
   });
 
-  it("one supported code and an unsupported one, no symptoms: still diagnoses from the supported code only", async () => {
-    const res = await POST(makeReq({ code: "P0300 P2096" }));
+  it("the definition of a code is never sent in the same breath as an unsupported number", async () => {
+    const res = await POST(makeReq({ code: "P0300 P2096", symptoms: "stalls when warm" }));
     expect(res.status).toBe(200);
     expect(createMock).toHaveBeenCalledTimes(1);
     const { context, everything } = sentToModel(createMock);

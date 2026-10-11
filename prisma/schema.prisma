@@ -1,3 +1,19 @@
+// The one definition of the CarCode AI database.
+//
+// Tables are created and changed ONLY by the SQL migrations in
+// prisma/migrations (applied with `npm run db:migrate`). Nothing in the running
+// app creates or alters tables. `tests/integration` checks that this file and
+// the migrations describe the same database.
+//
+// Table and column names are the ones the database has always used (`@@map` /
+// `@map`), so adopting migrations renamed nothing.
+//
+// Not expressible here, but created by the migrations and worth knowing:
+//   users.users_email_lowercase              CHECK (email = lower(email))
+//   garage_vehicles_model_year_check         CHECK (model_year between 1900 and 2100)
+//   maintenance_records_odometer_check       CHECK (odometer_value >= 0, unit is 'km' or 'mi')
+//   maintenance_records_cost_amount_check    CHECK (cost_amount >= 0)
+
 generator client {
   provider = "prisma-client"
   output   = "../app/generated/prisma"
@@ -7,8 +23,10 @@ datasource db {
   provider = "postgresql"
 }
 
+/// An account. Signs in with a password, with Google, or both.
 model User {
   id           String   @id @default(cuid())
+  /// Always stored trimmed and in lower case (enforced by the database).
   email        String?  @unique
   passwordHash String?  @map("password_hash")
   googleId     String?  @unique @map("google_id")
@@ -26,7 +44,6 @@ model User {
   /// They can still sign in, but are not trusted as proven email owners.
   legacyUnverified Boolean   @default(false) @map("legacy_unverified")
 
-  sessions           Session[]
   vehicles           Vehicle[]
   maintenanceRecords MaintenanceRecord[]
   verificationTokens EmailVerificationToken[]
@@ -41,75 +58,102 @@ model EmailVerificationToken {
   expiresAt DateTime @map("expires_at") @db.Timestamptz()
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
+  /// Deleting an account deletes its tokens.
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
+  @@index([expiresAt])
   @@map("email_verification_tokens")
 }
 
-model Session {
-  sid       String   @id
-  userId    String   @map("user_id")
-  expiresAt DateTime @map("expires_at") @db.Timestamptz()
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("sessions")
-}
-
+/// A vehicle in a signed-in user's garage.
 model Vehicle {
   id        String   @id @default(cuid())
   userId    String   @map("user_id")
+  /// The year as the user entered it. Still the value the app shows.
   year      String
+  /// The same year as a number. Empty when `year` is not a four-digit year.
+  modelYear Int?     @map("model_year")
   make      String
   model     String
   engine    String?
   vin       String?
   nickname  String?
-  isActive  Boolean  @default(false) @map("is_active")
+  /// Never read or written by the app. Hidden from the client here so that the
+  /// column can be dropped in the next release without breaking a rollback.
+  isActive  Boolean  @default(false) @map("is_active") @ignore
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
-  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Deleting an account deletes its vehicles.
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   maintenanceRecords MaintenanceRecord[]
 
+  @@index([userId, createdAt])
   @@map("garage_vehicles")
 }
 
+/// One service entry for a vehicle.
+///
+/// `date`, `odometer` and `cost` hold exactly what the user typed. Next to each
+/// is a typed copy, filled in only when the text converts cleanly, so nothing a
+/// user entered is ever altered or lost by a conversion.
 model MaintenanceRecord {
-  id          String   @id @default(cuid())
-  userId      String   @map("user_id")
-  vehicleId   String   @map("vehicle_id")
-  serviceType String   @map("type")
-  date        String
-  odometer    String?  @map("mileage")
+  id          String  @id @default(cuid())
+  userId      String  @map("user_id")
+  vehicleId   String  @map("vehicle_id")
+  serviceType String  @map("type")
   notes       String?
-  cost        String?
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  date        String
+  serviceDate DateTime? @map("service_date") @db.Date
 
+  odometer      String? @map("mileage")
+  odometerValue Int?    @map("odometer_value")
+  /// "km" or "mi" when the user said which; otherwise empty.
+  odometerUnit  String? @map("odometer_unit")
+
+  cost       String?
+  costAmount Decimal? @map("cost_amount") @db.Decimal(12, 2)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  /// Deleting an account deletes its service records.
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  /// Deleting a vehicle deletes that vehicle's service records.
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([vehicleId, createdAt])
+  @@index([userId, createdAt])
   @@map("maintenance_records")
 }
 
-/// Fixed-window request counters used by app/lib/rate-limit.ts.
+/// Short-lived counters: request rate limits, daily allowances, and the number
+/// of follow-up updates made on one diagnosis (see app/lib/rate-limit.ts).
+///
+/// A row is one counter for one window of time. `expiresAt` is when it stops
+/// mattering; expired rows are deleted, so this table does not grow without limit.
 model RateLimit {
   key         String
   windowStart DateTime @map("window_start") @db.Timestamptz()
   count       Int      @default(0)
+  expiresAt   DateTime @default(dbgenerated("(now() + '2 days'::interval)")) @map("expires_at") @db.Timestamptz()
 
   @@id([key, windowStart])
+  @@index([expiresAt])
   @@map("rate_limits")
 }
 
+/// A message sent through the feedback form.
 model Feedback {
   id        Int      @id @default(autoincrement())
   name      String?
   email     String?
   rating    Int?
   message   String
-  page      String?
+  /// Origin and path of the page the feedback was sent from (no query string).
+  pageUrl   String?  @map("page_url")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
+  @@index([createdAt])
   @@map("feedback")
 }

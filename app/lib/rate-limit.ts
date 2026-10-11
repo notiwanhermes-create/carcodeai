@@ -5,6 +5,16 @@
  * serverless instances. If no database is configured, or the database is
  * unreachable, an in-memory counter is used instead so the app keeps working
  * (limits then apply per server instance).
+ *
+ * Each row is one counter for one window, with the time it stops mattering
+ * (`expires_at`). Expired rows are deleted (see pruneExpiredCounters), so the
+ * table holds only live counters and does not grow without limit.
+ *
+ * RAW SQL: the increment below is the one hand-written statement in the app.
+ * It has to add one and return the new total as a single atomic statement
+ * (INSERT ... ON CONFLICT DO UPDATE ... RETURNING), which the Prisma query API
+ * cannot guarantee. It goes through Prisma's tagged-template `$queryRaw`, so
+ * every value is sent as a bound parameter, never spliced into the SQL text.
  */
 
 export type RateLimitResult = {
@@ -65,22 +75,46 @@ function incrementMemory(key: string, startMs: number, windowSeconds: number, no
   return 1;
 }
 
-async function incrementDatabase(key: string, startMs: number): Promise<number> {
-  const [{ ensureDB }, { default: prisma }] = await Promise.all([import("./db"), import("./prisma")]);
-  await ensureDB();
+/** How often a write also clears out expired counters (1 in 50). */
+const PRUNE_CHANCE = 0.02;
+
+/**
+ * When a counter row can be deleted. A row matters for one window from its
+ * start. A caller may pin `nowMs` to an earlier moment (the follow-up counter
+ * pins it to the time its ticket was issued), so the row is kept for a second
+ * window to be sure it outlives whatever it is counting.
+ */
+function counterExpiry(startMs: number, windowSeconds: number): Date {
+  return new Date(startMs + 2 * windowSeconds * 1000);
+}
+
+async function incrementDatabase(key: string, startMs: number, windowSeconds: number): Promise<number> {
+  // Loaded on demand so that code paths without a database never load the client.
+  const { default: prisma } = await import("./prisma");
   const windowStart = new Date(startMs);
+  const expiresAt = counterExpiry(startMs, windowSeconds);
   const rows = await prisma.$queryRaw<{ count: number }[]>`
-    INSERT INTO rate_limits (key, window_start, count)
-    VALUES (${key}, ${windowStart}, 1)
+    INSERT INTO rate_limits (key, window_start, count, expires_at)
+    VALUES (${key}, ${windowStart}, 1, ${expiresAt})
     ON CONFLICT (key, window_start)
     DO UPDATE SET count = rate_limits.count + 1
     RETURNING count
   `;
-  // Occasionally clear out old windows so the table stays small.
-  if (Math.random() < 0.01) {
-    prisma.$executeRaw`DELETE FROM rate_limits WHERE window_start < NOW() - INTERVAL '2 days'`.catch(() => {});
+  if (Math.random() < PRUNE_CHANCE) {
+    pruneExpiredCounters().catch(() => {});
   }
   return Number(rows[0]?.count ?? 1);
+}
+
+/**
+ * Delete counters whose time has passed. Runs occasionally as a side effect of
+ * normal traffic, and on demand with `npm run db:prune`. Returns how many rows
+ * were removed. Deleting an expired counter can never loosen a limit.
+ */
+export async function pruneExpiredCounters(now: Date = new Date()): Promise<number> {
+  const { default: prisma } = await import("./prisma");
+  const { count } = await prisma.rateLimit.deleteMany({ where: { expiresAt: { lt: now } } });
+  return count;
 }
 
 /**
@@ -105,7 +139,7 @@ export async function consumeRateLimit(
 
   if (process.env.DATABASE_URL) {
     try {
-      count = await incrementDatabase(key, startMs);
+      count = await incrementDatabase(key, startMs, windowSeconds);
       store = "database";
     } catch (err) {
       if (nowMs - lastDbWarningAt > 60_000) {

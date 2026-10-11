@@ -4,12 +4,16 @@
   "private": true,
   "scripts": {
     "dev": "prisma generate && next dev --hostname 0.0.0.0 --port 5000",
-    "build": "prisma generate && next build",
+    "build": "node scripts/db-migrate.mjs --vercel && prisma generate && next build",
     "start": "next start --hostname 0.0.0.0 --port 5000",
     "lint": "eslint",
     "postinstall": "prisma generate",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "db:migrate": "node scripts/db-migrate.mjs",
+    "db:status": "prisma migrate status",
+    "db:inspect": "node scripts/db-inspect.mjs",
+    "db:prune": "node scripts/db-prune.mjs"
   },
   "dependencies": {
     "@next/third-parties": "^16.1.6",

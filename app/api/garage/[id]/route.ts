@@ -1,5 +1,4 @@
 import { auth } from "@/app/lib/auth-config";
-import { ensureDB } from "@/app/lib/db";
 import prisma from "@/app/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -7,7 +6,6 @@ export async function DELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  await ensureDB();
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
@@ -15,18 +13,15 @@ export async function DELETE(
 
   const { id } = await params;
 
-  const vehicle = await prisma.vehicle.findFirst({
+  // One statement, scoped to the signed-in user: someone else's vehicle id
+  // matches nothing. The vehicle's service records go with it, because the
+  // database relation is ON DELETE CASCADE, so nothing is left behind.
+  const { count } = await prisma.vehicle.deleteMany({
     where: { id, userId: session.user.id },
   });
-  if (!vehicle) {
+  if (count === 0) {
     return NextResponse.json({ error: "Vehicle not found." }, { status: 404 });
   }
-
-  await prisma.maintenanceRecord.deleteMany({
-    where: { vehicleId: id, userId: session.user.id },
-  });
-
-  await prisma.vehicle.delete({ where: { id } });
 
   return NextResponse.json({ ok: true });
 }

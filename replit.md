@@ -52,18 +52,12 @@ All API routes live under `app/api/` using Next.js Route Handlers:
 - **Config**: `app/lib/auth-config.ts` exports NextAuth handlers and auth helper
 
 ### Database
-- **Engine**: PostgreSQL (Neon-backed via Replit)
-- **ORM**: Prisma 7 with `@prisma/pg` adapter
-- **Connection**: Uses `DATABASE_URL` environment variable
-- **Config**: `prisma/schema.prisma` for schema, `prisma.config.ts` for Prisma config with PrismaPg adapter
-- **Schema**:
-  - `users` — id (cuid), email (unique), password_hash, google_id, first_name, last_name, profile_image, created_at
-  - `sessions` — sid (PK), user_id (FK→users), expires_at, created_at
-  - `garage_vehicles` — id (cuid), user_id (FK→users), year, make, model, engine, vin, nickname, is_active, created_at
-  - `maintenance_records` — id (cuid), user_id (FK→users), vehicle_id (FK→garage_vehicles), type (maps to serviceType), mileage (maps to odometer), date, notes, cost, created_at
-  - `feedback` — id (autoincrement), name, email, rating, message, page, created_at
-- **Pattern**: Prisma Client queries, `@map()` for snake_case database columns, generated client at `app/generated/prisma`
-- **Migration**: Uses `prisma db push` (no migration files)
+- **Engine**: PostgreSQL (Neon)
+- **ORM**: Prisma 7 with the `@prisma/adapter-pg` adapter; one client for the whole app (`app/lib/prisma.ts`)
+- **Connection**: `DATABASE_URL` for the app (pooled); `DIRECT_URL` for migrations (direct)
+- **Schema**: `prisma/schema.prisma` is the one definition. Tables: `users`, `email_verification_tokens`, `garage_vehicles`, `maintenance_records`, `rate_limits`, `feedback`
+- **Changes**: SQL migrations in `prisma/migrations`, applied with `npm run db:migrate` (and by the production build). The running app never creates or alters tables. Never use `prisma db push`
+- **Details**: see `docs/database.md`
 
 ### Data Layer
 - **Common Codes**: Static dataset in `app/data/common-codes.ts` with ~40+ OBD-II codes including description, category, severity, and common causes

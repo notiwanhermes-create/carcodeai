@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import prisma from "@/app/lib/prisma";
-import { ensureDB } from "@/app/lib/db";
 import { readJsonBody } from "@/app/lib/http";
 import { consumeRateLimit, envInt } from "@/app/lib/rate-limit";
 import { clientIpKey, hashForRateLimit } from "@/app/lib/client-ip";
@@ -48,7 +47,6 @@ export async function POST(req: Request) {
     );
     if (!perAddress.allowed) return fail(429, "rate_limited", { "Retry-After": String(perAddress.retryAfterSeconds) });
 
-    await ensureDB();
     const user = await prisma.user.findUnique({
       where: { email },
       select: { id: true, passwordHash: true, googleId: true, emailVerified: true, legacyUnverified: true },

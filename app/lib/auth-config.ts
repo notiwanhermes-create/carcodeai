@@ -1,13 +1,9 @@
 import NextAuth, { CredentialsSignin, type User } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
-import bcrypt from "bcryptjs";
 import prisma from "./prisma";
-import { ensureDB } from "./db";
-import { decidePasswordLogin } from "./account-policy";
-import { ACCOUNT_SELECT, resolveGoogleAccount, type AccountRow } from "./account-store";
-import { isValidVerificationToken } from "./email-verification";
-import { consumeRateLimit, envInt } from "./rate-limit";
+import { resolveGoogleAccount, type AccountRow } from "./account-store";
+import { signInWithPassword, type PasswordSignInResult } from "./password-sign-in";
 import { clientIpKey } from "./client-ip";
 import type { AuthErrorCode } from "./auth-errors";
 
@@ -50,8 +46,6 @@ class SignInError extends CredentialsSignin {
 
 /** How often a session is re-checked against the database. */
 const SESSION_RECHECK_MS = 60_000;
-/** Compared against when the email is unknown, so response time does not reveal which emails exist. */
-const DUMMY_HASH = "$2b$12$C6UzMDM.H6dfI/f/IKcEeO5KQ5QbT1HqFqUuSFOYJYxS6xXKX9fLa";
 
 type SessionUser = User & { sessionVersion?: number };
 
@@ -76,55 +70,21 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         verifyToken: { label: "Verification token", type: "text" },
       },
       async authorize(credentials, request) {
-        const email = typeof credentials.email === "string" ? credentials.email.toLowerCase().trim() : "";
-        const password = typeof credentials.password === "string" ? credentials.password : "";
-        const verifyToken = typeof credentials.verifyToken === "string" ? credentials.verifyToken.trim() : "";
-
-        if (!email || !password || email.length > 254 || password.length > 200) {
-          throw new SignInError("invalid_credentials");
-        }
-
+        let result: PasswordSignInResult;
         try {
-          // Slow down password guessing. Per IP only, so nobody can lock another
-          // person out of their account by guessing against it.
-          const throttle = await consumeRateLimit(
-            `login:ip:${clientIpKey(request)}`,
-            envInt("AUTH_LOGIN_IP_LIMIT", 30),
-            envInt("AUTH_LOGIN_WINDOW_SECONDS", 900),
-          );
-          if (!throttle.allowed) throw new SignInError("rate_limited");
-
-          await ensureDB();
-          const user: AccountRow | null = await prisma.user.findUnique({ where: { email }, select: ACCOUNT_SELECT });
-
-          const hashMatches = await bcrypt.compare(password, user?.passwordHash || DUMMY_HASH);
-          const passwordMatches = Boolean(user?.passwordHash) && hashMatches;
-          const verificationTokenValid =
-            user && passwordMatches && verifyToken ? await isValidVerificationToken(verifyToken, user.id) : false;
-
-          const decision = decidePasswordLogin(user, { passwordMatches, verificationTokenValid });
-
-          if (decision.action === "deny") {
-            // A link was presented but is no longer valid: say so instead of "check your email".
-            if (decision.code === "email_not_verified" && verifyToken) throw new SignInError("verification_invalid");
-            throw new SignInError(decision.code);
-          }
-
-          // `user` is non-null for every non-deny decision.
-          const account = user as AccountRow;
-          if (decision.action === "allow_and_verify") {
-            await prisma.$transaction([
-              prisma.user.update({ where: { id: account.id }, data: { emailVerified: new Date() } }),
-              prisma.emailVerificationToken.deleteMany({ where: { userId: account.id } }),
-            ]);
-          }
-          return toSessionUser(account);
+          result = await signInWithPassword({
+            email: typeof credentials.email === "string" ? credentials.email : "",
+            password: typeof credentials.password === "string" ? credentials.password : "",
+            verifyToken: typeof credentials.verifyToken === "string" ? credentials.verifyToken : "",
+            ipKey: clientIpKey(request),
+          });
         } catch (err) {
-          if (err instanceof CredentialsSignin) throw err;
           // Database or other server failure: log the cause, show a generic message.
           console.error("[auth] sign-in failed:", err instanceof Error ? `${err.name}: ${err.message}` : err);
           throw new SignInError("server_error");
         }
+        if (!result.ok) throw new SignInError(result.code);
+        return toSessionUser(result.user);
       },
     }),
     ...(googleClientId && googleClientSecret
@@ -195,7 +155,6 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       const lastChecked = typeof token.svCheckedAt === "number" ? token.svCheckedAt : 0;
       if (userId && Date.now() - lastChecked > SESSION_RECHECK_MS) {
         try {
-          await ensureDB();
           const row = await prisma.user.findUnique({ where: { id: userId }, select: { sessionVersion: true } });
           const tokenVersion = typeof token.sv === "number" ? token.sv : 0;
           if (!row || row.sessionVersion !== tokenVersion) return null;

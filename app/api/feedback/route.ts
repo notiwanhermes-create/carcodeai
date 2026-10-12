@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Pool } from "pg";
 import { Resend } from "resend";
 import { appendFile, mkdir } from "fs/promises";
 import { join } from "path";
 import { consumeRateLimit, envInt } from "@/app/lib/rate-limit";
 import { clientIpKey } from "@/app/lib/client-ip";
 import { auth } from "@/app/lib/auth-config";
+import prisma from "@/app/lib/prisma";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,45 +52,6 @@ function sanitizePageUrl(raw: string | null): string | null {
   } catch {
     return null;
   }
-}
-
-let feedbackPool: Pool | null = null;
-
-function getPool(): Pool {
-  if (!feedbackPool) {
-    const dbUrl = process.env.DATABASE_URL;
-    if (!dbUrl) throw new Error("DATABASE_URL not configured");
-    const needsSsl =
-      dbUrl.includes("neon.tech") ||
-      dbUrl.includes("neon/") ||
-      (process.env.NODE_ENV === "production" && !dbUrl.includes("sslmode=disable"));
-    feedbackPool = new Pool({
-      connectionString: dbUrl,
-      max: 3,
-      connectionTimeoutMillis: 10000,
-      ssl: needsSsl ? { rejectUnauthorized: false } : false,
-    });
-  }
-  return feedbackPool;
-}
-
-let tableReady = false;
-
-async function ensureFeedbackTable(client: import("pg").PoolClient) {
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS feedback (
-      id SERIAL PRIMARY KEY,
-      name TEXT,
-      email TEXT,
-      rating INTEGER,
-      message TEXT NOT NULL,
-      page_url TEXT,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    );
-    -- The table may have been created elsewhere with a "page" column instead.
-    ALTER TABLE feedback ADD COLUMN IF NOT EXISTS page_url TEXT;
-  `);
-  tableReady = true;
 }
 
 function safeLog(msg: string, meta?: Record<string, unknown>) {
@@ -183,21 +144,24 @@ async function saveFeedbackFallback(payload: FeedbackPayload) {
   }
 }
 
+/**
+ * Store one feedback entry. The page address goes in the `page_url` column,
+ * the same field the admin page reads (see app/lib/adminFeedback.ts).
+ */
 async function saveFeedback(payload: FeedbackPayload) {
   if (!process.env.DATABASE_URL) {
     await saveFeedbackFallback(payload);
     return;
   }
-  const client = await getPool().connect();
-  try {
-    if (!tableReady) await ensureFeedbackTable(client);
-    await client.query(
-      `INSERT INTO feedback (name, email, rating, message, page_url) VALUES ($1, $2, $3, $4, $5)`,
-      [payload.name || null, payload.email || null, payload.rating, payload.message, payload.pageUrl],
-    );
-  } finally {
-    client.release();
-  }
+  await prisma.feedback.create({
+    data: {
+      name: payload.name || null,
+      email: payload.email || null,
+      rating: payload.rating,
+      message: payload.message,
+      pageUrl: payload.pageUrl,
+    },
+  });
 }
 
 type ErrorBody = { ok: false; error: string; code?: string };

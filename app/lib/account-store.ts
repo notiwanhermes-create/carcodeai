@@ -2,7 +2,6 @@
  * Database side of the account rules in account-policy.ts. Server-only.
  */
 import prisma from "./prisma";
-import { ensureDB } from "./db";
 import { decideGoogleSignIn, type AccountRecord } from "./account-policy";
 
 export const ACCOUNT_SELECT = {
@@ -46,7 +45,6 @@ export type GoogleAccountResult =
  * rules in decideGoogleSignIn.
  */
 export async function resolveGoogleAccount(input: GoogleProfileInput): Promise<GoogleAccountResult> {
-  await ensureDB();
   const [byGoogleId, byEmail] = await Promise.all([
     prisma.user.findUnique({ where: { googleId: input.googleId }, select: ACCOUNT_SELECT }),
     prisma.user.findUnique({ where: { email: input.email }, select: ACCOUNT_SELECT }),

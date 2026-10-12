@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import prisma from "@/app/lib/prisma";
-import { ensureDB } from "@/app/lib/db";
 import { readJsonBody } from "@/app/lib/http";
 import { consumeRateLimit, envInt } from "@/app/lib/rate-limit";
 import { clientIpKey, hashForRateLimit } from "@/app/lib/client-ip";
@@ -58,7 +57,6 @@ export async function POST(req: Request) {
     // Without a way to deliver the link, the account could never be activated.
     if (!canSendVerification()) return fail(503, "email_unavailable");
 
-    await ensureDB();
     const existing = await prisma.user.findUnique({
       where: { email },
       select: { id: true, passwordHash: true, googleId: true, emailVerified: true, legacyUnverified: true },

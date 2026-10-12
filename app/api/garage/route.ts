@@ -1,10 +1,12 @@
 import { auth } from "@/app/lib/auth-config";
-import { ensureDB } from "@/app/lib/db";
 import prisma from "@/app/lib/prisma";
+import { parseModelYear } from "@/app/lib/maintenance-values";
 import { NextRequest, NextResponse } from "next/server";
 
+/** The columns the page uses. Listed explicitly so a query never depends on columns it does not need. */
+const VEHICLE_FIELDS = { id: true, year: true, make: true, model: true, engine: true, vin: true, nickname: true } as const;
+
 export async function GET() {
-  await ensureDB();
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
@@ -13,6 +15,7 @@ export async function GET() {
   const vehicles = await prisma.vehicle.findMany({
     where: { userId: session.user.id },
     orderBy: { createdAt: "desc" },
+    select: VEHICLE_FIELDS,
   });
 
   return NextResponse.json({
@@ -29,7 +32,6 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  await ensureDB();
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
@@ -68,12 +70,15 @@ export async function POST(req: NextRequest) {
     data: {
       userId: session.user.id,
       year,
+      // The same year as a number, for sorting and date maths later on.
+      modelYear: parseModelYear(year),
       make,
       model,
       engine: engine || null,
       vin: vin || null,
       nickname: nickname || null,
     },
+    select: VEHICLE_FIELDS,
   });
 
   return NextResponse.json({

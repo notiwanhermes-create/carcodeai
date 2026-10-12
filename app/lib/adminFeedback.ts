@@ -1,46 +1,33 @@
-import { Pool } from "pg";
+/**
+ * Reading stored feedback for the admin page and the admin API.
+ * Both use this one function, so they always agree on the fields.
+ */
+import prisma from "./prisma";
 
-let adminPool: Pool | null = null;
-
-function getPool(): Pool {
-  if (!adminPool) {
-    const dbUrl = process.env.DATABASE_URL;
-    if (!dbUrl) throw new Error("DATABASE_URL not configured");
-    const needsSsl =
-      dbUrl.includes("neon.tech") ||
-      dbUrl.includes("neon/") ||
-      (process.env.NODE_ENV === "production" && !dbUrl.includes("sslmode=disable"));
-    adminPool = new Pool({
-      connectionString: dbUrl,
-      max: 2,
-      connectionTimeoutMillis: 10000,
-      ssl: needsSsl ? { rejectUnauthorized: false } : false,
-    });
-  }
-  return adminPool;
-}
-
+/** One feedback entry as the admin page shows it. */
 export type FeedbackRow = {
   created_at: string;
   rating: number | null;
   name: string | null;
   email: string | null;
+  /** Where the feedback was sent from (stored in the `page_url` column). */
   page_url: string | null;
   message: string;
 };
 
-export async function getFeedbackRows(): Promise<FeedbackRow[]> {
-  const pool = getPool();
-  const client = await pool.connect();
-  try {
-    const result = await client.query(
-      `SELECT created_at, rating, name, email, page_url, message
-       FROM feedback
-       ORDER BY created_at DESC
-       LIMIT 200`
-    );
-    return result.rows as FeedbackRow[];
-  } finally {
-    client.release();
-  }
+/** The most recent feedback, newest first. */
+export async function getFeedbackRows(limit = 200): Promise<FeedbackRow[]> {
+  const rows = await prisma.feedback.findMany({
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: limit,
+    select: { createdAt: true, rating: true, name: true, email: true, pageUrl: true, message: true },
+  });
+  return rows.map((r) => ({
+    created_at: r.createdAt.toISOString(),
+    rating: r.rating,
+    name: r.name,
+    email: r.email,
+    page_url: r.pageUrl,
+    message: r.message,
+  }));
 }

@@ -53,17 +53,21 @@ export function directAddress(url) {
   }
 }
 
+/** The address as configured: DIRECT_URL, then DATABASE_URL_UNPOOLED, then the app's own. */
+function configuredAddress(env) {
+  return (env.DIRECT_URL || env.DATABASE_URL_UNPOOLED || env.DATABASE_URL || "").trim();
+}
+
 /**
- * The address migrations use. An explicitly configured direct address wins.
- * Otherwise the app's own address is used, switched to Neon's direct host when
- * it is a Neon pooled one.
+ * The address migrations use: the configured one, switched to Neon's direct
+ * host whenever it is a Neon pooled address. That includes DIRECT_URL itself,
+ * because Neon's connection dialog hands out the pooled address by default and
+ * it is easy to paste that one by mistake.
  * @param {Record<string, string | undefined>} [env]
  * @returns {string}
  */
 export function databaseUrl(env = process.env) {
-  const explicit = (env.DIRECT_URL || env.DATABASE_URL_UNPOOLED || "").trim();
-  if (explicit) return explicit;
-  return directAddress((env.DATABASE_URL || "").trim());
+  return directAddress(configuredAddress(env));
 }
 
 function describeTarget(url) {
@@ -124,8 +128,8 @@ async function main() {
     return;
   }
   log(`database: ${describeTarget(url)}`);
-  if (!process.env.DIRECT_URL && !process.env.DATABASE_URL_UNPOOLED && url !== (process.env.DATABASE_URL || "").trim()) {
-    log("DATABASE_URL is a pooled address: using the direct host (without \"-pooler\") for migrations.");
+  if (url !== configuredAddress(process.env)) {
+    log("the configured address is a pooled one: using the direct host of the same database (without \"-pooler\") for migrations.");
   }
 
   const state = await inspect(url);

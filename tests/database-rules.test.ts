@@ -221,6 +221,9 @@ describe("the schema file", () => {
   it("has one page column on feedback, and none of the removed leftovers", () => {
     const feedback = models.find((m) => m.name === "Feedback")!.body;
     expect(feedback).toMatch(/pageUrl\s+String\?\s+@map\("page_url"\)/);
+    // 64-bit, as the production table is (found by the rehearsal of 2026-10-12).
+    expect(feedback).toMatch(/^\s*id\s+BigInt\s+@id\s+@default\(autoincrement\(\)\)/m);
+    expect(read("prisma/migrations/20260101000000_baseline/migration.sql")).toMatch(/CREATE TABLE "feedback" \(\s+"id" BIGSERIAL NOT NULL,/);
     expect(feedback).not.toMatch(/^\s*page\s/m);
     expect(schema).not.toMatch(/^model Session\b/m);
     expect(schema).not.toMatch(/oem_fault_codes/);
@@ -247,8 +250,11 @@ describe("which address migrations use", () => {
     expect(directAddress(pooled)).toBe(direct);
     expect(directAddress(direct)).toBe(direct);
     expect(databaseUrl({ DATABASE_URL: pooled })).toBe(direct);
-    // An address that was configured as the direct one is never rewritten.
-    expect(databaseUrl({ DIRECT_URL: pooled, DATABASE_URL: pooled })).toBe(pooled);
+    // The same applies when the pooled address was put in DIRECT_URL by mistake
+    // (Neon's connection dialog offers the pooled one by default).
+    expect(databaseUrl({ DIRECT_URL: pooled })).toBe(direct);
+    expect(databaseUrl({ DATABASE_URL_UNPOOLED: pooled, DATABASE_URL: "postgres://other/db" })).toBe(direct);
+    expect(databaseUrl({ DIRECT_URL: direct, DATABASE_URL: pooled })).toBe(direct);
     // Other hosts are left exactly as they are.
     for (const other of [
       "postgres://postgres:postgres@localhost:51214/template1?sslmode=disable",

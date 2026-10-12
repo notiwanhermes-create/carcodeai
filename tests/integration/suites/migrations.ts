@@ -109,7 +109,7 @@ export function migrationSuite() {
     const SHAPES: Shape[] = [
       { name: "the February 2026 prototype", build: buildPrototype, hasPasswords: false, hasCosts: false, hasFeedback: false, leftoverTables: ["auth_pending", "auth_tokens", "sessions"] },
       { name: "the database just before Phase 1", build: buildBeforePhase1, hasPasswords: true, hasCosts: true, hasFeedback: true, leftoverTables: ["feedback_auto_reply_log", "oem_fault_codes", "sessions"] },
-      { name: "production as of Phase 2C", build: buildPhase2c, hasPasswords: true, hasCosts: true, hasFeedback: true, leftoverTables: ["feedback_auto_reply_log", "oem_fault_codes", "sessions"] },
+      { name: "a database built from scratch by the Phase 2C code", build: buildPhase2c, hasPasswords: true, hasCosts: true, hasFeedback: true, leftoverTables: ["feedback_auto_reply_log", "oem_fault_codes", "sessions"] },
     ];
 
     /* ───────────── the real tool, end to end ───────────── */
@@ -131,6 +131,8 @@ export function migrationSuite() {
       const drift = db.schemaMatchesPrisma();
       expect(drift.matches, drift.output).toBe(true);
       expect(await db.schemaSnapshot(pool)).toEqual(expectedShape);
+      // The feedback id is 64-bit, as it is in production.
+      expect(await one(`SELECT data_type FROM information_schema.columns WHERE table_name = 'feedback' AND column_name = 'id'`)).toEqual({ data_type: "bigint" });
     });
 
     it("records the baseline on an existing database instead of rebuilding it, then applies the rest", async () => {
@@ -256,6 +258,72 @@ export function migrationSuite() {
         expect(await hasColumn("feedback", "page_url")).toBe(true);
       });
     }
+
+    it("migrates production as it was actually found (rehearsal of 2026-10-12), exactly", async () => {
+      // The real structure (definitions only), filled with invented rows.
+      await pool.query(legacy.PRODUCTION_AS_FOUND_SCHEMA);
+      await pool.query(legacy.PRODUCTION_AS_FOUND_SAMPLE);
+      const everyRow = async () => {
+        const out: Record<string, unknown[]> = {};
+        for (const table of await db.tableNames(pool)) out[table] = await rows(`SELECT * FROM "${table}" ORDER BY 1, 2`);
+        return out;
+      };
+      const before = await everyRow();
+      const leftBehind = await db.leftovers(pool);
+
+      const run = db.runScript("db-migrate.mjs");
+      expect(run.output).toContain("recording the baseline as already applied");
+      expect(run.status, run.output).toBe(0);
+
+      // The app's tables are now identical to a database built from nothing,
+      // including the 64-bit feedback id. No allowance is made here.
+      expect(db.appShape(await db.schemaSnapshot(pool), { exact: true })).toEqual(db.appShape(expectedShape, { exact: true }));
+      expect(await one(`SELECT data_type FROM information_schema.columns WHERE table_name = 'feedback' AND column_name = 'id'`)).toEqual({ data_type: "bigint" });
+
+      // The schema file and the migrated database disagree about nothing except
+      // the three tables that are deliberately left for the clean-up.
+      const diff = db.runPrisma(["migrate", "diff", "--from-config-datasource", "--to-schema", "prisma/schema.prisma"]).output;
+      expect(diff).not.toMatch(/Changed the `(users|garage_vehicles|maintenance_records|feedback|rate_limits|email_verification_tokens)` table/);
+      expect(diff).not.toMatch(/Added tables|Added enums/);
+      expect([...diff.matchAll(/^\s+- (\w+)$/gm)].map((m) => m[1]).sort()).toEqual(["feedback_auto_reply_log", "oem_fault_codes", "sessions"]);
+
+      // Everything older versions left behind is untouched...
+      expect(Object.keys(leftBehind.tables).sort()).toEqual(["feedback_auto_reply_log", "oem_fault_codes", "sessions"]);
+      expect(leftBehind.columns).toEqual({}); // production has no feedback.page column
+      expect(await db.leftovers(pool)).toEqual(leftBehind);
+
+      // ...and so is every value that was there before, in every table. The only
+      // existing value the migration may change is an empty is_active flag, which becomes "no".
+      const after = await everyRow();
+      expect(Object.keys(after).sort()).toEqual(Object.keys(before).sort());
+      for (const table of Object.keys(before)) {
+        expect(after[table], table).toHaveLength(before[table].length);
+        for (const [i, was] of (before[table] as Array<Record<string, unknown>>).entries()) {
+          const now = after[table][i] as Record<string, unknown>;
+          for (const [column, value] of Object.entries(was)) {
+            const expected = table === "garage_vehicles" && column === "is_active" && value === null ? false : value;
+            expect(now[column], `${table}.${column}`).toEqual(expected);
+          }
+        }
+      }
+
+      // What was added, filled in from the values that were already there.
+      expect(Object.fromEntries((await rows(`SELECT id, model_year FROM garage_vehicles`)).map((v) => [v.id, v.model_year]))).toEqual({ "pv-1": 2015, "pv-2": 2003, "pv-4": 2018, "pv-5": 2011, "pv-6": 2022 });
+      expect(await rows(`SELECT id, to_char(service_date, 'YYYY-MM-DD') AS service_date, odometer_value, odometer_unit, cost_amount::text AS cost_amount FROM maintenance_records ORDER BY id`)).toEqual([
+        { id: "pm-1", service_date: "2026-06-15", odometer_value: 120000, odometer_unit: "km", cost_amount: "1250.50" },
+        { id: "pm-2", service_date: null, odometer_value: null, odometer_unit: null, cost_amount: null },
+        { id: "pm-3", service_date: "2026-09-20", odometer_value: 75500, odometer_unit: "mi", cost_amount: null },
+      ]);
+      expect((await one(`SELECT COUNT(*)::int AS n FROM rate_limits WHERE expires_at = window_start + INTERVAL '2 days'`)).n).toBe(3);
+      // Nobody's verification state changed.
+      expect((await rows(`SELECT id, email_verified IS NOT NULL AS verified, legacy_unverified FROM users ORDER BY id`))).toEqual([
+        { id: "p-both", verified: true, legacy_unverified: false },
+        { id: "p-google-1", verified: true, legacy_unverified: false },
+        { id: "p-legacy", verified: false, legacy_unverified: true },
+        { id: "p-pass-1", verified: true, legacy_unverified: false },
+        { id: "p-pending", verified: false, legacy_unverified: false },
+      ]);
+    });
 
     it("classifies accounts exactly once: on a database that never had email verification", async () => {
       await buildBeforePhase1();

@@ -28,7 +28,7 @@ How the database is defined, changed, backed up and tested. Written in Phase 2D
 | `garage_vehicles` | `Vehicle` | A signed-in user's vehicles | the user deletes the vehicle; the account is deleted |
 | `maintenance_records` | `MaintenanceRecord` | Service entries for a vehicle | the user deletes the entry; its vehicle or account is deleted |
 | `rate_limits` | `RateLimit` | Short-lived counters (see below) | automatically, after `expires_at` |
-| `feedback` | `Feedback` | Messages from the feedback form | never automatically |
+| `feedback` | `Feedback` | Messages from the feedback form (64-bit id) | never automatically |
 | `_prisma_migrations` | (Prisma's own) | Which migrations have been applied | never |
 
 An existing database also still holds a few things older versions created and
@@ -115,6 +115,8 @@ Prisma query API.
 | `npm run db:rollback-check` | Run the previous version of the app, for real, against a database migrated by this release (see "Rollback check"). | Only a local test database, which it empties |
 
 Each uses `DIRECT_URL` if set, then `DATABASE_URL_UNPOOLED`, then `DATABASE_URL`.
+`db:migrate` always connects to the direct host: given a Neon pooled address, it
+uses the same address without `-pooler` and says so.
 
 To point a command at a particular database for one run, set the address in
 your own terminal (never paste it into a chat or commit it):
@@ -197,16 +199,16 @@ On an existing database, this release leaves the following in place, untouched.
 The app does not use any of it. `npm run db:inspect` lists what a given database
 actually has under **LEFT FROM OLDER VERSIONS**.
 
-| Left in place | What it is |
-| --- | --- |
-| table `sessions` | Cookie log-ins from the first prototype. The app has used Auth.js tokens since. |
-| tables `auth_pending`, `auth_tokens` | Temporary sign-in state from the prototype (may not exist). |
-| table `feedback_auto_reply_log` | A log for an auto-reply removed in Phase 1 (may not exist). |
-| table `oem_fault_codes` | The old manufacturer-code table, unused since Phase 2B (may not exist). |
-| column `feedback.page` | The older of the two page columns. Its values are copied to `page_url` where that was empty; the originals stay. |
-| indexes `users_email_unique`, `users_google_id_unique` | Superseded by `users_email_key` and `users_google_id_key`. Both sets exist for now. |
-| column `garage_vehicles.is_active` | Never read or written, but the previous version's queries still select it. Hidden from the Prisma client with `@ignore`. |
-| expired rows in `rate_limits` | No migration deletes them. The running app clears expired counters itself. |
+| Left in place | What it is | Exists in production? (rehearsal, 2026-10-12) |
+| --- | --- | --- |
+| table `sessions` | Cookie log-ins from the first prototype. The app has used Auth.js tokens since. | Yes |
+| tables `auth_pending`, `auth_tokens` | Temporary sign-in state from the prototype. | No |
+| table `feedback_auto_reply_log` | A log for an auto-reply removed in Phase 1. | Yes |
+| table `oem_fault_codes` | The old manufacturer-code table, unused since Phase 2B. | Yes |
+| column `feedback.page` | The older of the two page columns. Its values are copied to `page_url` where that was empty; the originals stay. | No (the table has `page_url` only) |
+| indexes `users_email_unique`, `users_google_id_unique` | Superseded by `users_email_key` and `users_google_id_key`. Both sets exist for now. | Yes |
+| column `garage_vehicles.is_active` | Never read or written, but the previous version's queries still select it. Hidden from the Prisma client with `@ignore`. | Yes |
+| expired rows in `rate_limits` | No migration deletes them. The running app clears expired counters itself. | (rows, not structure) |
 
 The clean-up will be its own migration in its own pull request, written **after**
 this release has run in production and `db:inspect` has shown what production
@@ -252,6 +254,44 @@ every column the previous version's database client names still exists with the
 type it expects, and every column this release added is optional or has a
 default.
 
+## Rehearsal on a copy of production (2026-10-12)
+
+The migrations were applied to a Neon branch copied from production, with the
+real command, before anything touched production. What it showed:
+
+- **Before:** no migration history, and nothing under *NEEDS A DECISION*.
+- **The migration:** the baseline was recorded (not run) and
+  `converge_and_expand` applied without error.
+- **After:** two migrations applied; no table lost or gained a row, including
+  the tables older versions left behind; the list under *LEFT FROM OLDER
+  VERSIONS* is identical before and after. A second run of the command found
+  nothing to do.
+- **The new version of the app** read every table through its database client
+  and performed each kind of write (account, vehicle, service record, feedback,
+  verification token, counter, vehicle delete with cascade). The writes were
+  made inside a transaction that was rolled back, so the copy kept its rows.
+- **The previous version (Phase 2C)**, real code, was started against the
+  migrated copy: its start-up routine ran and changed nothing in the structure,
+  and its database client read and wrote every table it knows (writes rolled
+  back). This is the Instant Rollback case, on production's real structure.
+
+One thing differed from what the code history suggested: production's
+`feedback.id` is 64-bit. The table was created long ago and no later version
+changed it. `schema.prisma` and the baseline now say `BigInt` / `BIGSERIAL` to
+match, and after that the only differences between the migrated copy and
+`schema.prisma` are the three leftover tables. `converge_and_expand`, the only
+migration that actually runs on production, was not changed after the rehearsal.
+
+Production's exact structure, as found, is kept as a test fixture
+(`PRODUCTION_AS_FOUND_SCHEMA` in `tests/integration/legacy-shapes.ts`: table
+and column definitions only). The rows the test puts in it are invented and
+bear no relation to what production holds. A database test migrates it and
+compares every value before and after.
+
+This section records structure and outcomes only. What production's tables
+contain, and how much, is deliberately not written down here: run
+`npm run db:inspect` against a copy to see counts.
+
 ## How a deployment applies migrations
 
 The `build` script is:
@@ -284,8 +324,10 @@ Do these in order. Steps 1 to 3 change nothing in production.
    from `main` (production), named for example `backup-before-2d`. A branch is a
    complete copy at that moment. Leave it alone; it is the way back.
 2. **Rehearse on a copy.** Create a second branch, for example `rehearse-2d`.
-   Copy its **direct** connection string (Neon → Connect → switch off
-   "Connection pooling"). In your own terminal, in the project folder:
+   Copy its connection string (Neon → Connect). The direct one is right
+   (switch off "Connection pooling"), but if the pooled one is pasted the
+   migration command switches to the direct host of the same database by
+   itself. In your own terminal, in the project folder:
 
    ```powershell
    $env:DIRECT_URL = "<rehearse-2d direct address>"
@@ -304,8 +346,8 @@ Do these in order. Steps 1 to 3 change nothing in production.
    the migration fails on the copy. Production has not been touched.
 4. **Set the direct address in Vercel** (recommended): Settings → Environment
    Variables → add `DIRECT_URL`, **Production only**, value = the production
-   **direct** connection string. If it is not set and `DATABASE_URL` is a Neon
-   pooled address, the script uses the same address without `-pooler`.
+   **direct** connection string. If it is not set, or a Neon pooled address is
+   given, the script uses the same address without `-pooler`.
 5. **Deploy at a quiet time:** merge the pull request. The production build
    applies the migrations, then builds. In the build log look for
    `[db:migrate] existing database with no migration history: recording the

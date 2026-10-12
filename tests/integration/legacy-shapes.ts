@@ -364,3 +364,138 @@ export const PHASE_2C_PRISMA_MODELS: Record<string, { columns: Record<string, st
     alwaysSupplied: ["message", "created_at"],
   },
 };
+
+/**
+ * The STRUCTURE of production, exactly as the migration rehearsal of 2026-10-12
+ * found it: every table, column (in the same order), default, index and
+ * constraint, as reported by `npm run db:inspect` for a copy of the production
+ * database. That report contains definitions and never row contents, and no row
+ * of that database was ever read into this project: nothing here comes from it.
+ *
+ * It differs from what the code history suggested in one way that matters:
+ * `feedback` was created long ago with a 64-bit id, a required `created_at` and
+ * no `page` column, and no later version ever changed it.
+ */
+export const PRODUCTION_AS_FOUND_SCHEMA = `
+  CREATE TABLE users (
+    id TEXT PRIMARY KEY,
+    email TEXT,
+    password_hash TEXT,
+    google_id TEXT,
+    first_name TEXT,
+    last_name TEXT,
+    profile_image TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    email_verified TIMESTAMPTZ,
+    session_version INTEGER NOT NULL DEFAULT 0,
+    legacy_unverified BOOLEAN NOT NULL DEFAULT FALSE
+  );
+  CREATE UNIQUE INDEX users_email_unique ON users (LOWER(email)) WHERE email IS NOT NULL;
+  CREATE UNIQUE INDEX users_google_id_unique ON users (google_id) WHERE google_id IS NOT NULL;
+  CREATE TABLE sessions (
+    sid TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+  CREATE TABLE garage_vehicles (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    year TEXT NOT NULL,
+    make TEXT NOT NULL,
+    model TEXT NOT NULL,
+    engine TEXT,
+    vin TEXT,
+    is_active BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    nickname TEXT
+  );
+  CREATE TABLE maintenance_records (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    vehicle_id TEXT NOT NULL REFERENCES garage_vehicles(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    date TEXT NOT NULL,
+    mileage TEXT,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    cost TEXT
+  );
+  CREATE TABLE feedback (
+    id BIGSERIAL PRIMARY KEY,
+    message TEXT NOT NULL,
+    name TEXT,
+    email TEXT,
+    rating INTEGER,
+    page_url TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  CREATE TABLE feedback_auto_reply_log (
+    id SERIAL PRIMARY KEY,
+    email_lower TEXT NOT NULL,
+    ip_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+  CREATE INDEX idx_feedback_auto_reply_log_lookup ON feedback_auto_reply_log (email_lower, ip_hash, created_at);
+  CREATE TABLE oem_fault_codes (
+    make TEXT NOT NULL,
+    code TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    source TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (make, code)
+  );
+  CREATE TABLE rate_limits (
+    key TEXT NOT NULL,
+    window_start TIMESTAMPTZ NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (key, window_start)
+  );
+  CREATE TABLE email_verification_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+`;
+
+/**
+ * Invented rows for the structure above. Every name, address, vehicle and
+ * value was made up for the test, and how many rows there are is arbitrary: it
+ * says nothing about what, or how much, production holds.
+ */
+export const PRODUCTION_AS_FOUND_SAMPLE = `
+  INSERT INTO users (id, email, password_hash, google_id, first_name, created_at, email_verified, legacy_unverified) VALUES
+    ('p-google-1', 'ana@example.test',   NULL,          'g-2001', 'Ana',  '2026-03-01T10:00:00Z', '2026-03-01T10:00:00Z', FALSE),
+    ('p-pass-1',   'cara@example.test',  'HASH-CARA',   NULL,     'Cara', '2026-09-01T10:00:00Z', '2026-09-01T11:00:00Z', FALSE),
+    ('p-legacy',   'dev@example.test',   'HASH-DEV',    NULL,     'Dev',  '2026-02-20T10:00:00Z', NULL,                   TRUE),
+    ('p-both',     'eli@example.test',   'HASH-ELI',    'g-2005', 'Eli',  '2026-04-01T10:00:00Z', '2026-04-01T10:00:00Z', FALSE),
+    ('p-pending',  'fay@example.test',   'HASH-FAY',    NULL,     NULL,   '2026-10-10T10:00:00Z', NULL,                   FALSE);
+  INSERT INTO garage_vehicles (id, user_id, year, make, model, engine, vin, is_active, created_at, nickname) VALUES
+    ('pv-1', 'p-google-1', '2015', 'Toyota', 'Camry',   '2.5L I4', '4T1BF1FK5FU000001', TRUE,  '2026-03-01T11:00:00Z', 'Daily'),
+    ('pv-2', 'p-google-1', '2003', 'Honda',  'Accord',  NULL,      NULL,                FALSE, '2026-03-05T11:00:00Z', NULL),
+    ('pv-4', 'p-pass-1',   '2018', 'BMW',    '330i',    NULL,      NULL,                FALSE, '2026-09-02T11:00:00Z', NULL),
+    ('pv-5', 'p-legacy',   '2011', 'Nissan', 'Altima',  NULL,      NULL,                NULL,  '2026-02-21T11:00:00Z', NULL),
+    ('pv-6', 'p-both',     '2022', 'Kia',    'Soul',    NULL,      NULL,                FALSE, '2026-04-02T11:00:00Z', NULL);
+  INSERT INTO maintenance_records (id, user_id, vehicle_id, type, date, mileage, notes, created_at, cost) VALUES
+    ('pm-1', 'p-google-1', 'pv-1', 'Oil Change',    '2026-06-15',   '120,000 km',   'Synthetic', '2026-06-15T12:00:00Z', '$1,250.50'),
+    ('pm-2', 'p-google-1', 'pv-1', 'Other',         'last tuesday', 'about 90k',    NULL,        '2026-06-16T12:00:00Z', '120,50'),
+    ('pm-3', 'p-pass-1',   'pv-4', 'Brake Service', '2026-09-20',   '75,500 miles', NULL,        '2026-09-20T12:00:00Z', NULL);
+  INSERT INTO feedback (message, name, email, rating, page_url, created_at) VALUES
+    ('First',   'Ana', 'ana@example.test', 5,    'https://www.carcodeai.com/',          '2026-03-03T09:00:00Z'),
+    ('Second',  NULL,  NULL,               NULL, NULL,                                  '2026-03-04T09:00:00Z'),
+    ('Third',   NULL,  NULL,               4,    'https://www.carcodeai.com/dashboard', '2026-09-05T09:00:00Z');
+  INSERT INTO oem_fault_codes (make, code, title, source) VALUES
+    ('BMW', '480A12', 'Seed A', 'seed'), ('BMW', '480A0C', 'Seed B', 'seed'), ('BMW', '480A11', 'Seed C', 'seed'), ('BMW', '481A01', 'Seed D', 'seed');
+  INSERT INTO feedback_auto_reply_log (email_lower, ip_hash, created_at) VALUES
+    ('ana@example.test', 'iphash-1', '2026-03-03T09:00:01Z');
+  INSERT INTO sessions (sid, user_id, expires_at) VALUES
+    ('p-old-session', 'p-legacy', '2026-02-25T00:00:00Z');
+  INSERT INTO rate_limits (key, window_start, count) VALUES
+    ('diag:guest:day:ip:aaa', NOW() - INTERVAL '2 hours', 2),
+    ('feedback:ip:day:bbb',   NOW() - INTERVAL '6 days',  1),
+    ('login:ip:ccc',          NOW() - INTERVAL '9 days',  3);
+  INSERT INTO email_verification_tokens (token_hash, user_id, expires_at) VALUES
+    ('p-token-hash', 'p-pending', NOW() + INTERVAL '1 day');
+`;

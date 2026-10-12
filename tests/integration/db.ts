@@ -151,10 +151,16 @@ type Snapshot = Awaited<ReturnType<typeof schemaSnapshot>>;
  * The part of a snapshot that describes the app's own tables, ignoring what
  * older versions left behind. Every database, old or new, must be equal here.
  */
-export function appShape(snapshot: Snapshot): Snapshot {
+export function appShape(snapshot: Snapshot, options: { exact?: boolean } = {}): Snapshot {
   const isApp = (table: string) => APP_TABLES.includes(table);
+  // `feedback.id` is 64-bit in production and in every new database. A database
+  // whose feedback table was created by older code (or by the convergence
+  // migration on a database that had none) has a 32-bit one. The app works with
+  // both, so the width is not compared unless `exact` is asked for.
+  const sameWidth = (c: Snapshot["columns"][number]) =>
+    !options.exact && c.table_name === "feedback" && c.column_name === "id" ? { ...c, data_type: "integer or bigint", udt_name: "int4 or int8", numeric_precision: null } : c;
   return {
-    columns: snapshot.columns.filter((c) => isApp(c.table_name) && !LEFTOVER_COLUMNS.includes(`${c.table_name}.${c.column_name}`)),
+    columns: snapshot.columns.filter((c) => isApp(c.table_name) && !LEFTOVER_COLUMNS.includes(`${c.table_name}.${c.column_name}`)).map(sameWidth),
     indexes: snapshot.indexes.filter((i) => isApp(i.tablename) && !LEFTOVER_INDEXES.includes(i.indexname)),
     constraints: snapshot.constraints.filter((c) => isApp(c.table_name)),
   };

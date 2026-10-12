@@ -173,6 +173,7 @@ export function constraintSuite() {
         "rate_limits.window_start": "timestamp with time zone",
         "rate_limits.expires_at": "timestamp with time zone",
         "rate_limits.count": "integer",
+        "feedback.id": "bigint", //                         as in production
         "feedback.page_url": "text",
         "feedback.rating": "integer",
         "feedback.created_at": "timestamp with time zone",

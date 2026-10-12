@@ -38,6 +38,18 @@ merging. New optional settings: `DIRECT_URL`, `DATABASE_POOL_MAX`,
   applies these migrations, then starts that version again and exercises
   accounts, garage, service records, feedback and counters. It also runs as
   part of the database tests.
+- **Rehearsed on a copy of production (2026-10-12).** The migrations were
+  applied to a Neon branch copied from production: no blockers, every table
+  kept every row, nothing left over from older versions was touched, and both
+  the new version and the real Phase 2C code worked against the result. The
+  rehearsal showed that production's `feedback.id` is 64-bit, so
+  `schema.prisma` and the baseline now say `BigInt` / `BIGSERIAL`; the
+  migration that runs on production was not changed. Production's real
+  structure is now a test fixture. See "Rehearsal on a copy of production" in
+  `docs/database.md`.
+- **`db:migrate` always uses the direct host.** Given a Neon pooled address,
+  even in `DIRECT_URL`, it switches to the same address without `-pooler` and
+  says so.
 - **Typed values next to the text users type.** Vehicle year, service date,
   odometer and cost keep their text exactly as entered and gain a typed copy
   (`model_year`, `service_date`, `odometer_value` + `odometer_unit`,

@@ -67,8 +67,9 @@ CREATE TABLE "maintenance_records" (
     CONSTRAINT "maintenance_records_pkey" PRIMARY KEY ("id")
 );
 
+-- The id is 64-bit (BIGSERIAL) because that is what production's table has.
 CREATE TABLE "feedback" (
-    "id" SERIAL NOT NULL,
+    "id" BIGSERIAL NOT NULL,
     "name" TEXT,
     "email" TEXT,
     "rating" INTEGER,

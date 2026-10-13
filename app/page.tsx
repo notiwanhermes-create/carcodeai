@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useSession, signOut } from "next-auth/react";
 import Link from "next/link";
 import Image from "next/image";
@@ -9,6 +9,10 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { VehicleDeleteButton } from "../components/VehicleDeleteButton";
 import { LANGUAGES, tr, type LangCode } from "./data/translations";
 import { useGarageVehicles } from "./lib/useGarageVehicles";
+import { track } from "./lib/analytics";
+import { applyImportOutcomes, batchForUpload, deviceReading, planDeviceImport, summarizeOutcomes, type DeviceImportOutcome, type DevicePlanEntry } from "./lib/device-data";
+import type { MaintenanceDto } from "./lib/garage-types";
+import { formatOdometer } from "./lib/odometer";
 import { getMakeLogo } from "./lib/make-logos";
 import { isValidVinFormat, normalizeVin } from "./lib/vin";
 import type { DtcResult } from "./lib/dtc";
@@ -57,6 +61,8 @@ type DiagnosePayload = {
   code: string;
   symptoms: string;
   lang: LangCode;
+  /** The garage vehicle this is for. A signed-in user's diagnosis is saved to that vehicle's history. */
+  vehicleId?: string;
   followUps?: { question: string; answer: string }[];
   /** The ticket issued with the diagnosis being updated. The server checks it and counts the updates. */
   diagnosisToken?: string;
@@ -100,8 +106,8 @@ function MakeLogoImg({
   );
 }
 
-/** Records saved by older versions stored the odometer as a single "mileage" value. */
-type LegacyMaintenanceRecord = MaintenanceRecord & { mileage?: string | number };
+/** A service record as the Maintenance tab lists it, whether it came from the account or from this device. */
+type ServiceRow = { id: string; type: string; date: string; reading: string; notes: string };
 
 /** The browser's "install this app" prompt event (not in the standard DOM typings). */
 type InstallPromptEvent = Event & { prompt: () => Promise<unknown> };
@@ -500,6 +506,8 @@ type LikelyCausesPanelProps = {
   onDownload?: () => void;
   onSaveToHistory?: (session: DiagnosisSession) => void;
   vehicleId?: string | null;
+  /** Signed in: the diagnosis is saved to the account by the server, so there is nothing to save on the device. */
+  signedIn?: boolean;
   lang: LangCode;
   /** Follow-up answers that were already part of this diagnosis (question → answer). */
   followUpAnswers?: Record<string, string>;
@@ -566,6 +574,7 @@ function LikelyCausesResults({
   onDownload,
   onSaveToHistory,
   vehicleId,
+  signedIn,
   lang,
   followUpAnswers,
   onRefine,
@@ -774,14 +783,30 @@ function LikelyCausesResults({
               </svg>
               {tr("guideMe", lang)}
             </button>
-            <button type="button" onClick={handleSave} disabled={!vehicleId || !onSaveToHistory} className={actionButton}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
-                <polyline points="17 21 17 13 7 13 7 21" />
-                <polyline points="7 3 7 8 15 8" />
-              </svg>
-              {tr("saveToHistory", lang)}
-            </button>
+            {signedIn ? (
+              // Already saved to the account by the server: link to it. There is no second copy on the device.
+              result.saved ? (
+                <Link
+                  data-saved-diagnosis
+                  href={`/garage/${encodeURIComponent(result.saved.vehicleId)}/diagnosis/${encodeURIComponent(result.saved.id)}`}
+                  className={cn("shrink-0 flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all", t("border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20", "border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"))}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  {tr("savedToGarage", lang)}
+                </Link>
+              ) : null
+            ) : (
+              <button type="button" onClick={handleSave} disabled={!vehicleId || !onSaveToHistory} className={actionButton}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                  <polyline points="17 21 17 13 7 13 7 21" />
+                  <polyline points="7 3 7 8 15 8" />
+                </svg>
+                {tr("saveToHistory", lang)}
+              </button>
+            )}
             <button type="button" onClick={handleExportPdf} disabled={!vehicleId || exportingPdf} className={actionButton}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -812,6 +837,9 @@ function LikelyCausesResults({
               </button>
             )}
           </div>
+          {signedIn && !result.saved && (
+            <p data-not-saved className={cn("text-xs", t("text-amber-300", "text-amber-700"))}>{tr("notSavedToGarage", lang)}</p>
+          )}
         </div>
       </div>
 
@@ -1127,6 +1155,10 @@ export default function Home() {
   const { data: session, status: sessionStatus } = useSession();
   // Until we know whether this is a guest or a signed-in user, no per-user data is loaded.
   const sessionReady = sessionStatus !== "loading";
+  // Signed in: vehicles, service records and diagnoses live in the account.
+  // Signed out: they live on this device, as before.
+  const signedIn = Boolean(session?.user?.id);
+  const accountUserId = session?.user?.id;
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     setMounted(true);
@@ -1142,12 +1174,20 @@ export default function Home() {
     syncing: garageSyncing,
     addVehicle: addGarageVehicle,
     deleteVehicle: deleteGarageVehicle,
+    refresh: refreshGarage,
     guestVehicles,
-    importGuestVehicles,
+    finishDeviceImport,
     dismissGuestVehicles,
   } = useGarageVehicles({ userId: session?.user?.id, ready: sessionReady });
   const [importingGuest, setImportingGuest] = useState(false);
   const [guestImportNote, setGuestImportNote] = useState("");
+  // What is about to be copied to the account. The user sees it before anything is sent.
+  const [importPlan, setImportPlan] = useState<DevicePlanEntry[] | null>(null);
+  const [deviceOfferHidden, setDeviceOfferHidden] = useState(false);
+  // A signed-in user's service records, from the account.
+  const [accountMaintenance, setAccountMaintenance] = useState<MaintenanceDto[]>([]);
+  // "Diagnose new problem" on a vehicle's page arrives here as /?vehicle=<id>.
+  const [requestedVehicleId, setRequestedVehicleId] = useState<string | null>(null);
 
 
   const theme = "dark" as const;
@@ -1263,59 +1303,117 @@ export default function Home() {
     } catch {}
   }, [diagnosisLoadedKey, diagnosisSessions, diagnosisStorageKey]);
 
+  const loadAccountMaintenance = useCallback(async () => {
+    try {
+      const res = await fetch("/api/maintenance", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(data.records)) setAccountMaintenance(data.records as MaintenanceDto[]);
+    } catch {
+      // Keep what is shown; the next action tries again.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!accountUserId) {
+      setAccountMaintenance([]);
+      return;
+    }
+    void loadAccountMaintenance();
+  }, [accountUserId, loadAccountMaintenance]);
+
+  useEffect(() => {
+    try {
+      const id = new URLSearchParams(window.location.search).get("vehicle");
+      if (id) setRequestedVehicleId(id);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (!requestedVehicleId || !garage.some((v) => v.id === requestedVehicleId)) return;
+    setActiveId(requestedVehicleId);
+    setTab("diagnose");
+    setRequestedVehicleId(null);
+    try {
+      window.history.replaceState(null, "", window.location.pathname);
+    } catch {}
+  }, [garage, requestedVehicleId, setActiveId]);
+
+  // What this device holds that the account does not: guest vehicles with their
+  // history, and history an earlier version kept here for the account's vehicles.
+  const devicePlan = useMemo(() => {
+    if (!signedIn || !maintenanceLoaded || diagnosisLoadedKey !== diagnosisStorageKey) return [];
+    return planDeviceImport(guestVehicles, garage, {
+      maintenance: maintenanceRecords,
+      guestSessions: readDiagnosisSessions(DIAGNOSIS_ANON_STORAGE_KEY),
+      accountSessions: diagnosisSessions,
+    });
+  }, [signedIn, maintenanceLoaded, diagnosisLoadedKey, diagnosisStorageKey, guestVehicles, garage, maintenanceRecords, diagnosisSessions]);
+
   /**
-   * "Import vehicles from this device": copy guest vehicles into the signed-in
-   * account, then move their on-device service records and saved diagnoses
-   * over to the new vehicle ids so that history follows the vehicle.
+   * Copy what this device holds into the account: the vehicles and history the
+   * user was just shown. What the account takes is then removed from the device,
+   * so it is not kept twice; anything it does not take stays here as it was.
    */
-  async function handleImportGuestVehicles() {
-    if (importingGuest) return;
+  async function runDeviceImport() {
+    const plan = importPlan;
+    if (importingGuest || !plan || plan.length === 0) return;
     setImportingGuest(true);
     setGuestImportNote("");
+
+    const outcomes: DeviceImportOutcome[] = [];
+    let interrupted = false;
     try {
-      const outcome = await importGuestVehicles();
-
-      if (outcome.imported.length > 0) {
-        const idMap = new Map(outcome.imported.map(({ from, to }) => [from.id, to.id]));
-
-        setMaintenanceRecords((prev) => {
-          const next = { ...prev };
-          for (const [oldId, newId] of idMap) {
-            const moved = (next[oldId] || []).map((r) => ({ ...r, vehicleId: newId }));
-            if (moved.length) next[newId] = [...moved, ...(next[newId] || [])];
-            delete next[oldId];
-          }
-          return next;
+      for (const vehicles of batchForUpload(plan)) {
+        const res = await fetch("/api/garage/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          body: JSON.stringify({ vehicles }),
         });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !Array.isArray(data.results)) {
+          interrupted = true;
+          break;
+        }
+        outcomes.push(...(data.results as DeviceImportOutcome[]));
+      }
+    } catch {
+      interrupted = true;
+    }
 
-        const guestSessions = readDiagnosisSessions(DIAGNOSIS_ANON_STORAGE_KEY);
-        const remainingGuestSessions = { ...guestSessions };
-        const movedSessions: Record<string, DiagnosisSession[]> = {};
-        for (const [oldId, newId] of idMap) {
-          const list = (guestSessions[oldId] || []).map((s) => ({ ...s, vehicleId: newId }));
-          if (list.length) movedSessions[newId] = list;
-          delete remainingGuestSessions[oldId];
-        }
-        if (Object.keys(movedSessions).length > 0) {
-          setDiagnosisSessions((prev) => {
-            const next = { ...prev };
-            for (const [newId, list] of Object.entries(movedSessions)) next[newId] = [...list, ...(next[newId] || [])];
-            return next;
-          });
-          try {
-            localStorage.setItem(DIAGNOSIS_ANON_STORAGE_KEY, JSON.stringify(remainingGuestSessions));
-          } catch {}
-        }
+    try {
+      if (outcomes.length > 0) {
+        const next = applyImportOutcomes(
+          { maintenance: maintenanceRecords, guestSessions: readDiagnosisSessions(DIAGNOSIS_ANON_STORAGE_KEY), accountSessions: diagnosisSessions },
+          plan,
+          outcomes,
+        );
+        setMaintenanceRecords(next.maintenance);
+        setDiagnosisSessions(next.accountSessions);
+        try {
+          localStorage.setItem(DIAGNOSIS_ANON_STORAGE_KEY, JSON.stringify(next.guestSessions));
+        } catch {}
+        // The import itself is done; a failed reload here only delays what is shown.
+        await finishDeviceImport(outcomes).catch(() => {});
+        await loadAccountMaintenance();
       }
 
+      const done = summarizeOutcomes(outcomes);
       const parts: string[] = [];
-      if (outcome.imported.length) parts.push(`${outcome.imported.length} ${tr("importResultImported", lang)}`);
-      if (outcome.duplicates.length) parts.push(`${outcome.duplicates.length} ${tr("importResultDuplicates", lang)}`);
-      if (outcome.failed.length) parts.push(`${outcome.failed.length} ${tr("importResultFailed", lang)}`);
+      if (done.imported) parts.push(`${done.imported} ${tr("importResultImported", lang)}`);
+      if (done.attached) parts.push(`${done.attached} ${tr("importResultAttached", lang)}`);
+      if (done.duplicates) parts.push(`${done.duplicates} ${tr("importResultDuplicates", lang)}`);
+      if (done.failed) parts.push(`${done.failed} ${tr("importResultFailed", lang)}`);
+      if (done.imported + done.attached > 0) {
+        parts.push(`${tr("serviceRecordsLabel", lang)}: ${done.records}`, `${tr("savedDiagnosesLabel", lang)}: ${done.diagnoses}`);
+        track("guest_data_imported", { signed_in: true, imported_vehicles: done.imported, imported_records: done.records, imported_diagnoses: done.diagnoses });
+      }
+      if (interrupted) parts.push(tr("importResultError", lang));
       setGuestImportNote(parts.join(" · "));
     } catch {
       setGuestImportNote(tr("importResultError", lang));
     } finally {
+      setImportPlan(null);
       setImportingGuest(false);
     }
   }
@@ -1370,6 +1468,7 @@ export default function Home() {
       [vehicleId]: [rec, ...(prev[vehicleId] || [])],
     }));
     showToast(tr("maintenanceAdded", lang));
+    track("maintenance_added", { signed_in: false, has_mileage: mileageValue !== undefined, source: "home" });
   }
 
   function deleteMaintenanceRecord(vehicleId: string, recordId: string) {
@@ -1377,6 +1476,62 @@ export default function Home() {
       ...prev,
       [vehicleId]: (prev[vehicleId] || []).filter((r) => r.id !== recordId),
     }));
+  }
+
+  /** Signed in: a service record goes to the account, the one place they are kept. */
+  async function addAccountMaintenance(vehicleId: string, fd: FormData): Promise<boolean> {
+    const odometer = String(fd.get("maint_mileage") || "").trim();
+    const unit = String(fd.get("maint_mileage_unit") || "km").toLowerCase() === "mi" ? "mi" : "km";
+    try {
+      const res = await fetch("/api/maintenance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          vehicleId,
+          serviceType: String(fd.get("maint_type") || "Other"),
+          date: String(fd.get("maint_date") || new Date().toISOString().slice(0, 10)),
+          odometer: odometer || undefined,
+          odometerUnit: odometer ? unit : undefined,
+          notes: String(fd.get("maint_notes") || "").trim() || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.record) {
+        showToast(typeof data.error === "string" ? data.error : "Could not add the record.");
+        return false;
+      }
+      setAccountMaintenance((prev) => [data.record as MaintenanceDto, ...prev]);
+      showToast(tr("maintenanceAdded", lang));
+      track("maintenance_added", { signed_in: true, has_mileage: !!odometer, source: "home" });
+      // The vehicle's mileage and counts may have changed with it.
+      refreshGarage().catch(() => {});
+      return true;
+    } catch {
+      showToast("Couldn't reach the server. Check your connection and try again.");
+      return false;
+    }
+  }
+
+  async function deleteAccountMaintenance(recordId: string) {
+    const res = await fetch(`/api/maintenance/${encodeURIComponent(recordId)}`, { method: "DELETE", cache: "no-store" });
+    if (!res.ok) throw new Error("Could not delete that record.");
+    setAccountMaintenance((prev) => prev.filter((r) => r.id !== recordId));
+    refreshGarage().catch(() => {});
+  }
+
+  /** One vehicle's service records for the Maintenance tab: the account's when signed in, this device's otherwise. */
+  function serviceRowsFor(vehicleId: string): ServiceRow[] {
+    if (signedIn) {
+      return accountMaintenance
+        .filter((r) => r.vehicleId === vehicleId)
+        .map((r) => ({ id: r.id, type: r.serviceType, date: r.date, reading: formatOdometer(r.odometerValue, r.odometerUnit, r.odometer), notes: r.notes || "" }));
+    }
+    return (maintenanceRecords[vehicleId] || []).map((mr) => {
+      const reading = deviceReading(mr);
+      // A reading saved without a unit is shown as the number alone: the unit is never guessed.
+      return { id: mr.id, type: mr.type, date: mr.date, reading: reading ? formatOdometer(reading.value, reading.unit) : "", notes: mr.notes };
+    });
   }
 
   async function addVehicle(fd: FormData) {
@@ -1396,6 +1551,7 @@ export default function Home() {
         engine: engine || undefined,
         vin: vin || undefined,
       });
+      track("vehicle_added", { signed_in: signedIn, source: "home" });
       setTab("diagnose");
     } catch (e: unknown) {
       showToast(e instanceof Error ? e.message : "Failed to save vehicle.");
@@ -1403,14 +1559,19 @@ export default function Home() {
   }
 
   async function removeVehicle(id: string) {
-    await deleteGarageVehicle(id);
-    setMaintenanceRecords((prev) => {
-      if (!prev[id]) return prev;
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
+    const { archived } = await deleteGarageVehicle(id);
+    // A signed-in user's records are in the account. Anything still on this
+    // device for the vehicle is left alone, so it can be imported if the vehicle is restored.
+    if (!signedIn) {
+      setMaintenanceRecords((prev) => {
+        if (!prev[id]) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    }
     setServiceVehicleFilter((prev) => (prev === id ? null : prev));
+    if (archived) showToast(tr("vehicleArchived", lang));
   }
 
   /**
@@ -1486,14 +1647,22 @@ export default function Home() {
       code,
       symptoms,
       lang,
+      // Signed in: the server saves the diagnosis to this vehicle's history.
+      vehicleId: signedIn ? activeVehicle.id : undefined,
     };
     setLastRequest(payload);
     setLastFollowUps([]);
+    track("diagnosis_started", { signed_in: signedIn, has_code: !!code, has_symptoms: !!symptoms, has_mileage: !!mileage, source: "home" });
 
     const outcome = await postDiagnosis(payload);
     if (outcome.ok) {
       setResult(outcome.data);
       setSearchPanelOpen(false);
+      if ("diagnosis" in outcome.data) {
+        track("diagnosis_completed", { signed_in: signedIn, has_code: !!code, has_symptoms: !!symptoms, is_update: false, source: "home" });
+        // The vehicle's open issues and mileage changed with it.
+        if (signedIn) refreshGarage().catch(() => {});
+      }
     } else {
       setError(outcome.error);
     }
@@ -1517,6 +1686,7 @@ export default function Home() {
     if (outcome.ok) {
       setResult(outcome.data);
       setLastFollowUps(followUps);
+      if ("diagnosis" in outcome.data) track("diagnosis_completed", { signed_in: signedIn, is_update: true, source: "home" });
     } else {
       setRefineError(outcome.error);
     }
@@ -1999,6 +2169,7 @@ export default function Home() {
                     vehicle={activeVehicle}
                     vehicleId={activeVehicle?.id}
                     onSaveToHistory={saveDiagnosisSession}
+                    signedIn={signedIn}
                     onShare={result ? handleShare : undefined}
                     onDownload={result ? handleDownload : undefined}
                     followUpAnswers={Object.fromEntries(lastFollowUps.map((f) => [f.question, f.answer]))}
@@ -2067,8 +2238,9 @@ export default function Home() {
                           className={cn(inputClass, "w-full rounded-2xl px-4 py-3 text-sm sm:text-sm text-base transition-colors")}
                         />
                         <select
+                          key={activeVehicle?.id ?? "none"}
                           name="mileageUnit"
-                          defaultValue="km"
+                          defaultValue={activeVehicle?.odometerUnit ?? "km"}
                           className={cn(inputClass, "rounded-2xl px-3 py-3 text-sm transition-colors appearance-none")}
                           style={{ colorScheme: "dark" }}
                           aria-label="Mileage unit"
@@ -2116,6 +2288,7 @@ export default function Home() {
                         vehicle={activeVehicle}
                         vehicleId={activeVehicle?.id}
                         onSaveToHistory={saveDiagnosisSession}
+                        signedIn={signedIn}
                         onShare={result ? handleShare : undefined}
                         onDownload={result ? handleDownload : undefined}
                     followUpAnswers={Object.fromEntries(lastFollowUps.map((f) => [f.question, f.answer]))}
@@ -2162,41 +2335,86 @@ export default function Home() {
           </div>
         ) : tab === "garage" ? (
           <div key="tab-garage" className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[440px_1fr] animate-slide-in relative z-40">
-            {session?.user && (guestVehicles.length > 0 || guestImportNote) && (
+            {signedIn && !deviceOfferHidden && (devicePlan.length > 0 || guestImportNote) && (
               <div
                 role="status"
+                data-device-import
                 className={cn("lg:col-span-2 rounded-2xl px-4 sm:px-5 py-4 flex flex-wrap items-center gap-3", t("bg-blue-500/10 border border-blue-500/20", "bg-blue-50 border border-blue-200"))}
               >
                 <div className="flex-1 min-w-[200px]">
-                  {guestVehicles.length > 0 ? (
+                  {importPlan ? (
+                    <>
+                      <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>{tr("importPreviewTitle", lang)}</div>
+                      <ul data-import-preview className="mt-2 space-y-2">
+                        {importPlan.map((entry) => (
+                          <li key={entry.clientId} data-import-kind={entry.kind} className={cn("text-xs", t("text-slate-300", "text-slate-600"))}>
+                            <span className={cn("block font-semibold", t("text-white", "text-slate-900"))}>
+                              {entry.vehicle.year} {entry.vehicle.make} {entry.vehicle.model}{entry.vehicle.engine ? ` (${entry.vehicle.engine})` : ""}
+                            </span>
+                            <span className="block">
+                              {tr(entry.kind === "new_vehicle" ? "importKindNew" : entry.kind === "history_only" ? "importKindHistory" : "importKindDuplicate", lang)}
+                            </span>
+                            {entry.kind !== "likely_duplicate" && (
+                              <span className="block">
+                                {tr("serviceRecordsLabel", lang)}: {entry.maintenance.length} · {tr("savedDiagnosesLabel", lang)}: {entry.diagnoses.length}
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                      <div className={cn("mt-2 text-xs", t("text-slate-400", "text-slate-500"))}>{tr("importPreviewNote", lang)}</div>
+                    </>
+                  ) : devicePlan.length > 0 ? (
                     <>
                       <div className={cn("text-sm font-semibold", t("text-white", "text-slate-900"))}>
-                        {guestVehicles.length} {guestVehicles.length === 1 ? tr("guestVehiclesFoundOne", lang) : tr("guestVehiclesFoundMany", lang)}
+                        {guestVehicles.length > 0
+                          ? `${guestVehicles.length} ${guestVehicles.length === 1 ? tr("guestVehiclesFoundOne", lang) : tr("guestVehiclesFoundMany", lang)}`
+                          : tr("deviceHistoryFound", lang)}
                       </div>
                       <div className={cn("mt-0.5 text-xs", t("text-slate-400", "text-slate-500"))}>
-                        {guestVehicles.slice(0, 3).map((v) => `${v.year} ${v.make} ${v.model}`).join(" · ")}
-                        {guestVehicles.length > 3 ? " …" : ""}
+                        {devicePlan.slice(0, 3).map((e) => `${e.vehicle.year} ${e.vehicle.make} ${e.vehicle.model}`).join(" · ")}
+                        {devicePlan.length > 3 ? " …" : ""}
                       </div>
                       <div className={cn("mt-1 text-xs", t("text-slate-400", "text-slate-500"))}>{tr("guestVehiclesHint", lang)}</div>
                     </>
                   ) : null}
-                  {guestImportNote && (
-                    <div className={cn("text-xs", guestVehicles.length > 0 ? "mt-2" : "", t("text-blue-200", "text-blue-800"))}>{guestImportNote}</div>
+                  {guestImportNote && !importPlan && (
+                    <div data-import-note className={cn("text-xs", devicePlan.length > 0 ? "mt-2" : "", t("text-blue-200", "text-blue-800"))}>{guestImportNote}</div>
                   )}
                 </div>
-                {guestVehicles.length > 0 ? (
+                {importPlan ? (
                   <div className="flex shrink-0 items-center gap-2">
                     <button
                       type="button"
-                      onClick={handleImportGuestVehicles}
+                      data-import-confirm
+                      onClick={runDeviceImport}
                       disabled={importingGuest || garageSyncing}
                       className="rounded-xl bg-blue-500 px-4 py-2.5 text-xs font-semibold text-white shadow-md shadow-blue-500/25 transition-all hover:bg-blue-400 disabled:opacity-60"
                     >
-                      {importingGuest ? tr("importing", lang) : tr("importFromDevice", lang)}
+                      {importingGuest ? tr("importing", lang) : tr("importConfirm", lang)}
                     </button>
                     <button
                       type="button"
-                      onClick={() => { dismissGuestVehicles(); setGuestImportNote(""); }}
+                      onClick={() => setImportPlan(null)}
+                      disabled={importingGuest}
+                      className={cn("rounded-xl px-3 py-2.5 text-xs font-semibold transition-all", t("border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10", "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"))}
+                    >
+                      {tr("cancel", lang)}
+                    </button>
+                  </div>
+                ) : devicePlan.length > 0 ? (
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { setGuestImportNote(""); setImportPlan(devicePlan); }}
+                      disabled={importingGuest || garageSyncing}
+                      className="rounded-xl bg-blue-500 px-4 py-2.5 text-xs font-semibold text-white shadow-md shadow-blue-500/25 transition-all hover:bg-blue-400 disabled:opacity-60"
+                    >
+                      {guestVehicles.length > 0 ? tr("importFromDevice", lang) : tr("importHistoryFromDevice", lang)}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { dismissGuestVehicles(); setDeviceOfferHidden(true); setGuestImportNote(""); }}
                       disabled={importingGuest}
                       className={cn("rounded-xl px-3 py-2.5 text-xs font-semibold transition-all", t("border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10", "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"))}
                     >
@@ -2399,6 +2617,14 @@ export default function Home() {
                   </div>
                 ) : garage.map((v) => {
                   const isActive = v.id === activeId;
+                  // Signed in: real facts from the account. Nothing here is estimated.
+                  const facts = signedIn
+                    ? [
+                        formatOdometer(v.odometerValue ?? null, v.odometerUnit ?? null),
+                        v.stats && v.stats.openIssues > 0 ? `${tr("openIssuesLabel", lang)}: ${v.stats.openIssues}` : "",
+                      ].filter(Boolean).join(" · ")
+                    : "";
+                  const hasHistory = signedIn && !!v.stats && v.stats.diagnoses + v.stats.maintenanceRecords > 0;
                   return (
                     <div key={v.id}>
                       <div className={cn("rounded-2xl border p-4 transition-all", isActive ? "border-blue-400/30 bg-blue-500/10" : t("border-white/10 bg-white/5 hover:border-white/20", "border-slate-200 bg-slate-50 hover:border-slate-300"))}>
@@ -2415,6 +2641,14 @@ export default function Home() {
                             <div className="min-w-0">
                               <div className={cn("truncate text-sm font-semibold", t("text-white", "text-slate-900"))}>{v.year} {v.make} {v.model}{v.engine ? ` (${v.engine})` : ""}</div>
                               {v.vin ? <div className="text-[10px] text-slate-500">{tr("vinSaved", lang)}</div> : null}
+                              {signedIn && (
+                                <div className={cn("mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px]", t("text-slate-400", "text-slate-500"))}>
+                                  {facts && <span data-vehicle-facts>{facts}</span>}
+                                  <Link href={`/garage/${encodeURIComponent(v.id)}`} data-vehicle-history className={cn("font-semibold", t("text-blue-300 hover:text-blue-200", "text-blue-600 hover:text-blue-700"))}>
+                                    {tr("viewHistory", lang)}
+                                  </Link>
+                                </div>
+                              )}
                             </div>
                           </div>
                           <div className="flex shrink-0 items-center gap-1.5">
@@ -2424,13 +2658,24 @@ export default function Home() {
                               lang={lang}
                               disabled={garageSyncing}
                               onClick={() =>
-                                setConfirmDialog({
-                                  open: true,
-                                  title: tr("deleteVehicle", lang),
-                                  message: tr("deleteVehicleMsg", lang),
-                                  confirmLabel: tr("delete", lang),
-                                  onConfirm: () => removeVehicle(v.id),
-                                })
+                                setConfirmDialog(
+                                  hasHistory
+                                    ? {
+                                        // The account keeps a vehicle's history: it is archived, and can be restored.
+                                        open: true,
+                                        title: tr("archiveVehicleTitle", lang),
+                                        message: tr("archiveVehicleMsg", lang),
+                                        confirmLabel: tr("archiveVehicleConfirm", lang),
+                                        onConfirm: () => removeVehicle(v.id),
+                                      }
+                                    : {
+                                        open: true,
+                                        title: tr("deleteVehicle", lang),
+                                        message: tr("deleteVehicleMsg", lang),
+                                        confirmLabel: tr("delete", lang),
+                                        onConfirm: () => removeVehicle(v.id),
+                                      },
+                                )
                               }
                             />
                           </div>
@@ -2509,8 +2754,9 @@ export default function Home() {
 
                   <div className="space-y-5">
                     {(serviceVehicleFilter ? garage.filter(v => v.id === serviceVehicleFilter) : garage).map((v) => {
-                      const vMaintRecords = maintenanceRecords[v.id] || [];
-                      const vDiagSessions = diagnosisSessions[v.id] || [];
+                      const vMaintRecords = serviceRowsFor(v.id);
+                      // Signed in: diagnoses are in the account, on the vehicle's own page.
+                      const vDiagSessions = signedIn ? [] : diagnosisSessions[v.id] || [];
                       return (
                         <div key={v.id} className={cn("rounded-2xl border p-4", t("border-white/10 bg-white/5", "border-slate-200 bg-slate-50"))}>
                           <div className="flex items-center gap-3 mb-4">
@@ -2528,7 +2774,16 @@ export default function Home() {
                             </div>
                           </div>
 
-                          <form className="grid gap-2 mb-4" onSubmit={(e) => { e.preventDefault(); addMaintenanceRecord(v.id, new FormData(e.currentTarget)); (e.currentTarget as HTMLFormElement).reset(); }}>
+                          <form className="grid gap-2 mb-4" onSubmit={(e) => {
+                            e.preventDefault();
+                            const form = e.currentTarget;
+                            if (signedIn) {
+                              void addAccountMaintenance(v.id, new FormData(form)).then((ok) => { if (ok) form.reset(); });
+                            } else {
+                              addMaintenanceRecord(v.id, new FormData(form));
+                              form.reset();
+                            }
+                          }}>
                             <select name="maint_type" className={cn(inputClass, "rounded-xl px-3 py-2 text-xs transition-colors appearance-none")} style={{ colorScheme: "dark" }}>
                               {([["Oil Change","mtOilChange"],["Tire Rotation","mtTireRotation"],["Brake Service","mtBrakeService"],["Coolant Flush","mtCoolantFlush"],["Transmission Service","mtTransService"],["Air Filter","mtAirFilter"],["Battery","mtBattery"],["Other","mtOther"]] as const).map(([val, key]) => <option key={val} value={val} className="bg-slate-800 text-slate-200">{tr(key, lang)}</option>)}
                             </select>
@@ -2546,7 +2801,7 @@ export default function Home() {
                                 />
                                 <select
                                   name="maint_mileage_unit"
-                                  defaultValue="km"
+                                  defaultValue={v.odometerUnit ?? "km"}
                                   className={cn(inputClass, "rounded-xl px-2.5 py-2 text-xs transition-colors appearance-none")}
                                   style={{ colorScheme: "dark" }}
                                   aria-label="Mileage unit"
@@ -2576,7 +2831,7 @@ export default function Home() {
                                             title: "Delete Record",
                                             message: "Are you sure you want to delete this maintenance record? This cannot be undone.",
                                             confirmLabel: tr("delete", lang),
-                                            onConfirm: () => deleteMaintenanceRecord(v.id, mr.id),
+                                            onConfirm: () => (signedIn ? deleteAccountMaintenance(mr.id) : deleteMaintenanceRecord(v.id, mr.id)),
                                           });
                                         }}
                                         className={cn(
@@ -2591,16 +2846,7 @@ export default function Home() {
                                       </button>
                                     </div>
                                   </div>
-                                  {(mr.mileageValue !== undefined || (mr as LegacyMaintenanceRecord).mileage) && (
-                                    <div className={cn("mt-0.5", t("text-slate-400", "text-slate-500"))}>
-                                      {(
-                                        mr.mileageValue !== undefined
-                                          ? mr.mileageValue
-                                          : Number(String((mr as LegacyMaintenanceRecord).mileage ?? "").replace(/,/g, "")) || 0
-                                      ).toLocaleString()}{" "}
-                                      {mr.mileageUnit || "mi"}
-                                    </div>
-                                  )}
+                                  {mr.reading && <div data-odometer className={cn("mt-0.5", t("text-slate-400", "text-slate-500"))}>{mr.reading}</div>}
                                   {mr.notes && <div className={cn("mt-0.5", t("text-slate-400", "text-slate-500"))}>{mr.notes}</div>}
                                 </div>
                               ))}
@@ -2615,8 +2861,10 @@ export default function Home() {
                             <div className="flex items-center justify-between gap-3">
                               <div>
                                 <div className={cn("text-xs font-semibold", t("text-white", "text-slate-900"))}>Diagnosis history</div>
-                                <div className={cn("mt-0.5 text-[11px]", t("text-slate-400", "text-slate-500"))}>
-                                  {vDiagSessions.length} saved {vDiagSessions.length === 1 ? "session" : "sessions"}
+                                <div data-diagnosis-count className={cn("mt-0.5 text-[11px]", t("text-slate-400", "text-slate-500"))}>
+                                  {signedIn
+                                    ? `${tr("savedDiagnosesLabel", lang)}: ${v.stats?.diagnoses ?? 0} · ${tr("openIssuesLabel", lang)}: ${v.stats?.openIssues ?? 0}`
+                                    : `${vDiagSessions.length} saved ${vDiagSessions.length === 1 ? "session" : "sessions"}`}
                                 </div>
                               </div>
                               <button
@@ -2628,7 +2876,17 @@ export default function Home() {
                               </button>
                             </div>
 
-                            {vDiagSessions.length > 0 ? (
+                            {signedIn ? (
+                              <div className="mt-3">
+                                <Link
+                                  href={`/garage/${encodeURIComponent(v.id)}`}
+                                  data-service-history
+                                  className={cn("inline-block rounded-xl px-3 py-2 text-xs font-semibold transition-all", t("border border-white/10 bg-white/5 text-blue-300 hover:bg-blue-500/20", "border border-slate-200 bg-white text-blue-600 hover:bg-blue-50"))}
+                                >
+                                  {tr("viewHistory", lang)}
+                                </Link>
+                              </div>
+                            ) : vDiagSessions.length > 0 ? (
                               <div className="mt-3 space-y-2">
                                 {vDiagSessions.slice(0, 4).map((ds) => (
                                   <div key={ds.id} className={cn("rounded-xl p-3 text-xs", t("border border-white/5 bg-white/5", "border border-slate-100 bg-white"))}>

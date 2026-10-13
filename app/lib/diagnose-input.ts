@@ -41,6 +41,12 @@ export type DiagnoseInput = {
   followUps: FollowUpAnswer[];
   /** The ticket issued with the diagnosis these follow-up answers belong to, or "". Checked by the route. */
   diagnosisToken: string;
+  /**
+   * The garage vehicle this diagnosis is for, or "". Only used to save the
+   * result to a signed-in user's history; the route checks the user owns it.
+   * It is never sent to the AI model.
+   */
+  vehicleId: string;
 };
 
 export type DiagnoseParseResult =
@@ -203,8 +209,12 @@ export function parseDiagnoseBody(raw: unknown, now: Date = new Date()): Diagnos
   }
   const diagnosisToken = typeof tokenRaw === "string" ? tokenRaw.trim() : "";
 
+  // Optional, and never a reason to refuse a diagnosis: anything odd just means "not saved".
+  const vehicleRaw = body.vehicleId;
+  const vehicleId = typeof vehicleRaw === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(vehicleRaw.trim()) ? vehicleRaw.trim() : "";
+
   return {
     ok: true,
-    value: { year, make, model, engine, code, symptoms, lang, vin, mileage: mileage.value, followUps: followUps.value, diagnosisToken },
+    value: { year, make, model, engine, code, symptoms, lang, vin, mileage: mileage.value, followUps: followUps.value, diagnosisToken, vehicleId },
   };
 }

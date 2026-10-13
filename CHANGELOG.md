@@ -1,5 +1,68 @@
 # Changelog
 
+## Phase 2E — one garage, with history — 2026-10-13
+
+Branch `fix/phase-2e-one-garage`. **This release changes the production
+database, by adding to it only** (one migration, `garage_history`: two new
+tables and five optional columns). Read `docs/database.md` ("Deploying Phase
+2E") before merging. One new optional setting: `GARAGE_IMPORT_HOURLY_LIMIT`.
+
+- **One garage for signed-in users.** Vehicles, service records, diagnoses and
+  confirmed repairs are kept in the account. The home page's Maintenance tab
+  and the dashboard now read and write the same records; before, the home page
+  kept its own list in the browser. Guests keep using the browser, as before.
+- **Diagnoses are saved automatically for signed-in users.** A successful
+  diagnosis is stored against the vehicle it was run for, with what was
+  entered, the answer as it was shown, and the mileage given. A failed request
+  stores nothing. Follow-up answers update the same record. The result links
+  to the saved copy; there is no separate "save" step and no second copy on
+  the device.
+- **A saved diagnosis can be reopened from stored data.** No AI call is made
+  to show an old diagnosis.
+- **Open, resolved, dismissed.** A new diagnosis is open. "Did you fix this
+  problem?" offers *Yes, fixed*, *Not yet* and *Problem went away*, and a
+  closed one can be reopened.
+- **Confirmed repairs.** When the user says it is fixed they say what fixed
+  it, in their own words. The causes the diagnosis listed are offered as
+  shortcuts and a match is recorded only when the user picks one. The stored
+  AI answer is never changed.
+- **A page for each vehicle** (`/garage/<id>`): year, make, model, trim, engine,
+  mileage; open issues; one timeline of diagnoses, confirmed repairs and
+  service records, newest first; service records; and three actions: diagnose
+  a new problem, add maintenance, update mileage.
+- **Dashboard cards show facts only:** current mileage, open issues, last
+  diagnosis, last maintenance. No scores, percentages or predictions.
+- **Mileage has a unit everywhere.** The "130,250 km miles" display is fixed:
+  a reading is shown with the unit it was recorded in, a reading with no unit
+  is shown as the number alone, and old free text is shown as typed. Service
+  record forms have a km/mi choice.
+- **A vehicle's current mileage** is raised by a higher reading from the
+  vehicle page, a diagnosis or a service record. Lowering it, or changing its
+  unit, is possible only on the vehicle page and only after confirming.
+- **Removing a vehicle no longer removes history.** A vehicle with service
+  records or diagnoses is archived and can be restored from the dashboard;
+  only a vehicle with nothing attached is deleted. The database refuses the
+  deletion itself.
+- **Importing from a device shows what will be copied first.** Guest vehicles
+  with their service records and saved diagnoses, and any history an earlier
+  version kept in the browser for the account's own vehicles, are listed
+  before anything is sent. A vehicle already in the account is reported and
+  left on the device, never merged. What the account takes is removed from the
+  device; everything else stays.
+- **Usage events** for the garage flow (`vehicle_added`, `vehicle_opened`,
+  `diagnosis_started`, `diagnosis_completed`, `diagnosis_reopened`,
+  `diagnosis_resolved`, `confirmed_fix_added`, `maintenance_added`,
+  `guest_data_imported`). Each carries only yes/no facts and coarse counts.
+  A test fails if a VIN, symptoms, a code, diagnosis text, an email address,
+  an id or a make/model could be sent.
+- **Every garage request is checked against the signed-in account in the
+  database.** A vehicle, diagnosis or service record that belongs to someone
+  else answers "not found".
+- **Not in this release:** reminders, emails, recall checks, value tracking,
+  subscriptions, public repair statistics, confidence percentages, cost
+  estimates, health scores. The clean-up of older database leftovers is still
+  a separate pull request.
+
 ## Phase 2D — database foundation — 2026-10-11
 
 Branch `fix/phase-2d-database-foundation`. **This release changes the

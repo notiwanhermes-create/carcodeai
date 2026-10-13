@@ -64,6 +64,11 @@ export function constraintSuite() {
          WHERE n.nspname = 'public' AND c.contype = 'f' ORDER BY c.conname`);
       // c = cascade, a = no action
       expect(fks).toEqual([
+        { conname: "confirmed_fixes_diagnosis_id_fkey", on_delete: "c", on_update: "c" }, // an outcome goes with its diagnosis
+        { conname: "confirmed_fixes_user_id_fkey", on_delete: "c", on_update: "c" },
+        { conname: "confirmed_fixes_vehicle_id_fkey", on_delete: "a", on_update: "c" }, //   a vehicle with history cannot be deleted from under it
+        { conname: "diagnoses_user_id_fkey", on_delete: "c", on_update: "c" },
+        { conname: "diagnoses_vehicle_id_fkey", on_delete: "a", on_update: "c" },
         { conname: "email_verification_tokens_user_id_fkey", on_delete: "c", on_update: "c" },
         { conname: "garage_vehicles_user_id_fkey", on_delete: "c", on_update: "a" },
         { conname: "maintenance_records_user_id_fkey", on_delete: "c", on_update: "a" },
@@ -102,6 +107,54 @@ export function constraintSuite() {
       await pool.query(`UPDATE maintenance_records SET odometer_value = NULL, odometer_unit = NULL, cost_amount = NULL, service_date = NULL WHERE id = 'ann-rec'`);
     });
 
+    it("keeps saved diagnoses and confirmed repairs consistent", async () => {
+      const diagnosis = (id: string, extra: Record<string, string> = {}) => {
+        const cols = { id: `'${id}'`, user_id: "'ann'", vehicle_id: "'ann-car'", vehicle_snapshot: `'{}'`, result: `'{}'`, ...extra };
+        return `INSERT INTO diagnoses (${Object.keys(cols).join(", ")}) VALUES (${Object.values(cols).join(", ")})`;
+      };
+      await pool.query(diagnosis("d1", { ticket_id: "'t-1'", import_key: "'k-1'" }));
+      expect((await rows(`SELECT status, source, language, update_count, codes, follow_ups, diagnosed_at IS NOT NULL AS dated FROM diagnoses WHERE id = 'd1'`))[0]).toEqual({
+        status: "open", source: "app", language: "en", update_count: 0, codes: [], follow_ups: [], dated: true,
+      });
+
+      // Only the three statuses and two sources exist; readings are never negative or in a made-up unit.
+      await refuses(`UPDATE diagnoses SET status = 'maybe' WHERE id = 'd1'`, /diagnoses_status_check/);
+      await refuses(`UPDATE diagnoses SET source = 'somewhere' WHERE id = 'd1'`, /diagnoses_source_check/);
+      await refuses(`UPDATE diagnoses SET odometer_value = -1 WHERE id = 'd1'`, /diagnoses_odometer_check/);
+      await refuses(`UPDATE diagnoses SET odometer_value = 10, odometer_unit = 'leagues' WHERE id = 'd1'`, /diagnoses_odometer_check/);
+      await refuses(`UPDATE garage_vehicles SET odometer_value = -5 WHERE id = 'ann-car'`, /garage_vehicles_odometer_check/);
+      await refuses(`UPDATE garage_vehicles SET odometer_value = 5, odometer_unit = 'leagues' WHERE id = 'ann-car'`, /garage_vehicles_odometer_check/);
+
+      // One follow-up ticket, and one device record, map to one diagnosis per account.
+      await refuses(diagnosis("d2", { ticket_id: "'t-1'" }), /diagnoses_user_id_ticket_id_key/);
+      await refuses(diagnosis("d2", { import_key: "'k-1'" }), /diagnoses_user_id_import_key_key/);
+      await pool.query(diagnosis("d2")); // without either, any number is fine
+      await pool.query(diagnosis("d3", { user_id: "'bob'", vehicle_id: "'bob-car'", ticket_id: "'t-1'", import_key: "'k-1'" })); // another account's are its own
+
+      // A diagnosis needs a real vehicle and a real account.
+      await refuses(diagnosis("d4", { vehicle_id: "'no-car'" }), /diagnoses_vehicle_id_fkey/);
+      await refuses(diagnosis("d4", { user_id: "'nobody'" }), /diagnoses_user_id_fkey/);
+
+      // A confirmed repair: one per diagnosis, never blank.
+      const fix = (id: string, description: string) => `INSERT INTO confirmed_fixes (id, user_id, vehicle_id, diagnosis_id, description, fixed_on) VALUES ('${id}', 'ann', 'ann-car', 'd1', '${description}', '2026-10-12')`;
+      await refuses(fix("f0", "   "), /confirmed_fixes_description_check/);
+      await pool.query(fix("f1", "Ignition coil"));
+      await refuses(fix("f2", "Spark plugs"), /confirmed_fixes_diagnosis_id_key/);
+      await refuses(`UPDATE confirmed_fixes SET odometer_value = -1`, /confirmed_fixes_odometer_check/);
+      await refuses(`INSERT INTO confirmed_fixes (id, user_id, vehicle_id, diagnosis_id, description, fixed_on) VALUES ('f3', 'ann', 'ann-car', 'no-diagnosis', 'x', '2026-10-12')`, /confirmed_fixes_diagnosis_id_fkey/);
+
+      // A vehicle cannot be deleted from under its history...
+      await refuses(`DELETE FROM garage_vehicles WHERE id = 'ann-car'`, /diagnoses_vehicle_id_fkey|confirmed_fixes_vehicle_id_fkey/);
+      expect(await count("garage_vehicles")).toBe(2);
+      // ...a confirmed repair goes with its diagnosis...
+      await pool.query(`DELETE FROM diagnoses WHERE id = 'd1'`);
+      expect(await count("confirmed_fixes")).toBe(0);
+      // ...and deleting an account takes its diagnoses with it, and nobody else's.
+      await pool.query(`DELETE FROM users WHERE id = 'ann'`);
+      expect((await rows(`SELECT id FROM diagnoses`)).map((r) => r.id)).toEqual(["d3"]);
+      expect((await rows(`SELECT id FROM garage_vehicles`)).map((r) => r.id)).toEqual(["bob-car"]);
+    });
+
     it("requires the values every row must have, and fills in the ones with defaults", async () => {
       await refuses(`INSERT INTO garage_vehicles (id, user_id, year, make) VALUES ('x', 'ann', '2015', 'A')`, /"model"/);
       await refuses(`INSERT INTO maintenance_records (id, user_id, vehicle_id, type) VALUES ('x', 'ann', 'ann-car', 'T')`, /"date"/);
@@ -127,6 +180,15 @@ export function constraintSuite() {
     it("has an index for every lookup the app makes", async () => {
       const indexes = Object.fromEntries((await rows(`SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'`)).map((i) => [i.indexname, i.indexdef as string]));
       expect(Object.keys(indexes).sort()).toEqual([
+        "confirmed_fixes_diagnosis_id_key", //          one outcome per diagnosis
+        "confirmed_fixes_pkey",
+        "confirmed_fixes_user_id_created_at_idx",
+        "confirmed_fixes_vehicle_id_fixed_on_idx", //   a vehicle's timeline
+        "diagnoses_pkey",
+        "diagnoses_user_id_import_key_key", //          an import cannot create the same diagnosis twice
+        "diagnoses_user_id_status_diagnosed_at_idx", // a user's open issues
+        "diagnoses_user_id_ticket_id_key", //           a follow-up finds its diagnosis
+        "diagnoses_vehicle_id_diagnosed_at_idx", //     a vehicle's timeline
         "email_verification_tokens_expires_at_idx", // clearing out expired tokens
         "email_verification_tokens_pkey", //            checking a link
         "email_verification_tokens_user_id_idx", //     replacing a user's tokens
@@ -162,6 +224,20 @@ export function constraintSuite() {
         "garage_vehicles.model_year": "integer",
         "garage_vehicles.is_active": "boolean",
         "garage_vehicles.created_at": "timestamp with time zone",
+        "garage_vehicles.odometer_value": "integer",
+        "garage_vehicles.odometer_unit": "text",
+        "garage_vehicles.odometer_updated_at": "timestamp with time zone",
+        "garage_vehicles.archived_at": "timestamp with time zone",
+        "diagnoses.result": "jsonb", //                    the structured answer
+        "diagnoses.codes": "jsonb",
+        "diagnoses.follow_ups": "jsonb",
+        "diagnoses.vehicle_snapshot": "jsonb",
+        "diagnoses.symptoms": "text",
+        "diagnoses.diagnosed_at": "timestamp with time zone",
+        "diagnoses.odometer_value": "integer",
+        "confirmed_fixes.description": "text",
+        "confirmed_fixes.fixed_on": "date",
+        "confirmed_fixes.matched_cause_rank": "integer",
         "maintenance_records.date": "text", //             exactly what the user typed
         "maintenance_records.service_date": "date",
         "maintenance_records.mileage": "text", //          exactly what the user typed

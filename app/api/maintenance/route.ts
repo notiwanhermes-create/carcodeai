@@ -1,36 +1,20 @@
 import { auth } from "@/app/lib/auth-config";
 import prisma from "@/app/lib/prisma";
-import { parseCost, parseOdometer, parseServiceDate } from "@/app/lib/maintenance-values";
+import { isOdometerUnit } from "@/app/lib/odometer";
+import { addMaintenance, MAINTENANCE_FIELDS, toMaintenanceDto } from "@/app/lib/garage-store";
 import { NextRequest, NextResponse } from "next/server";
 
 /** Longest value accepted for each field. Everything here is free text from the browser. */
 const LIMITS = { vehicleId: 64, date: 40, odometer: 40, serviceType: 80, notes: 2000, cost: 40 } as const;
 
-type RecordRow = {
-  id: string;
-  vehicleId: string;
-  serviceType: string;
-  date: string;
-  odometer: string | null;
-  notes: string | null;
-  cost: string | null;
-};
-
-/** The shape the page has always received: what the user typed, as text. */
-function toResponse(r: RecordRow) {
-  return {
-    id: r.id,
-    vehicleId: r.vehicleId,
-    serviceType: r.serviceType,
-    date: r.date,
-    odometer: r.odometer || undefined,
-    notes: r.notes || undefined,
-    cost: r.cost || undefined,
-  };
-}
-
-const RESPONSE_FIELDS = { id: true, vehicleId: true, serviceType: true, date: true, odometer: true, notes: true, cost: true } as const;
-
+/**
+ * A signed-in user's service records. This is the one place they are kept.
+ *
+ * Each record comes back with the text as the user entered it (`date`,
+ * `odometer`, `cost`) and, where that text was clear, the typed values
+ * (`serviceDate`, `odometerValue`, `odometerUnit`), so a page can show
+ * "130,250 km" without guessing a unit.
+ */
 export async function GET(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -47,10 +31,10 @@ export async function GET(req: NextRequest) {
   const records = await prisma.maintenanceRecord.findMany({
     where,
     orderBy: { createdAt: "desc" },
-    select: RESPONSE_FIELDS,
+    select: MAINTENANCE_FIELDS,
   });
 
-  return NextResponse.json({ records: records.map(toResponse) });
+  return NextResponse.json({ records: records.map(toMaintenanceDto) });
 }
 
 export async function POST(req: NextRequest) {
@@ -83,34 +67,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Vehicle, date, and service type are required." }, { status: 400 });
   }
 
+  // The unit chosen in the form, when the reading itself does not say one.
+  const rawUnit = (body as Record<string, unknown>).odometerUnit;
+  const odometerUnit = isOdometerUnit(rawUnit) ? rawUnit : null;
+
   // The record can only be attached to a vehicle this user owns.
-  const vehicle = await prisma.vehicle.findFirst({
-    where: { id: vehicleId, userId: session.user.id },
-    select: { id: true },
-  });
-  if (!vehicle) {
+  const record = await addMaintenance(session.user.id, { vehicleId, serviceType, date, odometerText: odometer, odometerUnit, cost, notes });
+  if (!record) {
     return NextResponse.json({ error: "Vehicle not found." }, { status: 404 });
   }
 
-  // What the user typed is stored as typed. The typed copies are filled in only
-  // when the text converts cleanly (see maintenance-values.ts).
-  const reading = parseOdometer(odometer);
-  const record = await prisma.maintenanceRecord.create({
-    data: {
-      userId: session.user.id,
-      vehicleId,
-      serviceType,
-      notes: notes || null,
-      date,
-      serviceDate: parseServiceDate(date),
-      odometer: odometer || null,
-      odometerValue: reading?.value ?? null,
-      odometerUnit: reading?.unit ?? null,
-      cost: cost || null,
-      costAmount: parseCost(cost),
-    },
-    select: RESPONSE_FIELDS,
-  });
-
-  return NextResponse.json({ record: toResponse(record) });
+  return NextResponse.json({ record });
 }

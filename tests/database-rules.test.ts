@@ -45,6 +45,7 @@ const filesContaining = (pattern: RegExp) => appSourceFiles().filter((f) => patt
 const migrationDir = (name: string) => `prisma/migrations/${name}/migration.sql`;
 const BASELINE = "20260101000000_baseline";
 const CONVERGE = "20261011010000_converge_and_expand";
+const GARAGE_HISTORY = "20261012180000_garage_history";
 /** SQL with `--` comments removed. */
 const sql = (name: string) => read(migrationDir(name)).replace(/--.*$/gm, "");
 
@@ -145,21 +146,23 @@ describe("one way into the database", () => {
 describe("migrations", () => {
   it("are plain SQL files, applied in name order, for PostgreSQL", () => {
     const names = fs.readdirSync(path.join(ROOT, "prisma/migrations"), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
-    // Exactly these two. The clean-up of what older versions left behind is a
-    // later release, written after this one has run in production.
-    expect(names).toEqual([BASELINE, CONVERGE]);
+    // Exactly these. The clean-up of what older versions left behind is a
+    // separate, later release.
+    expect(names).toEqual([BASELINE, CONVERGE, GARAGE_HISTORY]);
     expect(read("prisma/migrations/migration_lock.toml")).toMatch(/provider = "postgresql"/);
     for (const name of names) expect(read(migrationDir(name)).length, name).toBeGreaterThan(200);
   });
 
   it("say what they create, change and drop", () => {
-    const header = read(migrationDir(CONVERGE)).split("\n").filter((l) => l.startsWith("--")).join("\n");
-    for (const heading of [/Creates/, /Changes/, /Backfills/, /Drops/, /Data loss/, /Locks/, /Deploy order/]) expect(header).toMatch(heading);
+    for (const name of [CONVERGE, GARAGE_HISTORY]) {
+      const header = read(migrationDir(name)).split("\n").filter((l) => l.startsWith("--")).join("\n");
+      for (const heading of [/Creates/, /Changes/, /Backfills/, /Drops/, /Data loss/, /Locks/, /Deploy order/]) expect(header, name).toMatch(heading);
+    }
     expect(read(migrationDir(BASELINE))).toMatch(/this migration is NOT run/);
   });
 
   it("remove nothing: no table, column, index, constraint or row", () => {
-    for (const name of [BASELINE, CONVERGE]) {
+    for (const name of [BASELINE, CONVERGE, GARAGE_HISTORY]) {
       const text = sql(name);
       // The only thing ever dropped is a temporary helper function the migration itself created.
       const drops = [...text.matchAll(/\bDROP\s+[^;]+;/gi)].map((m) => m[0].replace(/\s+/g, " "));
@@ -193,12 +196,19 @@ describe("migrations", () => {
     for (const column of ["year", "date", "mileage", "cost", "notes", "message", "password_hash", "google_id"]) {
       expect(updated.filter((u) => u.endsWith(`.${column}`)), column).toEqual([]);
     }
+
+    // Phase 2E fills in exactly one thing: a vehicle's current reading, where it was empty.
+    const garage = [...sql(GARAGE_HISTORY).matchAll(/UPDATE\s+"(\w+)"(?:\s+AS\s+\w+)?\s+SET\s+"(\w+)"/gi)].map((m) => `${m[1]}.${m[2]}`);
+    expect(garage).toEqual(["garage_vehicles.odometer_value"]);
+    expect(sql(GARAGE_HISTORY)).toMatch(/AND v\."odometer_value" IS NULL;/);
   });
 
   it("stop rather than wait behind a busy table, and build nothing concurrently", () => {
-    expect(sql(CONVERGE)).toMatch(/SET LOCAL lock_timeout = '15s';/);
-    // The file must stay one transaction, so a failure leaves nothing half-done.
-    expect(sql(CONVERGE)).not.toMatch(/\bCONCURRENTLY\b|^\s*(BEGIN|COMMIT|ROLLBACK)\s*;/im);
+    for (const name of [CONVERGE, GARAGE_HISTORY]) {
+      expect(sql(name), name).toMatch(/SET LOCAL lock_timeout = '15s';/);
+      // The file must stay one transaction, so a failure leaves nothing half-done.
+      expect(sql(name), name).not.toMatch(/\bCONCURRENTLY\b|^\s*(BEGIN|COMMIT|ROLLBACK)\s*;/im);
+    }
   });
 });
 
@@ -213,6 +223,8 @@ describe("the schema file", () => {
       EmailVerificationToken: "email_verification_tokens",
       Vehicle: "garage_vehicles",
       MaintenanceRecord: "maintenance_records",
+      Diagnosis: "diagnoses",
+      ConfirmedFix: "confirmed_fixes",
       RateLimit: "rate_limits",
       Feedback: "feedback",
     });

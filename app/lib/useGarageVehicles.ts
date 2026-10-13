@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { sameVehicle } from "./garage-import";
+import type { VehicleStats } from "./garage-types";
 
 export type GarageVehicle = {
   id: string;
@@ -10,6 +12,12 @@ export type GarageVehicle = {
   engine?: string;
   vin?: string;
   nickname?: string;
+  /** The rest is only present for a signed-in user's vehicles, which come from the account. */
+  trim?: string;
+  odometerValue?: number | null;
+  odometerUnit?: "km" | "mi" | null;
+  archivedAt?: string | null;
+  stats?: VehicleStats;
 };
 
 type StoredGarage = { garage: GarageVehicle[]; activeId: string | null };
@@ -62,6 +70,28 @@ function writeStoredGarage(key: string, data: StoredGarage) {
   }
 }
 
+/**
+ * Remove every account's cached vehicle list from this browser except the one
+ * for `keepKey` (the signed-in account's own). A guest keeps none.
+ *
+ * The cache only exists so a signed-in page does not start out empty; the
+ * account is the source of truth and the list is reloaded from it every time.
+ * Sweeping here, on every load, means a list is gone as soon as the app is
+ * opened signed out or as someone else, including after a sign-out that
+ * reloaded the page. The guest garage is a different key and is never touched.
+ */
+function dropAccountCaches(keepKey: string | null) {
+  if (typeof window === "undefined") return;
+  try {
+    for (let i = window.localStorage.length - 1; i >= 0; i--) {
+      const key = window.localStorage.key(i);
+      if (key && key.startsWith(`${STORAGE_PREFIX}:user:`) && key !== keepKey) window.localStorage.removeItem(key);
+    }
+  } catch {
+    // ignore storage failures
+  }
+}
+
 function readDismissedGuestIds(userId: string): string[] {
   if (typeof window === "undefined") return [];
   try {
@@ -82,32 +112,17 @@ function writeDismissedGuestIds(userId: string, ids: string[]) {
   }
 }
 
-const norm = (s?: string) => (s || "").trim().toLowerCase().replace(/\s+/g, " ");
-
 /**
- * Two entries describe the same vehicle when their VINs match, or — when a VIN
- * is missing on either side — when year, make, model and engine all match.
+ * Two entries describe the same vehicle when their VINs match, or, when a VIN
+ * is missing on either side, when year, make, model and engine all match.
+ * The server uses the same rule when it imports a device's vehicles.
  */
 export function isSameVehicle(a: Omit<GarageVehicle, "id">, b: Omit<GarageVehicle, "id">): boolean {
-  const vinA = norm(a.vin);
-  const vinB = norm(b.vin);
-  if (vinA && vinB) return vinA === vinB;
-  return (
-    norm(a.year) === norm(b.year) &&
-    norm(a.make) === norm(b.make) &&
-    norm(a.model) === norm(b.model) &&
-    norm(a.engine) === norm(b.engine)
-  );
+  return sameVehicle(a, b);
 }
 
-export type GuestImportResult = {
-  /** Vehicles created in the account. `from` is the on-device copy, `to` the new account vehicle. */
-  imported: Array<{ from: GarageVehicle; to: GarageVehicle }>;
-  /** Not imported because the same vehicle is already in the account. Left on the device, untouched. */
-  duplicates: Array<{ from: GarageVehicle; existing: GarageVehicle }>;
-  /** Could not be saved. Left on the device, untouched. */
-  failed: Array<{ from: GarageVehicle; error: string }>;
-};
+/** What the server did with one vehicle of a device import. */
+export type DeviceImportOutcomeKind = "imported" | "attached" | "duplicate" | "failed";
 
 type UseGarageVehiclesArgs = {
   userId?: string;
@@ -127,10 +142,19 @@ type UseGarageVehiclesResult = {
   syncing: boolean;
   refresh: () => Promise<void>;
   addVehicle: (input: Omit<GarageVehicle, "id">) => Promise<GarageVehicle>;
-  deleteVehicle: (id: string) => Promise<void>;
+  /**
+   * Remove a vehicle from the garage. For a signed-in user the server archives
+   * a vehicle that has history and deletes one that has none; `archived` says which.
+   */
+  deleteVehicle: (id: string) => Promise<{ archived: boolean }>;
   /** Signed-in only: vehicles saved on this device as a guest that the user has not imported or dismissed. */
   guestVehicles: GarageVehicle[];
-  importGuestVehicles: () => Promise<GuestImportResult>;
+  /**
+   * After a device import: take the vehicles the account now has off the device,
+   * stop offering the ones it already had, and reload the account's list.
+   * Anything that was not imported stays on the device exactly as it was.
+   */
+  finishDeviceImport: (outcomes: Array<{ clientId: string; outcome: DeviceImportOutcomeKind }>) => Promise<void>;
   dismissGuestVehicles: () => void;
 };
 
@@ -148,24 +172,15 @@ export function useGarageVehicles({ userId, ready = true }: UseGarageVehiclesArg
   const [guestStored, setGuestStored] = useState<GarageVehicle[]>([]);
   const [dismissedGuestIds, setDismissedGuestIds] = useState<string[]>([]);
   const didInitialServerFetch = useRef(false);
-  const prevStorageKey = useRef<string>(storageKey);
 
   const hydrated = ready && loadedKey === storageKey;
 
   useEffect(() => {
     if (!ready) return;
 
-    // On sign-out or account switch, drop the PREVIOUS ACCOUNT's cached copy
-    // (privacy on shared devices; the server still has it). The guest garage
-    // lives only in this browser, so it is never deleted here.
-    if (prevStorageKey.current !== storageKey) {
-      if (prevStorageKey.current !== ANON_STORAGE_KEY) {
-        try {
-          window.localStorage.removeItem(prevStorageKey.current);
-        } catch {}
-      }
-      prevStorageKey.current = storageKey;
-    }
+    // Signed out, or signed in as someone else: no other account's cached list
+    // stays in this browser (privacy on shared devices; the server still has it).
+    dropAccountCaches(storageKey === ANON_STORAGE_KEY ? null : storageKey);
 
     const stored = readStoredGarage(storageKey);
     setVehicles(stored?.garage || []);
@@ -299,7 +314,8 @@ export function useGarageVehicles({ userId, ready = true }: UseGarageVehiclesArg
 
   const deleteVehicle = useCallback(
     async (id: string) => {
-      if (!id) return;
+      if (!id) return { archived: false };
+      let archived = false;
 
       if (serverEnabled) {
         setSyncing(true);
@@ -313,6 +329,7 @@ export function useGarageVehicles({ userId, ready = true }: UseGarageVehiclesArg
             // If it doesn't exist server-side, still remove locally.
             if (res.status !== 404) throw new Error(data?.error || "Failed to delete vehicle.");
           }
+          archived = data?.archived === true;
         } finally {
           setSyncing(false);
         }
@@ -322,6 +339,7 @@ export function useGarageVehicles({ userId, ready = true }: UseGarageVehiclesArg
         setActiveId((prevActive) => (prevActive === id ? nextVehicles[0]?.id ?? null : prevActive));
         return nextVehicles;
       });
+      return { archived };
     },
     [serverEnabled],
   );
@@ -331,44 +349,14 @@ export function useGarageVehicles({ userId, ready = true }: UseGarageVehiclesArg
     [dismissedGuestIds, guestStored, userId],
   );
 
-  /**
-   * Copy the guest vehicles on this device into the signed-in account.
-   * Runs only when the user asks. Duplicates are reported, never merged, and
-   * anything that is not imported stays on the device exactly as it was.
-   */
-  const importGuestVehicles = useCallback(async (): Promise<GuestImportResult> => {
-    const result: GuestImportResult = { imported: [], duplicates: [], failed: [] };
-    if (!userId) return result;
-
-    const candidates = (readStoredGarage(ANON_STORAGE_KEY)?.garage || []).filter(
-      (v) => !readDismissedGuestIds(userId).includes(v.id),
-    );
-    if (candidates.length === 0) return result;
-
-    setSyncing(true);
-    try {
-      // Compare against the account's current list, straight from the server.
-      const accountVehicles = await fetchServerVehicles();
-
-      for (const guest of candidates) {
-        const existing = accountVehicles.find((v) => isSameVehicle(v, guest));
-        if (existing) {
-          result.duplicates.push({ from: guest, existing });
-          continue;
-        }
-        try {
-          const created = await createOnServer(guest);
-          accountVehicles.unshift(created);
-          result.imported.push({ from: guest, to: created });
-        } catch (e) {
-          result.failed.push({ from: guest, error: e instanceof Error ? e.message : "Failed to import." });
-        }
-      }
+  const finishDeviceImport = useCallback(
+    async (outcomes: Array<{ clientId: string; outcome: DeviceImportOutcomeKind }>) => {
+      if (!userId) return;
 
       // Imported vehicles now live in the account: remove just those from the
       // device copy. Duplicates and failures stay on the device.
-      if (result.imported.length > 0) {
-        const importedIds = new Set(result.imported.map((x) => x.from.id));
+      const importedIds = new Set(outcomes.filter((o) => o.outcome === "imported").map((o) => o.clientId));
+      if (importedIds.size > 0) {
         const anon = readStoredGarage(ANON_STORAGE_KEY);
         if (anon) {
           const remaining = anon.garage.filter((v) => !importedIds.has(v.id));
@@ -379,23 +367,18 @@ export function useGarageVehicles({ userId, ready = true }: UseGarageVehiclesArg
         }
       }
       // Duplicates were shown to the user; don't keep prompting about them.
-      if (result.duplicates.length > 0) {
-        const next = [...readDismissedGuestIds(userId), ...result.duplicates.map((d) => d.from.id)];
+      const duplicateIds = outcomes.filter((o) => o.outcome === "duplicate").map((o) => o.clientId);
+      if (duplicateIds.length > 0) {
+        const next = Array.from(new Set([...readDismissedGuestIds(userId), ...duplicateIds]));
         writeDismissedGuestIds(userId, next);
-        setDismissedGuestIds(Array.from(new Set(next)));
+        setDismissedGuestIds(next);
       }
 
       setGuestStored(readStoredGarage(ANON_STORAGE_KEY)?.garage || []);
-      setVehicles(accountVehicles);
-      setActiveId((prevActive) => {
-        if (prevActive && accountVehicles.some((v) => v.id === prevActive)) return prevActive;
-        return result.imported[0]?.to.id ?? accountVehicles[0]?.id ?? null;
-      });
-      return result;
-    } finally {
-      setSyncing(false);
-    }
-  }, [createOnServer, fetchServerVehicles, userId]);
+      await refresh();
+    },
+    [refresh, userId],
+  );
 
   /** "Not now": stop offering the current guest vehicles. They stay on the device. */
   const dismissGuestVehicles = useCallback(() => {
@@ -415,7 +398,7 @@ export function useGarageVehicles({ userId, ready = true }: UseGarageVehiclesArg
     addVehicle,
     deleteVehicle,
     guestVehicles,
-    importGuestVehicles,
+    finishDeviceImport,
     dismissGuestVehicles,
   };
 }

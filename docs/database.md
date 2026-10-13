@@ -25,7 +25,9 @@ How the database is defined, changed, backed up and tested. Written in Phase 2D
 | --- | --- | --- | --- |
 | `users` | `User` | Accounts: email, password hash, Google identity, verification state | never automatically |
 | `email_verification_tokens` | `EmailVerificationToken` | Hashes of emailed sign-up links (24-hour life) | the account is deleted; a new link is issued; `db:prune` after 7 days |
-| `garage_vehicles` | `Vehicle` | A signed-in user's vehicles | the user deletes the vehicle; the account is deleted |
+| `garage_vehicles` | `Vehicle` | A signed-in user's vehicles, each with its current mileage | the user removes a vehicle that has **no** history (one with history is archived, not deleted); the account is deleted |
+| `diagnoses` | `Diagnosis` | A signed-in user's saved diagnoses: what they entered, the answer as it was given, follow-up answers, and whether it is open, resolved or dismissed | the account is deleted |
+| `confirmed_fixes` | `ConfirmedFix` | What the user says actually fixed a diagnosis | the user reopens the diagnosis; the account is deleted |
 | `maintenance_records` | `MaintenanceRecord` | Service entries for a vehicle | the user deletes the entry; its vehicle or account is deleted |
 | `rate_limits` | `RateLimit` | Short-lived counters (see below) | automatically, after `expires_at` |
 | `feedback` | `Feedback` | Messages from the feedback form (64-bit id) | never automatically |
@@ -35,8 +37,46 @@ An existing database also still holds a few things older versions created and
 nothing uses (see "Left for a later clean-up"). They are not listed above
 because the app does not use them.
 
-Diagnosis history is **not** in the database. It is kept in the visitor's
-browser. Moving it to the server is Phase 2E.
+### Garage history (Phase 2E)
+
+For a signed-in user the database is the only place vehicles, service records,
+diagnoses and confirmed repairs are kept. A guest's data stays in their browser
+and is offered for import, with a preview, after they sign in.
+
+- **A diagnosis belongs to one vehicle for good.** `diagnoses.vehicle_id` is set
+  when it is saved and nothing changes it. The vehicle is also copied into
+  `vehicle_snapshot` as it was described that day, so a later edit to the
+  vehicle does not change what an old diagnosis says it was for.
+- **What is stored:** the codes and symptoms as typed, each code's status
+  (`codes`), the answer the user saw (`result`), the follow-up answers, the
+  mileage given, the language, and the status. **What is not:** the
+  instructions sent to the AI model, the model's raw reply, the VIN, or any key.
+- **The answer is never edited afterwards.** `result` is written when the
+  diagnosis is made and when a follow-up update replaces it. Recording an
+  outcome changes `status` and `confirmed_fixes` only.
+- **A confirmed repair is the user's report, kept apart from the AI's answer.**
+  `confirmed_fixes.description` is free text. `matched_cause_rank` and
+  `matched_cause_title` are filled in only when the user says the repair was
+  one of the causes that diagnosis listed; otherwise they stay empty. One
+  repair per diagnosis.
+- **Opening a saved diagnosis reads these rows and nothing else.** No AI call.
+- **The timeline is not a table.** A vehicle's history is put together, newest
+  first, from `diagnoses`, `confirmed_fixes` and `maintenance_records` each
+  time it is shown. Nothing is copied.
+- **Removing a vehicle never removes history.** The foreign keys from
+  `diagnoses` and `confirmed_fixes` to the vehicle are `NO ACTION`: the database
+  itself refuses to delete a vehicle that has either. The app archives such a
+  vehicle (`archived_at`) and it can be restored. Only a vehicle with no service
+  records, diagnoses or repairs is deleted. Deleting the **account** still
+  removes everything that belongs to it.
+- **Current mileage** is `garage_vehicles.odometer_value` + `odometer_unit`
+  (`km` or `mi`). A higher reading in the same unit, from the vehicle page, a
+  diagnosis or a service record, raises it. A lower one, or one in the other
+  unit, is stored only when the user confirms it on the vehicle page; arriving
+  with a diagnosis or a service record it changes nothing.
+- **Records copied from a device** have `source = 'device_import'` and keep the
+  id they had on the device in `import_key`, so importing twice cannot create
+  them twice. They hold the short summary the device had, not a full answer.
 
 ### Values users type
 
@@ -127,10 +167,10 @@ $env:DIRECT_URL = "<address>"; npm run db:inspect; Remove-Item Env:DIRECT_URL
 
 ## The migrations
 
-This release has two, and **neither removes anything**. Each file runs as **one
+There are three, and **none of them removes anything**. Each file runs as **one
 transaction**: if any statement in it fails, nothing in that file is applied.
-`converge_and_expand` also sets a 15-second lock timeout, so it stops instead of
-queueing behind a busy table.
+`converge_and_expand` and `garage_history` also set a 15-second lock timeout, so
+they stop instead of queueing behind a busy table.
 
 The approach is expand → backfill → switch → clean up, with the clean-up held
 back for a later release (see "Left for a later clean-up").
@@ -183,10 +223,32 @@ statement does nothing if its work is already done.
   so this is milliseconds. For a table of millions of rows the indexes would be
   built concurrently in their own migration instead.
 
+### 3. `20261012180000_garage_history` (Phase 2E)
+
+Adds what the garage needs to keep history on the server. **It only adds.**
+
+- **Creates:** tables `diagnoses` and `confirmed_fixes` with their indexes,
+  foreign keys and check constraints (status is `open`, `resolved` or
+  `dismissed`; source is `app` or `device_import`; a repair's description is
+  not blank; a mileage is 0 to 9,999,999 with unit `km`, `mi` or none).
+- **Changes:** `garage_vehicles` gains five optional columns: `trim`,
+  `odometer_value`, `odometer_unit`, `odometer_updated_at`, `archived_at`, and
+  one check constraint on the mileage.
+- **Backfills:** a vehicle's current mileage is set from its most recent
+  service record that has a readable reading, and only where the vehicle has
+  none yet. Nothing else is written.
+- **Drops:** nothing. **Data-loss risk:** none.
+- **Locks:** a brief exclusive lock on `garage_vehicles` to add the columns
+  (no rewrite: they are optional with no default), and on `users` and
+  `garage_vehicles` while the foreign keys are added.
+- **Old code keeps working:** every new column is optional, and the previous
+  version neither reads nor writes the new tables. One difference to know
+  about is under "Rollback check".
+
 ### Order
 
-`baseline` (recorded) → `converge_and_expand` → new app code goes live →
-(later, separately) clean-up.
+`baseline` (recorded) → `converge_and_expand` → `garage_history` → new app code
+goes live → (later, separately) clean-up.
 
 The previous version of the app keeps working against the migrated database, so
 it does not matter that the old code is still serving for a minute or two after
@@ -230,8 +292,9 @@ never will be. They are what the user typed and what the app shows.
 ## Rollback check
 
 `npm run db:rollback-check` answers one question with the real code: after this
-release's migrations, does the previous version of the app (Phase 2C, commit
-`e79758c`) still work, as it would after a Vercel Instant Rollback?
+release's migrations, does the previous version of the app (now Phase 2D, commit
+`bdf96de`) still work, as it would after a Vercel Instant Rollback? The harness
+for the release before that (Phase 2C, `e79758c`) is kept beside it.
 
 It copies the previous version's source out of git into a temporary folder and
 runs it for real:
@@ -244,6 +307,12 @@ runs it for real:
    Google sign-in, sign-up, garage, service records, feedback through its own
    connection pool, the admin list, the daily allowance and follow-up counters;
 4. the migration command is run again and must find nothing to do.
+
+**One thing the previous version cannot do after Phase 2E has been used:**
+delete a vehicle that has gained a saved diagnosis. Its delete request is
+refused by the database (the `NO ACTION` foreign key) and the vehicle and its
+history stay. That is the intended direction of failure: an older version can
+never remove history it does not know about. The check covers it.
 
 It empties the database it uses, so it only accepts `TEST_DATABASE_URL` on this
 machine. It also runs as part of the database tests whenever that commit is
@@ -357,6 +426,35 @@ Do these in order. Steps 1 to 3 change nothing in production.
    records are there); add and delete a test vehicle; send feedback and see it
    on the admin page; run one diagnosis.
 7. Keep `backup-before-2d` until the clean-up release has also gone out.
+
+## Deploying Phase 2E
+
+The same path as before, and shorter, because production already has its
+migration history.
+
+1. **Make a backup.** Neon → Branches → *Create branch* from production, named
+   for example `backup-before-2e`. (`backup-before-2d` stays as it is.)
+2. **Optional rehearsal on a copy**, exactly as for Phase 2D: point `DIRECT_URL`
+   at a throwaway branch in your own terminal, `npm run db:inspect`,
+   `npm run db:migrate`, `npm run db:inspect`. Expected: one migration applied
+   (`20261012180000_garage_history`); two new tables, both empty; the same row
+   counts as before in every existing table; the same list under
+   `LEFT FROM OLDER VERSIONS`. Then delete the branch and remove `DIRECT_URL`
+   from your terminal.
+3. **Merge the pull request.** The production build applies the one pending
+   migration, then builds. In the build log look for
+   `Applying migration \`20261012180000_garage_history\``, then
+   `All migrations have been successfully applied.` and `[db:migrate] done.`
+   There should be no line about recording a baseline this time.
+4. **Check the live site:** sign in; the garage shows the same vehicles; open a
+   vehicle; add a service record with a mileage and see the vehicle's mileage;
+   run one diagnosis and find it under the vehicle's open issues; open it again;
+   mark it fixed; see the repair on the timeline.
+5. Nothing new needs setting in Vercel. `GARAGE_IMPORT_HOURLY_LIMIT` is
+   optional.
+
+The clean-up of what older versions left behind is still a separate, later
+pull request. This release does not touch any of it.
 
 ## Backup and rollback
 
@@ -493,3 +591,9 @@ What they cover (`tests/integration/`):
 - **The app** — sign-up, emailed link, sign-in, garage, service records,
   feedback and the admin view, the diagnosis allowance and follow-up counters,
   and that no request changes the database structure.
+- **The garage** — a signed-in diagnosis is saved to its vehicle and a guest's
+  or a failed one is not; a follow-up updates the same record; a saved
+  diagnosis reopens without an AI call; another user's vehicles, diagnoses and
+  records answer "not found"; confirmed repairs and reopening; the timeline;
+  card facts; the mileage rules; delete versus archive; and importing a
+  device's data, including duplicates and a repeated import.

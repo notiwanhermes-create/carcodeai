@@ -18,6 +18,12 @@
 //   garage_vehicles_model_year_check         CHECK (model_year between 1900 and 2100)
 //   maintenance_records_odometer_check       CHECK (odometer_value >= 0, unit is 'km' or 'mi')
 //   maintenance_records_cost_amount_check    CHECK (cost_amount >= 0)
+//   garage_vehicles_odometer_check           CHECK (odometer_value >= 0, unit is 'km' or 'mi')
+//   diagnoses_status_check                   CHECK (status in 'open', 'resolved', 'dismissed')
+//   diagnoses_source_check                   CHECK (source in 'app', 'device_import')
+//   diagnoses_odometer_check                 CHECK (odometer_value >= 0, unit is 'km' or 'mi')
+//   confirmed_fixes_odometer_check           CHECK (odometer_value >= 0, unit is 'km' or 'mi')
+//   confirmed_fixes_description_check        CHECK (description is not blank)
 
 generator client {
   provider = "prisma-client"
@@ -51,6 +57,8 @@ model User {
 
   vehicles           Vehicle[]
   maintenanceRecords MaintenanceRecord[]
+  diagnoses          Diagnosis[]
+  confirmedFixes     ConfirmedFix[]
   verificationTokens EmailVerificationToken[]
 
   @@map("users")
@@ -90,9 +98,23 @@ model Vehicle {
   isActive  Boolean  @default(false) @map("is_active") @ignore
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
 
+  /// Trim level, if the user entered one.
+  trim              String?
+  /// The latest odometer reading known for this vehicle, and when it was recorded.
+  /// The unit is "km" or "mi" when known. A lower value is only ever stored when
+  /// the user confirms it is a correction.
+  odometerValue     Int?      @map("odometer_value")
+  odometerUnit      String?   @map("odometer_unit")
+  odometerUpdatedAt DateTime? @map("odometer_updated_at") @db.Timestamptz()
+  /// Set when the user removes a vehicle that has history. The vehicle leaves
+  /// the garage but nothing is deleted, and it can be restored.
+  archivedAt        DateTime? @map("archived_at") @db.Timestamptz()
+
   /// Deleting an account deletes its vehicles.
   user               User                @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   maintenanceRecords MaintenanceRecord[]
+  diagnoses          Diagnosis[]
+  confirmedFixes     ConfirmedFix[]
 
   @@index([userId, createdAt])
   @@map("garage_vehicles")
@@ -131,6 +153,106 @@ model MaintenanceRecord {
   @@index([vehicleId, createdAt])
   @@index([userId, createdAt])
   @@map("maintenance_records")
+}
+
+/// One saved diagnosis: what the user asked, for which vehicle, and what the AI
+/// answered. It is a HYPOTHESIS. What actually fixed the problem, if the user
+/// reports it, lives in ConfirmedFix and never changes this record.
+///
+/// The diagnosis belongs to the vehicle it was run for (`vehicleId`), and keeps
+/// a snapshot of that vehicle as it was described at the time, so later edits
+/// to the vehicle do not rewrite history.
+model Diagnosis {
+  id        String @id @default(cuid())
+  userId    String @map("user_id")
+  vehicleId String @map("vehicle_id")
+
+  /// "open", "resolved" or "dismissed".
+  status          String    @default("open")
+  statusChangedAt DateTime? @map("status_changed_at") @db.Timestamptz()
+  /// When the user last answered "did this fix it?" without resolving it.
+  reviewedAt      DateTime? @map("reviewed_at") @db.Timestamptz()
+
+  /// "app": produced by this app for a signed-in user. "device_import": copied
+  /// from history kept in the browser, which the server cannot vouch for.
+  source   String @default("app")
+  /// Language the answer was written in.
+  language String @default("en")
+
+  /// { year, make, model, engine, trim } as diagnosed.
+  vehicleSnapshot Json   @map("vehicle_snapshot")
+  /// The trouble codes exactly as the user typed them.
+  codeInput       String @default("") @map("code_input")
+  symptoms        String @default("")
+  /// What is on file for each submitted code (trusted or not), for display.
+  codes           Json   @default("[]")
+  /// The structured diagnosis: summary, driving guidance, ranked causes with
+  /// checks, limits and follow-up questions. No prompts or model internals.
+  result          Json
+  /// The follow-up answers the current result takes into account.
+  followUps       Json   @default("[]") @map("follow_ups")
+  /// How many times follow-up answers updated this diagnosis.
+  updateCount     Int    @default(0) @map("update_count")
+
+  /// Odometer reading given with the request, if any.
+  odometerValue Int?    @map("odometer_value")
+  odometerUnit  String? @map("odometer_unit")
+
+  /// Id inside the signed follow-up ticket, so an update finds its diagnosis.
+  ticketId  String? @map("ticket_id")
+  /// Id the record had on the device it was imported from, so an import cannot
+  /// create the same diagnosis twice.
+  importKey String? @map("import_key")
+
+  diagnosedAt DateTime @default(now()) @map("diagnosed_at") @db.Timestamptz()
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz()
+
+  /// Deleting an account deletes its diagnoses.
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// A vehicle that has diagnoses cannot be deleted from under them.
+  vehicle      Vehicle       @relation(fields: [vehicleId], references: [id], onDelete: NoAction)
+  confirmedFix ConfirmedFix?
+
+  @@unique([userId, ticketId])
+  @@unique([userId, importKey])
+  @@index([vehicleId, diagnosedAt])
+  @@index([userId, status, diagnosedAt])
+  @@map("diagnoses")
+}
+
+/// What actually fixed a diagnosed problem, as reported by the user.
+///
+/// Kept apart from the diagnosis on purpose: the diagnosis is the AI's
+/// hypothesis, this is the outcome. `matchedCause*` is filled in only when the
+/// user says the repair was one of the causes the diagnosis listed.
+model ConfirmedFix {
+  id          String @id @default(cuid())
+  userId      String @map("user_id")
+  vehicleId   String @map("vehicle_id")
+  diagnosisId String @unique @map("diagnosis_id")
+
+  /// The repair in the user's own words.
+  description       String
+  matchedCauseRank  Int?    @map("matched_cause_rank")
+  matchedCauseTitle String? @map("matched_cause_title")
+
+  fixedOn       DateTime @map("fixed_on") @db.Date
+  odometerValue Int?     @map("odometer_value")
+  odometerUnit  String?  @map("odometer_unit")
+  notes         String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz()
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicle   Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: NoAction)
+  /// The outcome goes with its diagnosis.
+  diagnosis Diagnosis @relation(fields: [diagnosisId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId, fixedOn])
+  @@index([userId, createdAt])
+  @@map("confirmed_fixes")
 }
 
 /// Short-lived counters: request rate limits, daily allowances, and the number

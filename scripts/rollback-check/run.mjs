@@ -10,16 +10,17 @@
  *  1. copies the previous version's source out of git into a temporary folder,
  *     sharing this folder's installed packages;
  *  2. generates that version's database client;
- *  3. runs `harness.mjs` there: the previous version builds a database and
- *     stores data, this release's migrations are applied, and the previous
- *     version is started again and exercised (accounts, garage, service
- *     records, feedback, counters);
+ *  3. runs the harness for that release there (`harness.phase-2d.mjs`, or
+ *     `harness.phase-2c.mjs` for the release before it): the previous version
+ *     builds a database and stores data, this release's migrations are applied,
+ *     and the previous version is started again and exercised (accounts,
+ *     garage, service records, feedback, counters);
  *  4. removes the temporary folder.
  *
  * It EMPTIES the database it is pointed at, so it only accepts
  * TEST_DATABASE_URL on this machine (see docs/database.md).
  *
- *   node scripts/rollback-check/run.mjs [git-ref]     default: the Phase 2C release
+ *   node scripts/rollback-check/run.mjs [git-ref]     default: the release now in production (Phase 2D)
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -28,10 +29,15 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-/** The release a rollback returns to: Phase 2C, as merged to main. */
-const PREVIOUS_RELEASE = "e79758c";
-/** The parts of that release the check needs (its source, schema and test configuration). */
-const NEEDED = ["app", "components", "data", "prisma", "tests", "package.json", "tsconfig.json", "vitest.config.ts", "prisma.config.ts", "next.config.ts", "proxy.ts"];
+/** The release a rollback returns to: Phase 2D, as deployed to production. */
+const PREVIOUS_RELEASE = "bdf96de";
+/**
+ * Each release has its own harness, because it exercises that release's own
+ * modules. A ref not listed here is checked with the newest harness.
+ */
+const HARNESSES = { e79758c: "harness.phase-2c.mjs", bdf96de: "harness.phase-2d.mjs" };
+/** The parts of that release the check needs (its source, schema, scripts and test configuration). */
+const NEEDED = ["app", "components", "data", "prisma", "scripts", "tests", "package.json", "tsconfig.json", "vitest.config.ts", "prisma.config.ts", "next.config.ts", "proxy.ts"];
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ref = process.argv[2] || PREVIOUS_RELEASE;
@@ -79,7 +85,9 @@ try {
   log("generating the previous version's database client");
   execFileSync(process.execPath, [path.join(ROOT, "node_modules", "prisma", "build", "index.js"), "generate"], { cwd: dir, stdio: ["ignore", "ignore", "inherit"] });
 
-  fs.copyFileSync(path.join(ROOT, "scripts", "rollback-check", "harness.mjs"), path.join(dir, "tests", "rollback-check.test.ts"));
+  const short = git(["rev-parse", "--short=7", ref]);
+  const harness = HARNESSES[short] || HARNESSES[PREVIOUS_RELEASE];
+  fs.copyFileSync(path.join(ROOT, "scripts", "rollback-check", harness), path.join(dir, "tests", "rollback-check.test.ts"));
 
   log("running the previous version against a database migrated by this release");
   const run = spawnSync(process.execPath, [path.join(ROOT, "node_modules", "vitest", "vitest.mjs"), "run", "tests/rollback-check.test.ts"], {

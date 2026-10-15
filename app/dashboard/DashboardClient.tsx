@@ -1,11 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { VehicleDeleteButton } from "@/components/VehicleDeleteButton";
+import { PermanentDeletePanel } from "@/components/garage/PermanentDeletePanel";
+import { MaintenanceForm, MaintenanceRow } from "@/components/garage/VehicleParts";
+import { formatDay } from "@/components/garage/shared";
+import { track } from "@/app/lib/analytics";
+import type { MaintenanceDto, VehicleDto } from "@/app/lib/garage-types";
+import { formatOdometer } from "@/app/lib/odometer";
 import { useGarageVehicles, type GarageVehicle } from "@/app/lib/useGarageVehicles";
 import { tr, type LangCode } from "@/app/data/translations";
 
@@ -14,31 +20,6 @@ function cn(...xs: Array<string | false | null | undefined>) {
 }
 
 type Vehicle = GarageVehicle;
-
-type MaintenanceRecord = {
-  id: string;
-  vehicleId: string;
-  serviceType: string;
-  date: string;
-  odometer?: string;
-  notes?: string;
-  cost?: string;
-};
-
-const SERVICE_TYPES = [
-  "Oil Change",
-  "Brake Service",
-  "Tire Rotation",
-  "Tire Replacement",
-  "Air Filter",
-  "Transmission Service",
-  "Coolant Flush",
-  "Spark Plugs",
-  "Battery Replacement",
-  "Alignment",
-  "Inspection",
-  "Other",
-];
 
 export default function DashboardClient() {
   const { data: session, status } = useSession();
@@ -50,14 +31,20 @@ export default function DashboardClient() {
     vehicles,
     hydrated: vehiclesHydrated,
     syncing: vehiclesSyncing,
+    refresh: refreshVehicles,
     addVehicle: addGarageVehicle,
     deleteVehicle: deleteGarageVehicle,
   } = useGarageVehicles({ userId: session?.user?.id, ready: status !== "loading" });
-  const [records, setRecords] = useState<MaintenanceRecord[]>([]);
+  const [records, setRecords] = useState<MaintenanceDto[]>([]);
+  // Vehicles the user removed that still have history. Nothing of theirs was deleted.
+  const [archived, setArchived] = useState<VehicleDto[]>([]);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [maintenanceLoading, setMaintenanceLoading] = useState(true);
   const [showAddVehicle, setShowAddVehicle] = useState(false);
   const [showAddRecord, setShowAddRecord] = useState(false);
+  const [notice, setNotice] = useState("");
+  // The archived vehicle whose "delete permanently" warning is open, if any.
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const [vYear, setVYear] = useState("");
   const [vMake, setVMake] = useState("");
@@ -67,14 +54,6 @@ export default function DashboardClient() {
   const [vNickname, setVNickname] = useState("");
   const [vehicleError, setVehicleError] = useState("");
   const [vehicleSaving, setVehicleSaving] = useState(false);
-
-  const [rDate, setRDate] = useState(new Date().toISOString().split("T")[0]);
-  const [rOdometer, setROdometer] = useState("");
-  const [rServiceType, setRServiceType] = useState("Oil Change");
-  const [rNotes, setRNotes] = useState("");
-  const [rCost, setRCost] = useState("");
-  const [recordError, setRecordError] = useState("");
-  const [recordSaving, setRecordSaving] = useState(false);
 
   const [confirmDialog, setConfirmDialog] = useState<{
     open: boolean;
@@ -90,20 +69,7 @@ export default function DashboardClient() {
     }
   }, [status, router]);
 
-  useEffect(() => {
-    if (status === "authenticated") {
-      void fetchMaintenance();
-    }
-  }, [status]);
-
-  useEffect(() => {
-    setSelectedVehicleId((prev) => {
-      if (prev && vehicles.some((v) => v.id === prev)) return prev;
-      return vehicles[0]?.id ?? null;
-    });
-  }, [vehicles]);
-
-  async function fetchMaintenance() {
+  const fetchMaintenance = useCallback(async () => {
     setMaintenanceLoading(true);
     try {
       const res = await fetch("/api/maintenance", { cache: "no-store" });
@@ -112,7 +78,31 @@ export default function DashboardClient() {
     } finally {
       setMaintenanceLoading(false);
     }
-  }
+  }, []);
+
+  const fetchArchived = useCallback(async () => {
+    try {
+      const res = await fetch("/api/garage?archived=1", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) setArchived(Array.isArray(data.vehicles) ? data.vehicles : []);
+    } catch {
+      // The list of archived vehicles is not essential to the page.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (status === "authenticated") {
+      void fetchMaintenance();
+      void fetchArchived();
+    }
+  }, [status, fetchMaintenance, fetchArchived]);
+
+  useEffect(() => {
+    setSelectedVehicleId((prev) => {
+      if (prev && vehicles.some((v) => v.id === prev)) return prev;
+      return vehicles[0]?.id ?? null;
+    });
+  }, [vehicles]);
 
   async function addVehicle() {
     setVehicleError("");
@@ -130,6 +120,7 @@ export default function DashboardClient() {
         vin: vVin || undefined,
         nickname: vNickname || undefined,
       });
+      track("vehicle_added", { signed_in: true, source: "dashboard" });
       setSelectedVehicleId(v.id);
       setShowAddVehicle(false);
       setVYear("");
@@ -145,67 +136,49 @@ export default function DashboardClient() {
     }
   }
 
-  function requestDeleteVehicle(id: string) {
+  /**
+   * Removing a vehicle archives it: nothing recorded for it is deleted, and it
+   * can be restored. Deleting for good is a separate step, offered only for an
+   * archived vehicle (see the archived list below).
+   */
+  function requestDeleteVehicle(v: Vehicle) {
+    setNotice("");
     setConfirmDialog({
       open: true,
-      title: tr("deleteVehicle", lang),
-      message: tr("deleteVehicleMsg", lang),
-      confirmLabel: tr("delete", lang),
+      title: tr("archiveVehicleTitle", lang),
+      message: tr("archiveVehicleMsg", lang),
+      confirmLabel: tr("archiveVehicleConfirm", lang),
       onConfirm: async () => {
-        await deleteGarageVehicle(id);
-        setRecords((prev) => prev.filter((r) => r.vehicleId !== id));
-        setSelectedVehicleId((prev) => (prev === id ? null : prev));
+        await deleteGarageVehicle(v.id);
+        setNotice(tr("vehicleArchived", lang));
+        void fetchArchived();
+        setSelectedVehicleId((prev) => (prev === v.id ? null : prev));
       },
     });
   }
 
-  async function addRecord() {
-    setRecordError("");
-    if (!selectedVehicleId) {
-      setRecordError("Select a vehicle first.");
-      return;
-    }
-    if (!rDate || !rServiceType) {
-      setRecordError("Date and service type are required.");
-      return;
-    }
-    setRecordSaving(true);
+  async function restoreVehicle(id: string) {
+    setNotice("");
     try {
-      const res = await fetch("/api/maintenance", {
-        method: "POST",
+      const res = await fetch(`/api/garage/${encodeURIComponent(id)}`, {
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          vehicleId: selectedVehicleId,
-          date: rDate,
-          odometer: rOdometer || undefined,
-          serviceType: rServiceType,
-          notes: rNotes || undefined,
-          cost: rCost || undefined,
-        }),
+        cache: "no-store",
+        body: JSON.stringify({ archived: false }),
       });
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setRecordError(d.error || "Failed to add record.");
-        return;
-      }
-      setRecords((prev) => [d.record, ...prev]);
-      setShowAddRecord(false);
-      setRDate(new Date().toISOString().split("T")[0]);
-      setROdometer("");
-      setRServiceType("Oil Change");
-      setRNotes("");
-      setRCost("");
+      if (!res.ok) throw new Error();
+      await Promise.all([refreshVehicles(), fetchArchived()]);
     } catch {
-      setRecordError("Failed to add record.");
-    } finally {
-      setRecordSaving(false);
+      setNotice("Could not restore that vehicle. Please try again.");
     }
   }
 
   async function deleteRecord(id: string) {
-    if (!confirm("Delete this maintenance record?")) return;
-    await fetch(`/api/maintenance/${id}`, { method: "DELETE" });
+    const res = await fetch(`/api/maintenance/${encodeURIComponent(id)}`, { method: "DELETE", cache: "no-store" });
+    if (!res.ok) return;
     setRecords((prev) => prev.filter((r) => r.id !== id));
+    // The vehicle's "last maintenance" may have changed with it.
+    refreshVehicles().catch(() => {});
   }
 
   const filteredRecords = records.filter((r) => {
@@ -292,6 +265,12 @@ export default function DashboardClient() {
               </button>
             </div>
 
+            {notice && (
+              <div role="status" data-garage-notice className="glass-card rounded-2xl p-3 text-xs text-blue-200">
+                {notice}
+              </div>
+            )}
+
             {showAddVehicle && (
               <div className="glass-card-strong rounded-2xl p-5 space-y-3">
                 <div className="text-sm font-semibold text-white mb-2">New Vehicle</div>
@@ -359,48 +338,136 @@ export default function DashboardClient() {
                 <div className="text-slate-400 text-sm">No vehicles yet. Add your first one!</div>
               </div>
             ) : (
-              vehicles.map((v) => (
-                <div
-                  key={v.id}
-                  onClick={() => setSelectedVehicleId(v.id)}
-                  className={cn(
-                    "glass-card rounded-2xl p-4 cursor-pointer transition-all",
-                    selectedVehicleId === v.id
-                      ? "ring-2 ring-blue-500/50 bg-blue-500/10"
-                      : "hover:bg-white/5"
-                  )}
-                >
-                  <div className="flex items-start justify-between">
-                    <div>
-                      {v.nickname && (
-                        <div className="text-xs font-medium text-cyan-400 mb-0.5">
-                          {v.nickname}
+              vehicles.map((v) => {
+                // Facts from the account's own records. Nothing here is scored or estimated.
+                const mileage = formatOdometer(v.odometerValue ?? null, v.odometerUnit ?? null);
+                const openIssues = v.stats?.openIssues ?? 0;
+                return (
+                  <div
+                    key={v.id}
+                    data-vehicle-card
+                    onClick={() => setSelectedVehicleId(v.id)}
+                    className={cn(
+                      "glass-card rounded-2xl p-4 cursor-pointer transition-all",
+                      selectedVehicleId === v.id
+                        ? "ring-2 ring-blue-500/50 bg-blue-500/10"
+                        : "hover:bg-white/5"
+                    )}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        {v.nickname && (
+                          <div className="text-xs font-medium text-cyan-400 mb-0.5">
+                            {v.nickname}
+                          </div>
+                        )}
+                        <div className="text-sm font-semibold text-white">
+                          {v.year} {v.make} {v.model}
+                          {v.trim ? ` ${v.trim}` : ""}
                         </div>
-                      )}
-                      <div className="text-sm font-semibold text-white">
-                        {v.year} {v.make} {v.model}
+                        {v.engine && <div className="text-xs text-slate-400 mt-0.5">{v.engine}</div>}
+                        {v.vin && (
+                          <div className="text-[10px] text-slate-500 mt-0.5 font-mono">
+                            VIN: {v.vin}
+                          </div>
+                        )}
                       </div>
-                      {v.engine && <div className="text-xs text-slate-400 mt-0.5">{v.engine}</div>}
-                      {v.vin && (
-                        <div className="text-[10px] text-slate-500 mt-0.5 font-mono">
-                          VIN: {v.vin}
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <VehicleDeleteButton
+                          theme={theme}
+                          lang={lang}
+                          disabled={vehiclesSyncing}
+                          onClick={() => requestDeleteVehicle(v)}
+                        />
+                      </div>
+                    </div>
+                    <dl data-vehicle-card-facts className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-[11px]">
+                      <div>
+                        <dt className="text-slate-500">Mileage</dt>
+                        <dd className={mileage ? "text-slate-200" : "text-slate-500"}>{mileage || "Not set"}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-slate-500">Open issues</dt>
+                        <dd data-open-issues className={openIssues > 0 ? "font-semibold text-amber-300" : "text-slate-200"}>{openIssues}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-slate-500">Last diagnosis</dt>
+                        <dd className={v.stats?.lastDiagnosisAt ? "text-slate-200" : "text-slate-500"}>
+                          {v.stats?.lastDiagnosisAt ? formatDay(v.stats.lastDiagnosisAt) : "None yet"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-slate-500">Last maintenance</dt>
+                        <dd className={v.stats?.lastMaintenance ? "text-slate-200" : "text-slate-500"}>
+                          {v.stats?.lastMaintenance ? `${v.stats.lastMaintenance.serviceType} · ${formatDay(v.stats.lastMaintenance.date)}` : "None yet"}
+                        </dd>
+                      </div>
+                    </dl>
+                    <Link
+                      href={`/garage/${encodeURIComponent(v.id)}`}
+                      data-open-vehicle
+                      onClick={(e) => e.stopPropagation()}
+                      className="mt-3 inline-block rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-blue-300 hover:bg-blue-500/20 transition-all"
+                    >
+                      Open vehicle
+                    </Link>
+                  </div>
+                );
+              })
+            )}
+
+            {archived.length > 0 && (
+              <div data-archived-list className="pt-2">
+                <div className="mb-2 text-xs font-semibold text-slate-400">Archived vehicles ({archived.length})</div>
+                <div className="space-y-2">
+                  {archived.map((v) => (
+                    <div key={v.id} data-archived-vehicle className="space-y-2">
+                      <div className="glass-card flex items-center justify-between gap-2 rounded-2xl p-3">
+                        <Link href={`/garage/${encodeURIComponent(v.id)}`} className="min-w-0 truncate text-xs text-slate-300 hover:text-blue-300">
+                          {v.year} {v.make} {v.model}
+                        </Link>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <button
+                            type="button"
+                            data-restore
+                            onClick={() => restoreVehicle(v.id)}
+                            className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10 transition-all"
+                          >
+                            Restore
+                          </button>
+                          {deletingId !== v.id && (
+                            <button
+                              type="button"
+                              data-delete-permanently
+                              onClick={() => {
+                                setNotice("");
+                                setDeletingId(v.id);
+                              }}
+                              className="rounded-lg border border-red-500/30 px-2.5 py-1 text-xs text-red-300 hover:bg-red-500/10 transition-all"
+                            >
+                              Delete permanently…
+                            </button>
+                          )}
                         </div>
+                      </div>
+                      {deletingId === v.id && (
+                        <PermanentDeletePanel
+                          vehicleId={v.id}
+                          vehicleName={`${v.year} ${v.make} ${v.model}`}
+                          counts={v.stats ? { maintenance: v.stats.maintenanceRecords, diagnoses: v.stats.diagnoses, repairs: v.stats.repairs } : undefined}
+                          onCancel={() => setDeletingId(null)}
+                          onDeleted={() => {
+                            setDeletingId(null);
+                            setArchived((prev) => prev.filter((x) => x.id !== v.id));
+                            setRecords((prev) => prev.filter((r) => r.vehicleId !== v.id));
+                            setNotice("Vehicle deleted permanently, with its service records, diagnoses and reported repairs.");
+                          }}
+                        />
                       )}
                     </div>
-                    <div onClick={(e) => e.stopPropagation()}>
-                      <VehicleDeleteButton
-                        theme={theme}
-                        lang={lang}
-                        disabled={vehiclesSyncing}
-                        onClick={() => requestDeleteVehicle(v.id)}
-                      />
-                    </div>
-                  </div>
-                  <div className="mt-2 text-[10px] text-slate-500">
-                    {records.filter((r) => r.vehicleId === v.id).length} maintenance records
-                  </div>
+                  ))}
                 </div>
-              ))
+              </div>
             )}
           </div>
 
@@ -432,78 +499,21 @@ export default function DashboardClient() {
               </div>
             </div>
 
-            {showAddRecord && selectedVehicleId && (
-              <div className="glass-card-strong rounded-2xl p-5 space-y-3">
-                <div className="text-sm font-semibold text-white mb-2">New Maintenance Record</div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs text-slate-400 mb-1">Date *</label>
-                    <input
-                      type="date"
-                      value={rDate}
-                      onChange={(e) => setRDate(e.target.value)}
-                      className="glass-input w-full rounded-xl px-3 py-2.5 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-400 mb-1">Service Type *</label>
-                    <select
-                      value={rServiceType}
-                      onChange={(e) => setRServiceType(e.target.value)}
-                      className="glass-input w-full rounded-xl px-3 py-2.5 text-sm"
-                    >
-                      {SERVICE_TYPES.map((st) => (
-                        <option key={st} value={st}>
-                          {st}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-400 mb-1">Odometer</label>
-                    <input
-                      placeholder="e.g. 45000"
-                      value={rOdometer}
-                      onChange={(e) => setROdometer(e.target.value)}
-                      className="glass-input w-full rounded-xl px-3 py-2.5 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-400 mb-1">Cost</label>
-                    <input
-                      placeholder="e.g. 49.99"
-                      value={rCost}
-                      onChange={(e) => setRCost(e.target.value)}
-                      className="glass-input w-full rounded-xl px-3 py-2.5 text-sm"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-400 mb-1">Notes</label>
-                  <textarea
-                    placeholder="Any additional details..."
-                    value={rNotes}
-                    onChange={(e) => setRNotes(e.target.value)}
-                    rows={2}
-                    className="glass-input w-full rounded-xl px-3 py-2.5 text-sm resize-none"
-                  />
-                </div>
-                {recordError && <div className="text-xs text-red-400">{recordError}</div>}
-                <div className="flex gap-2">
-                  <button
-                    onClick={addRecord}
-                    disabled={recordSaving}
-                    className="flex-1 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 py-2 text-xs font-semibold text-white transition-all"
-                  >
-                    {recordSaving ? "Saving..." : "Save Record"}
-                  </button>
-                  <button
-                    onClick={() => setShowAddRecord(false)}
-                    className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs text-slate-400 hover:bg-white/10 transition-all"
-                  >
-                    Cancel
-                  </button>
-                </div>
+            {showAddRecord && selectedVehicle && (
+              <div className="glass-card-strong rounded-2xl p-5">
+                <div className="text-sm font-semibold text-white mb-3">New Maintenance Record</div>
+                <MaintenanceForm
+                  key={selectedVehicle.id}
+                  vehicle={selectedVehicle}
+                  source="dashboard"
+                  onCancel={() => setShowAddRecord(false)}
+                  onAdded={(record) => {
+                    setRecords((prev) => [record, ...prev]);
+                    setShowAddRecord(false);
+                    // The vehicle's mileage and "last maintenance" may have changed with it.
+                    refreshVehicles().catch(() => {});
+                  }}
+                />
               </div>
             )}
 
@@ -522,42 +532,7 @@ export default function DashboardClient() {
             ) : (
               <div className="space-y-2">
                 {filteredRecords.map((r) => (
-                  <div key={r.id} className="glass-card rounded-2xl p-4">
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="inline-flex items-center rounded-lg bg-blue-500/20 px-2 py-0.5 text-xs font-medium text-blue-400 border border-blue-500/20">
-                            {r.serviceType}
-                          </span>
-                          <span className="text-xs text-slate-500">{r.date}</span>
-                          {r.cost && <span className="text-xs text-emerald-400">${r.cost}</span>}
-                        </div>
-                        {r.odometer && (
-                          <div className="text-xs text-slate-400 mt-1">{r.odometer} miles</div>
-                        )}
-                        {r.notes && <div className="text-xs text-slate-400 mt-1">{r.notes}</div>}
-                      </div>
-                      <button
-                        onClick={() => deleteRecord(r.id)}
-                        className="rounded-lg p-1.5 text-slate-500 hover:bg-red-500/10 hover:text-red-400 transition-all"
-                      >
-                        <svg
-                          width="14"
-                          height="14"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <path d="M3 6h18" />
-                          <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
-                          <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
+                  <MaintenanceRow key={r.id} record={r} onDelete={deleteRecord} />
                 ))}
               </div>
             )}
@@ -567,4 +542,3 @@ export default function DashboardClient() {
     </main>
   );
 }
-

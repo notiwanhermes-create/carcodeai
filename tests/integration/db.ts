@@ -33,9 +33,10 @@ export const ROOT = path.resolve(__dirname, "../..");
 export const MIGRATIONS_DIR = path.join(ROOT, "prisma", "migrations");
 export const BASELINE = "20260101000000_baseline";
 export const CONVERGE = "20261011010000_converge_and_expand";
+export const GARAGE_HISTORY = "20261012180000_garage_history";
 
 /** The tables the app uses. A database built from nothing holds exactly these. */
-export const APP_TABLES = ["email_verification_tokens", "feedback", "garage_vehicles", "maintenance_records", "rate_limits", "users"];
+export const APP_TABLES = ["confirmed_fixes", "diagnoses", "email_verification_tokens", "feedback", "garage_vehicles", "maintenance_records", "rate_limits", "users"];
 
 /**
  * Things older versions of the app created inside the app's own tables, which

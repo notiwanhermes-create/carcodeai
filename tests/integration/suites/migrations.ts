@@ -15,8 +15,8 @@ import { parseCost, parseModelYear, parseOdometer, parseServiceDate } from "../.
 
 const APP_TABLES = db.APP_TABLES;
 
-/** The release a rollback returns to (Phase 2C). Its code is run for real when this copy of the repository has it. */
-const PREVIOUS_RELEASE = "e79758c";
+/** The release a rollback returns to (Phase 2D, as deployed). Its code is run for real when this copy of the repository has it. */
+const PREVIOUS_RELEASE = "bdf96de";
 const hasPreviousRelease = spawnSync("git", ["cat-file", "-e", `${PREVIOUS_RELEASE}^{commit}`], { cwd: db.ROOT }).status === 0;
 
 export function migrationSuite() {
@@ -126,6 +126,7 @@ export function migrationSuite() {
       expect(applied).toEqual([
         { migration_name: db.BASELINE, done: true },
         { migration_name: db.CONVERGE, done: true },
+        { migration_name: db.GARAGE_HISTORY, done: true },
       ]);
 
       const drift = db.schemaMatchesPrisma();
@@ -155,6 +156,7 @@ export function migrationSuite() {
       expect((await rows(`SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL ORDER BY started_at`)).map((r) => r.migration_name)).toEqual([
         db.BASELINE,
         db.CONVERGE,
+        db.GARAGE_HISTORY,
       ]);
       expect(await appShapeNow()).toEqual(db.appShape(expectedShape));
       expect(await db.leftovers(pool)).toEqual(leftBehind);
@@ -295,7 +297,9 @@ export function migrationSuite() {
       // ...and so is every value that was there before, in every table. The only
       // existing value the migration may change is an empty is_active flag, which becomes "no".
       const after = await everyRow();
-      expect(Object.keys(after).sort()).toEqual(Object.keys(before).sort());
+      // Every table that was there still is; the only new ones are the app's own new, empty tables.
+      expect(Object.keys(after).sort()).toEqual([...Object.keys(before), "confirmed_fixes", "diagnoses"].sort());
+      expect([after.diagnoses, after.confirmed_fixes]).toEqual([[], []]);
       for (const table of Object.keys(before)) {
         expect(after[table], table).toHaveLength(before[table].length);
         for (const [i, was] of (before[table] as Array<Record<string, unknown>>).entries()) {
@@ -358,8 +362,8 @@ export function migrationSuite() {
 
       await db.upgradeExistingDatabase(pool);
 
-      // No table went away, and no table lost a row.
-      expect(await db.tableNames(pool)).toEqual(tablesBefore);
+      // No table went away, and no table lost a row. (The only new tables are the app's own new ones.)
+      expect(await db.tableNames(pool)).toEqual([...tablesBefore, "confirmed_fixes", "diagnoses"].sort());
       expect(Object.fromEntries(await Promise.all(tablesBefore.map(async (t) => [t, await count(t)] as const)))).toEqual(countsBefore);
       expect(countsBefore).toMatchObject({ sessions: 2, oem_fault_codes: 5, feedback_auto_reply_log: 1, feedback: 4, rate_limits: 2, email_verification_tokens: 1 });
 
@@ -483,7 +487,12 @@ export function migrationSuite() {
       const added = columns.filter((c) => legacy.PHASE_2C_PRISMA_MODELS[c.table_name] && !(c.column_name in legacy.PHASE_2C_PRISMA_MODELS[c.table_name].columns));
       expect(added.map((c) => `${c.table_name}.${c.column_name}`).sort()).toEqual([
         "feedback.page_url", // (that version writes this one with plain SQL)
+        "garage_vehicles.archived_at",
         "garage_vehicles.model_year",
+        "garage_vehicles.odometer_unit",
+        "garage_vehicles.odometer_updated_at",
+        "garage_vehicles.odometer_value",
+        "garage_vehicles.trim",
         "maintenance_records.cost_amount",
         "maintenance_records.odometer_unit",
         "maintenance_records.odometer_value",
@@ -533,7 +542,7 @@ export function migrationSuite() {
       expect(await db.schemaSnapshot(pool)).toEqual(structure);
     });
 
-    it.skipIf(!hasPreviousRelease)("the real previous version (Phase 2C code) runs against a database migrated by this release", () => {
+    it.skipIf(!hasPreviousRelease)("the real previous version (Phase 2D code) runs against a database migrated by this release", () => {
       // scripts/rollback-check: the previous version builds and fills a database,
       // this release's migrations are applied, and the previous version is then
       // started again and exercised. See docs/database.md, "Rollback check".

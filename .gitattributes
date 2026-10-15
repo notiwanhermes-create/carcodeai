@@ -1,0 +1,6 @@
+# Files that are run or checksummed must have the same bytes on every machine,
+# whatever the operating system. Without this, a Windows checkout turns their
+# line endings into CRLF.
+*.mjs text eol=lf
+*.sql text eol=lf
+*.toml text eol=lf

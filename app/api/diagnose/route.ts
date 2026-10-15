@@ -14,6 +14,12 @@
  * Allowance: a new diagnosis uses one unit of the caller's allowance and comes
  * back with a signed ticket. An update with follow-up answers presents that
  * ticket instead, and each ticket allows a small fixed number of updates.
+ *
+ * History: for a signed-in user, a successful diagnosis is saved to the garage
+ * vehicle it was run for, and a follow-up update replaces the answer of that
+ * same saved diagnosis. Guests are never saved here, and a failed diagnosis is
+ * never saved. A problem while saving does not fail the diagnosis: the user
+ * still gets the answer, marked as not saved.
  */
 import { lookupCodes, type DtcResult } from "../../lib/dtc";
 import { DIAGNOSE_LIMITS, parseDiagnoseBody } from "../../lib/diagnose-input";
@@ -26,6 +32,7 @@ import { vinAttributesForVehicle } from "../../lib/vin-lookup";
 import { clientIpKey } from "../../lib/client-ip";
 import { readJsonBody } from "../../lib/http";
 import { auth } from "../../lib/auth-config";
+import { saveFollowUpUpdate, saveNewDiagnosis, type DiagnosisToSave } from "../../lib/garage-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -96,6 +103,23 @@ function needsSymptomsMessage(codes: DtcResult[]): string {
 
 const FOLLOWUP_INVALID = "This diagnosis can no longer be updated. Start a new diagnosis to continue.";
 
+/**
+ * Save the diagnosis to the signed-in user's history. Returns the saved
+ * record's id, or null if it was not saved (a guest, no vehicle given, a
+ * vehicle that is not theirs, or a database problem). Never throws.
+ */
+async function saveToHistory(record: DiagnosisToSave, isUpdate: boolean): Promise<string | null> {
+  if (!record.userId || !record.vehicleId) return null;
+  try {
+    return isUpdate && record.ticketId
+      ? await saveFollowUpUpdate({ ...record, ticketId: record.ticketId })
+      : await saveNewDiagnosis(record);
+  } catch (err) {
+    console.error("[POST /api/diagnose] could not save to history:", err instanceof Error ? `${err.name}: ${err.message}` : String(err));
+    return null;
+  }
+}
+
 export async function POST(req: Request) {
   try {
     const limits = diagnoseLimits();
@@ -161,6 +185,8 @@ export async function POST(req: Request) {
     //    and each ticket allows only a fixed number of updates.
     const fingerprint = requestFingerprint(input);
     let followUp: DiagnoseOk["followUp"];
+    // The id inside the ticket ties follow-up updates to the diagnosis they belong to.
+    let ticketId: string | null = null;
     if (input.followUps.length > 0) {
       const check = verifyTicket(input.diagnosisToken, fingerprint);
       if (!check.ok) {
@@ -175,6 +201,7 @@ export async function POST(req: Request) {
         );
       }
       followUp = { token: input.diagnosisToken, remaining: allowance.remaining ?? 0 };
+      ticketId = check.ticket.id;
     } else {
       const quota = await consumeDiagnosisQuota(caller);
       if (!quota.allowed) {
@@ -184,6 +211,7 @@ export async function POST(req: Request) {
       }
       const issued = limits.followUpsPerDiagnosis > 0 ? issueTicket(fingerprint) : null;
       followUp = issued ? { token: issued.token, remaining: limits.followUpsPerDiagnosis } : null;
+      ticketId = issued ? issued.ticket.id : null;
     }
 
     // 6) What the model may see. The VIN is used here to look up vehicle details
@@ -226,11 +254,33 @@ export async function POST(req: Request) {
       `[diagnose] ok calls=${outcome.calls} input_tokens=${outcome.usage?.inputTokens ?? "?"} output_tokens=${outcome.usage?.outputTokens ?? "?"} ms=${Date.now() - started}`,
     );
 
+    // Signed-in users: keep it. Stored are the user's own words, the vehicle, the
+    // code results and the structured answer. No prompt or model internals.
+    const savedId = caller.userId
+      ? await saveToHistory(
+          {
+            userId: caller.userId,
+            vehicleId: input.vehicleId,
+            language: input.lang,
+            vehicle: { year: input.year, make: input.make, model: input.model, engine: input.engine },
+            codeInput: input.code,
+            symptoms: input.symptoms,
+            codes: plan.results,
+            diagnosis: outcome.diagnosis,
+            followUps: input.followUps,
+            mileage: input.mileage,
+            ticketId,
+          },
+          input.followUps.length > 0,
+        )
+      : null;
+
     const body: DiagnoseOk = {
       diagnosis: outcome.diagnosis,
       codes: plan.results,
       refined: context.follow_up_answers !== undefined,
       followUp,
+      saved: savedId ? { id: savedId, vehicleId: input.vehicleId } : null,
     };
     return jsonResponse(body, 200);
   } catch (e: unknown) {

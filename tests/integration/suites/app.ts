@@ -201,7 +201,10 @@ export function appSuite() {
       const created = await app.garage.POST(request("/api/garage", "POST", { year: "2015", make: "Toyota", model: "Camry", engine: "2.5L I4", vin: "4T1BF1FK5FU000001", nickname: "Daily" }));
       expect(created.status).toBe(200);
       const { vehicle } = await created.json();
-      expect(vehicle).toEqual({ id: expect.any(String), year: "2015", make: "Toyota", model: "Camry", engine: "2.5L I4", vin: "4T1BF1FK5FU000001", nickname: "Daily" });
+      expect(vehicle).toEqual({
+        id: expect.any(String), year: "2015", make: "Toyota", model: "Camry", engine: "2.5L I4", vin: "4T1BF1FK5FU000001", nickname: "Daily",
+        odometerValue: null, odometerUnit: null, odometerUpdatedAt: null, archivedAt: null,
+      });
 
       expect(await one(`SELECT user_id, year, model_year, is_active, created_at IS NOT NULL AS stamped FROM garage_vehicles WHERE id = $1`, [vehicle.id])).toEqual({
         user_id: "ann", year: "2015", model_year: 2015, is_active: false, stamped: true,
@@ -209,7 +212,8 @@ export function appSuite() {
 
       // A number is accepted as well as text, as before.
       const second = await (await app.garage.POST(request("/api/garage", "POST", { year: 2020, make: "Honda", model: "Civic" }))).json();
-      expect(second.vehicle).toEqual({ id: expect.any(String), year: "2020", make: "Honda", model: "Civic" });
+      expect(second.vehicle).toMatchObject({ id: expect.any(String), year: "2020", make: "Honda", model: "Civic" });
+      expect(second.vehicle.engine).toBeUndefined();
 
       expect((await app.garage.POST(request("/api/garage", "POST", { year: "20x5", make: "A", model: "B" }))).status).toBe(400);
       expect((await app.garage.POST(request("/api/garage", "POST", { year: "2015", make: "A" }))).status).toBe(400);
@@ -218,9 +222,13 @@ export function appSuite() {
       const listed = await (await app.garage.GET()).json();
       expect(listed.vehicles.map((v: { id: string }) => v.id).sort()).toEqual([vehicle.id, second.vehicle.id].sort());
 
+      // Removing a vehicle archives it (Phase 2E): it leaves the list, and is still on file.
       expect((await app.garageItem.DELETE(request(`/api/garage/${vehicle.id}`, "DELETE"), withId(vehicle.id))).status).toBe(200);
       expect((await (await app.garage.GET()).json()).vehicles.map((v: { id: string }) => v.id)).toEqual([second.vehicle.id]);
-      expect((await app.garageItem.DELETE(request(`/api/garage/${vehicle.id}`, "DELETE"), withId(vehicle.id))).status).toBe(404);
+      expect(await count(`garage_vehicles WHERE id = '${vehicle.id}' AND archived_at IS NOT NULL`)).toBe(1);
+      // Removing it again changes nothing; a vehicle that does not exist is not found.
+      expect(await (await app.garageItem.DELETE(request(`/api/garage/${vehicle.id}`, "DELETE"), withId(vehicle.id))).json()).toEqual({ ok: true, archived: true });
+      expect((await app.garageItem.DELETE(request("/api/garage/no-such-vehicle", "DELETE"), withId("no-such-vehicle"))).status).toBe(404);
     });
 
     it("never shows, changes or deletes another person's vehicle", async () => {
@@ -245,7 +253,7 @@ export function appSuite() {
       expect((await (await app.garage.GET()).json()).vehicles.map((v: { id: string }) => v.id)).toEqual(["bob-car"]);
     });
 
-    it("deleting a vehicle removes its service records with it", async () => {
+    it("removing a vehicle that has service records archives it and keeps the records", async () => {
       const app = await startApp();
       signedIn = { id: "ann", email: "ann@example.test" };
       const keep = (await (await app.garage.POST(request("/api/garage", "POST", { year: "2015", make: "Toyota", model: "Camry" }))).json()).vehicle.id;
@@ -255,9 +263,13 @@ export function appSuite() {
       }
       expect(await count("maintenance_records")).toBe(3);
 
-      expect((await app.garageItem.DELETE(request(`/api/garage/${gone}`, "DELETE"), withId(gone))).status).toBe(200);
-      expect((await rows(`SELECT vehicle_id FROM maintenance_records`)).map((r) => r.vehicle_id)).toEqual([keep]);
-      expect((await rows(`SELECT id FROM garage_vehicles`)).map((r) => r.id)).toEqual([keep]);
+      // Since Phase 2E a vehicle with history is never deleted by this request: it is archived.
+      const removed = await app.garageItem.DELETE(request(`/api/garage/${gone}`, "DELETE"), withId(gone));
+      expect(await removed.json()).toEqual({ ok: true, archived: true });
+      expect(await count("maintenance_records")).toBe(3);
+      expect(await count(`garage_vehicles WHERE id = '${gone}' AND archived_at IS NOT NULL`)).toBe(1);
+      // It is gone from the garage, and the other vehicle is untouched.
+      expect((await (await app.garage.GET()).json()).vehicles.map((v: { id: string }) => v.id)).toEqual([keep]);
     });
 
     /* ───────────── service records ───────────── */
@@ -280,7 +292,11 @@ export function appSuite() {
 
       const clear = await add({ date: "2026-01-15", serviceType: "Oil Change", odometer: "120,000 km", cost: "$1,250.50", notes: "Synthetic" });
       // The page gets back what it always did: the text the user entered.
-      expect(clear).toEqual({ id: expect.any(String), vehicleId, serviceType: "Oil Change", date: "2026-01-15", odometer: "120,000 km", cost: "$1,250.50", notes: "Synthetic" });
+      expect(clear).toEqual({
+        id: expect.any(String), vehicleId, serviceType: "Oil Change", date: "2026-01-15", odometer: "120,000 km", cost: "$1,250.50", notes: "Synthetic",
+        // Since Phase 2E the typed values come back too, so a page can show the unit without guessing.
+        serviceDate: "2026-01-15", odometerValue: 120000, odometerUnit: "km", createdAt: expect.any(String),
+      });
       expect(await stored(clear.id)).toEqual({
         user_id: "ann", type: "Oil Change", notes: "Synthetic",
         date: "2026-01-15", service_date: "2026-01-15",
@@ -299,7 +315,7 @@ export function appSuite() {
       const numeric = await add({ date: "2025-12-31", serviceType: "Brakes", odometer: 75500, cost: 89.9 });
       expect(await stored(numeric.id)).toMatchObject({ mileage: "75500", odometer_value: 75500, odometer_unit: null, cost: "89.9", cost_amount: "89.90", service_date: "2025-12-31" });
       const bare = await add({ date: "2026-02-31", serviceType: "Battery" });
-      expect(bare).toEqual({ id: expect.any(String), vehicleId, serviceType: "Battery", date: "2026-02-31" });
+      expect(bare).toEqual({ id: expect.any(String), vehicleId, serviceType: "Battery", date: "2026-02-31", serviceDate: null, odometerValue: null, odometerUnit: null, createdAt: expect.any(String) });
       expect(await stored(bare.id)).toMatchObject({ service_date: null, mileage: null, odometer_value: null, cost: null, cost_amount: null, notes: null });
 
       expect((await app.maintenance.POST(request("/api/maintenance", "POST", { vehicleId, serviceType: "No date" }))).status).toBe(400);
@@ -327,10 +343,13 @@ export function appSuite() {
         INSERT INTO maintenance_records (id, user_id, vehicle_id, type, date, mileage, cost) VALUES ('old-rec', 'ann', 'old-car', 'Brake Service', 'spring 2024', '75,500 miles', 'free');
       `);
       signedIn = { id: "ann", email: "ann@example.test" };
-      expect((await (await app.garage.GET()).json()).vehicles).toEqual([{ id: "old-car", year: " 2003 ", make: "Honda", model: "Accord" }]);
-      expect((await (await app.maintenance.GET(request("/api/maintenance"))).json()).records).toEqual([
-        { id: "old-rec", vehicleId: "old-car", serviceType: "Brake Service", date: "spring 2024", odometer: "75,500 miles", cost: "free" },
-      ]);
+      const oldVehicles = (await (await app.garage.GET()).json()).vehicles;
+      expect(oldVehicles).toHaveLength(1);
+      expect(oldVehicles[0]).toMatchObject({ id: "old-car", year: " 2003 ", make: "Honda", model: "Accord", odometerValue: null });
+      const oldRecords = (await (await app.maintenance.GET(request("/api/maintenance"))).json()).records;
+      expect(oldRecords).toHaveLength(1);
+      // The text is exactly as typed; nothing typed was derived, because nobody derived it when it was written.
+      expect(oldRecords[0]).toMatchObject({ id: "old-rec", vehicleId: "old-car", serviceType: "Brake Service", date: "spring 2024", odometer: "75,500 miles", cost: "free", serviceDate: null, odometerValue: null, odometerUnit: null });
     });
 
     /* ───────────── feedback ───────────── */
@@ -415,7 +434,7 @@ export function appSuite() {
       await app.limits.pruneExpiredCounters();
 
       expect(await db.schemaSnapshot(pool)).toEqual(expectedShape);
-      expect(await db.tableNames(pool)).toEqual(["email_verification_tokens", "feedback", "garage_vehicles", "maintenance_records", "rate_limits", "users"]);
+      expect(await db.tableNames(pool)).toEqual(db.APP_TABLES);
       // And it was all done through one client.
       expect((globalThis as { prisma?: unknown }).prisma).toBe(app.prisma);
     });
@@ -471,7 +490,9 @@ export function appSuite() {
 
       expect(await app.guard.consumeDiagnosisQuota({ ipKey: "abc", userId: null })).toEqual({ allowed: true });
       expect((await app.garageItem.DELETE(request("/api/garage/v-camry", "DELETE"), withId("v-camry"))).status).toBe(200);
-      expect(await count(`maintenance_records WHERE vehicle_id = 'v-camry'`)).toBe(0);
+      // v-camry has service records, so it was archived, not deleted: its records are all still there.
+      expect(await count(`maintenance_records WHERE vehicle_id = 'v-camry'`)).toBe(3);
+      expect(await count(`garage_vehicles WHERE id = 'v-camry' AND archived_at IS NOT NULL`)).toBe(1);
 
       // The app touched nothing that older versions left behind, and changed no structure.
       const now = await db.leftovers(pool);

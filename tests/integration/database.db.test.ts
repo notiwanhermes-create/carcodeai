@@ -11,6 +11,7 @@ import { migrationSuite } from "./suites/migrations";
 import { accountSuite } from "./suites/accounts";
 import { appSuite } from "./suites/app";
 import { constraintSuite } from "./suites/constraints";
+import { garageSuite } from "./suites/garage";
 
 // Several of these run the real migration command, which takes a few seconds each.
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 120_000 });
@@ -19,3 +20,4 @@ migrationSuite();
 constraintSuite();
 accountSuite();
 appSuite();
+garageSuite();

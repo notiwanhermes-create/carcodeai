@@ -139,6 +139,11 @@ export type DiagnoseOk = {
    * Null when updates are not available.
    */
   followUp: { token: string; remaining: number } | null;
+  /**
+   * Where the diagnosis was saved in the signed-in user's garage, or null when
+   * it was not saved (guests, or no garage vehicle was given).
+   */
+  saved?: { id: string; vehicleId: string } | null;
 };
 
 /** Returned, without calling the model, when the codes supplied are not enough to diagnose from and there are no symptoms. */

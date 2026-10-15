@@ -17,6 +17,11 @@
  * assumption, and repair verification that names its re-tests. See
  * docs/research/guided-diagnostics/v2a.md.
  *
+ * V2B moves vehicle-specific values out of the session facts into a
+ * SpecificationProvider: a measurement names a specification id, the
+ * provider resolves it, and the engine records and pins what it used. See
+ * docs/research/guided-diagnostics/v2b-specifications.md.
+ *
  * Original CarCode design, written from general troubleshooting practice.
  */
 import type { CheckLevel } from "../diagnosis-schema";
@@ -81,13 +86,12 @@ export const UNITS = ["V", "mV", "ohm", "kohm", "A", "kPa", "bar", "psi", "ms", 
 export type Unit = (typeof UNITS)[number];
 
 /**
- * A bound is either a number written into the workflow (for generic checks)
- * or the name of a specification supplied with the session (for anything that
- * depends on the vehicle). A workflow never carries manufacturer values: a
- * vehicle-specific limit is always a named specification, and when the
- * session has no value for it the step cannot be evaluated.
+ * A bound written into the workflow. Only for GENERIC checks (a value that
+ * holds for any vehicle). A workflow never carries vehicle values: a
+ * vehicle-specific limit is a specification the measurement names
+ * (`MeasurementNode.specification`), resolved by a SpecificationProvider.
  */
-export type Bound = number | { spec: string };
+export type Bound = number;
 
 /** Inclusive by default on both ends. An open end is left out. */
 export type NumericRange = { min?: Bound; max?: Bound; minInclusive?: boolean; maxInclusive?: boolean };
@@ -106,21 +110,90 @@ export type MeasurementDefinition = {
 };
 
 /**
- * How far a specification value can be trusted. Approved rule: only a
- * "verified" value may drive the engine (pass or fail, ruling causes in or
- * out, choosing a route). "reference" and "unverified" values, and bare
- * numbers (recorded as "unspecified"), are informational only: kept and shown
- * with the reading, never used to judge it. A step that needs one is left
- * unjudged and takes its inconclusive (or cannot-be-done) route.
+ * How far a specification can be trusted. Approved rule: only a "verified"
+ * specification may drive the engine (pass or fail, ruling causes in or out,
+ * choosing a route). "reference" and "unverified" ones are informational
+ * only: kept and shown with the reading, never used to judge it. The engine
+ * never upgrades trust.
  */
 export const SPEC_TRUST = ["verified", "reference", "unverified"] as const;
 export type SpecTrust = (typeof SPEC_TRUST)[number];
 
-/** A specification value with where it came from. A bare number is accepted, recorded as trust "unspecified", and is informational only. */
-export type SpecificationValue = { value: number; trust: SpecTrust; source?: string };
+/* ───────────────────────── specifications (V2B) ───────────────────────── */
 
-/** One specification as it was used to judge a reading. */
-export type SpecificationUse = { name: string; value: number; trust: SpecTrust | "unspecified"; source?: string };
+export type SpecificationId = string;
+
+/**
+ * A vehicle-specific expected value, kept OUTSIDE workflows. A workflow asks
+ * for one by id; a SpecificationProvider resolves it.
+ */
+export type DiagnosticSpecification = {
+  /** What the workflow asks for, e.g. "fuel_supply_pressure_idle". */
+  id: SpecificationId;
+  /**
+   * Identity of this exact value set (source edition, dataset revision). A
+   * session records it, so a later, different value is a different revision
+   * and never silently replaces the one a judgement used.
+   */
+  revision: string;
+  /** The unit the source gives the values in. The engine converts to the step's unit (same kind of quantity only). */
+  unit: Unit;
+  /** Inclusive expected (pass) range. At least one end. */
+  expected: { min?: number; max?: number };
+  /** Optional narrower plausible range for this vehicle. Applied only when the specification is verified. */
+  plausible?: { min: number; max: number };
+  /** Named conditions the value holds under (e.g. engine_idling). The engine checks them; the provider does not. */
+  conditions?: ConditionId[];
+  /** Where the value came from. */
+  source: { name: string; reference?: string };
+  trust: SpecTrust;
+  note?: string;
+};
+
+/** What the engine asks a provider for. Deliberately narrow: an id, nothing else yet (no vehicle applicability in V2B). */
+export type SpecificationRequest = { id: SpecificationId };
+
+/**
+ * A provider's answer. Never a bare number.
+ * - verified: exactly one match, trust "verified". May drive the engine.
+ * - informational: exactly one match that is not verified. Shown, never used to judge.
+ * - not_found: no match.
+ * - ambiguous: several candidates. The engine never picks one.
+ * - unavailable: the lookup failed (reason says why).
+ */
+export type SpecificationResolution =
+  | { status: "verified"; specification: DiagnosticSpecification }
+  | { status: "informational"; specification: DiagnosticSpecification }
+  | { status: "not_found" }
+  | { status: "ambiguous"; candidates: DiagnosticSpecification[] }
+  | { status: "unavailable"; reason: string };
+
+/** Resolves specifications by id. Synchronous and deterministic for the engine; any slow lookup happens before the session runs. */
+export interface SpecificationProvider {
+  resolve(request: SpecificationRequest): SpecificationResolution;
+}
+
+/** How the engine reaches outside data. Only specifications so far. */
+export type EngineOptions = { specifications?: SpecificationProvider };
+
+/** Where a reading sits against its specification's expected range. */
+export const SPEC_RELATIONS = ["below", "within", "above"] as const;
+export type SpecRelation = (typeof SPEC_RELATIONS)[number];
+
+/** A specification as a judgement used (or could not use) it, for display and history. */
+export type SpecificationReference = {
+  id: SpecificationId;
+  revision: string;
+  status: "verified" | "informational";
+  trust: SpecTrust;
+  source: { name: string; reference?: string };
+  /** The unit the source gave. */
+  sourceUnit: Unit;
+  /** The expected range converted into the step's unit. */
+  expected: { min?: number; max?: number };
+  /** Each required condition and its state when the reading was taken. */
+  conditions: Array<{ id: ConditionId; state: "met" | "not_met" | "unknown" }>;
+};
 
 /* ───────────────────────── steps ───────────────────────── */
 
@@ -181,12 +254,24 @@ export type ObservationNode = NodeBase & {
   otherwise?: NodeId;
 };
 
-/** A pass range for a measurement. `id` names it in the evidence ("below_min", "within"). */
-export type MeasurementOutcome = Outcome<NumericRange> & { id: string };
+/**
+ * A pass range for a measurement. `id` names it in the evidence ("below_min",
+ * "within"). With a specification, `when` says where the reading sits against
+ * the specification's expected range; without one, `when` is a fixed generic
+ * range.
+ */
+export type MeasurementOutcome = Outcome<NumericRange | { relativeToSpec: SpecRelation }> & { id: string };
 
 export type MeasurementNode = NodeBase & {
   type: "measurement";
   measurement: MeasurementDefinition;
+  /**
+   * The vehicle-specific specification this reading is judged against, by id.
+   * Resolved through the SpecificationProvider when the step is reached. With
+   * it, every outcome uses `relativeToSpec`, and `ifUnsupported` is required
+   * (for a specification that cannot be resolved).
+   */
+  specification?: SpecificationId;
   /** First matching range wins. */
   outcomes: MeasurementOutcome[];
   /** For a plausible value that matches no range. Required. */
@@ -318,12 +403,6 @@ export type SessionStartFacts = {
   /** Symptom ids the workflow understands (for example "rough_idle"). */
   symptoms?: string[];
   capabilities: Capabilities;
-  /**
-   * Values for the named specifications the workflow refers to, in the unit
-   * of the step that uses them. Only `{ value, trust: "verified" }` drives the
-   * engine; anything else is informational only (see SpecTrust).
-   */
-  specs?: Record<string, number | SpecificationValue>;
 };
 
 /** Where a reading or answer came from. */
@@ -361,8 +440,12 @@ export type StepInput = (
 /** Before the repair (finding the fault) or after it (checking the repair worked). */
 export type EvidencePhase = "before_repair" | "after_repair";
 
-/** Who produced a piece of evidence. "engine" means the engine decided it from earlier evidence (a branch, a skipped step). */
-export type EvidenceSource = InputSource | "engine";
+/**
+ * Who produced a piece of evidence. "engine" means the engine decided it from
+ * earlier evidence (a branch, a skipped step); "specification_provider" is a
+ * specification resolution.
+ */
+export type EvidenceSource = InputSource | "engine" | "specification_provider";
 
 /** One recorded fact. Never changed once recorded. */
 export type Evidence = {
@@ -380,6 +463,7 @@ export type Evidence = {
   kind:
     | "code"
     | "symptom"
+    | "specification"
     | "prerequisite"
     | "answer"
     | "observation"
@@ -404,16 +488,29 @@ export type Evidence = {
    * value, source and trust, for display.
    */
   judgement?:
-    | { evaluated: true; range: string; specs: SpecificationUse[] }
-    | { evaluated: false; reason: "untrusted_spec"; specs: SpecificationUse[] };
+    | { evaluated: true; range: string; relation?: SpecRelation; specification?: SpecificationReference }
+    | { evaluated: false; reason: "untrusted_spec" | "condition_not_met" | "condition_unknown"; specification: SpecificationReference };
   /** For a verification criterion: which one. */
   criterion?: string;
   /** For a re-test after repair: the seq of the same step's before-repair evidence. */
   comparesTo?: number;
   /** Named conditions this evidence established. */
   established?: ConditionId[];
+  /** Named conditions this evidence showed NOT to hold (a prerequisite answered "not met"). */
+  refuted?: ConditionId[];
+  /** For a specification resolution: the specification id. */
+  specification?: SpecificationId;
   /** Why a step could not be done, when it could not. */
-  unsupportedReason?: "level" | "tools" | "missing_spec" | "no_tool" | "not_comfortable" | "not_possible";
+  unsupportedReason?:
+    | "level"
+    | "tools"
+    | "spec_not_found"
+    | "spec_ambiguous"
+    | "spec_unavailable"
+    | "spec_incompatible_unit"
+    | "no_tool"
+    | "not_comfortable"
+    | "not_possible";
   /** Where the evidence sent the workflow. A verification criterion stays at its verification step (the verdict routes). */
   to: NodeId;
   /** Supplied by the caller. The engine never reads the clock, so replays are exact. */
@@ -440,6 +537,15 @@ export type DiagnosticSession = {
   inputs: readonly (StepInput & { at?: string })[];
   /** Named conditions established so far, in the order established. */
   establishedConditions: readonly ConditionId[];
+  /** Named conditions known NOT to hold (until something establishes them). Anything in neither list is unknown. */
+  refutedConditions: readonly ConditionId[];
+  /**
+   * Every specification resolution this session used, by id, exactly as
+   * recorded (pinned). Later steps, replays on resume and repair re-tests use
+   * these, never a fresh lookup, so history does not change when the
+   * provider's data does.
+   */
+  specifications: Readonly<Record<SpecificationId, SpecificationResolution>>;
   /** Candidate causes still in play, in the workflow's order. */
   remainingCauses: readonly CauseId[];
   /** Causes some evidence pointed to. */

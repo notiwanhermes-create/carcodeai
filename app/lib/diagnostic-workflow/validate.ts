@@ -16,6 +16,7 @@ import {
   FAULT_MODELS,
   INCONCLUSIVE_TYPES,
   SKILL_ORDER,
+  SPEC_RELATIONS,
   type Condition,
   type ConditionId,
   type MeasurementNode,
@@ -104,6 +105,7 @@ function measurementProblems(node: MeasurementNode): string[] {
     return out;
   }
   for (const o of node.outcomes) {
+    if ("relativeToSpec" in o.when) continue;
     for (const b of [o.when.min, o.when.max]) {
       if (typeof b === "number" && (b < p.min || b > p.max)) out.push(`range "${o.id}" has a fixed bound outside the plausible range`);
     }
@@ -122,8 +124,9 @@ function conditionNodes(c: Condition): NodeId[] {
 function rangeProblems(range: NumericRange): string | null {
   const bounds = [range.min, range.max].filter((b) => b !== undefined);
   for (const b of bounds) {
-    if (typeof b === "number" && !Number.isFinite(b)) return "a range bound is not a finite number";
-    if (typeof b === "object" && (!b || typeof b.spec !== "string" || !b.spec.trim())) return "a range bound names no specification";
+    // Vehicle values never live in a workflow: they come from the step's specification.
+    if (typeof b !== "number") return "a range bound must be a fixed number; a vehicle value belongs in the step's specification";
+    if (!Number.isFinite(b)) return "a range bound is not a finite number";
   }
   if (bounds.length === 0) return "a range has neither a minimum nor a maximum";
   if (typeof range.min === "number" && typeof range.max === "number" && range.min > range.max) return "a range's minimum is above its maximum";
@@ -194,9 +197,25 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
     if (node.type === "measurement") {
       if (!isUnit(node.measurement?.unit)) add("unknown_unit", `"${node.id}" measures in a unit the engine does not know.`, node.id);
       if (node.outcomes.length === 0) add("incomplete_outcomes", `"${node.id}" has no ranges.`, node.id);
-      for (const o of node.outcomes) {
-        const problem = rangeProblems(o.when);
-        if (problem) add("invalid_range", `"${node.id}": ${problem}.`, node.id);
+      if (node.specification !== undefined) {
+        // Judged against a specification: every outcome says where the reading sits against it, each place once.
+        if (typeof node.specification !== "string" || !node.specification.trim()) add("invalid_specification_ref", `"${node.id}" names no specification.`, node.id);
+        const relations = node.outcomes.map((o) => ("relativeToSpec" in o.when ? o.when.relativeToSpec : null));
+        if (relations.some((r) => r === null || !(SPEC_RELATIONS as readonly string[]).includes(r))) {
+          add("invalid_range", `"${node.id}": with a specification, every range must be relativeToSpec below, within or above.`, node.id);
+        } else if (new Set(relations).size !== relations.length) {
+          add("invalid_range", `"${node.id}": each of below, within and above may appear only once.`, node.id);
+        }
+        if (!node.ifUnsupported) add("no_unsupported_route", `"${node.id}" uses a specification but has no route for when it cannot be resolved.`, node.id);
+      } else {
+        for (const o of node.outcomes) {
+          if ("relativeToSpec" in o.when) {
+            add("invalid_range", `"${node.id}": a range relative to a specification needs the step to name one.`, node.id);
+            continue;
+          }
+          const problem = rangeProblems(o.when);
+          if (problem) add("invalid_range", `"${node.id}": ${problem}.`, node.id);
+        }
       }
     }
 
@@ -262,9 +281,6 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
     }
     if (node.type === "conclusion" && byId.get(node.next) && !["repair_verification", "end"].includes(byId.get(node.next)!.type)) {
       add("bad_conclusion_next", `"${node.id}" must lead to a repair verification step or an end node.`, node.id);
-    }
-    if (node.type === "measurement" && node.outcomes.some((o) => typeof o.when.min === "object" || typeof o.when.max === "object") && !node.ifUnsupported) {
-      add("no_unsupported_route", `"${node.id}" uses a vehicle specification but has no route for when the specification is not available.`, node.id);
     }
   }
 

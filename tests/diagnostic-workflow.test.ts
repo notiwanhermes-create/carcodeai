@@ -18,30 +18,33 @@ import {
   validateWorkflow,
   type Capabilities,
   type DiagnosticSession,
+  type EngineOptions,
   type SessionStartFacts,
   type StepInput,
   type WorkflowDefinition,
   type WorkflowNode,
 } from "../app/lib/diagnostic-workflow";
 import { SYNTHETIC_MISFIRE_WORKFLOW as W } from "../app/lib/diagnostic-workflow/examples/synthetic-misfire";
+import { SYNTHETIC_SPECIFICATIONS } from "../app/lib/diagnostic-workflow/examples/synthetic-specifications";
+import { createInMemorySpecificationProvider } from "../app/lib/diagnostic-workflow/examples/in-memory-specification-provider";
 
-/** Made-up numbers for tests only, not specifications for any vehicle. Marked verified so they may drive the engine. */
-const TEST_ONLY_SPECS = { compression_min: { value: 900, trust: "verified" as const }, fuel_pressure_min: { value: 300, trust: "verified" as const }, fuel_pressure_max: { value: 450, trust: "verified" as const } };
+/** SYNTHETIC / TEST ONLY specifications, through the in-memory provider. Not values for any vehicle. */
+const SPECS: EngineOptions = { specifications: createInMemorySpecificationProvider(SYNTHETIC_SPECIFICATIONS) };
 
 const PRO: Capabilities = { maxLevel: "professional", tools: ["hand_tools", "scan_tool", "compression_tester", "pressure_gauge"] };
 const DIY: Capabilities = { maxLevel: "diy", tools: ["hand_tools", "scan_tool"] };
 const OWNER: Capabilities = { maxLevel: "owner", tools: [] };
 
-const facts = (over: Partial<SessionStartFacts> = {}): SessionStartFacts => ({ capabilities: PRO, specs: TEST_ONLY_SPECS, ...over });
+const facts = (over: Partial<SessionStartFacts> = {}): SessionStartFacts => ({ capabilities: PRO, ...over });
 
 function started(f: SessionStartFacts = facts(), at = "2026-10-15T10:00:00Z"): DiagnosticSession {
-  const r = startSession(W, f, at);
+  const r = startSession(W, f, at, SPECS);
   if (!r.ok) throw new Error(r.error);
   return r.session;
 }
 
 function step(session: DiagnosticSession, input: StepInput, at?: string): DiagnosticSession {
-  const r = submitStep(W, session, input, at);
+  const r = submitStep(W, session, input, at, SPECS);
   if (!r.ok) throw new Error(`${input.nodeId}: ${r.error}`);
   return r.session;
 }
@@ -53,7 +56,7 @@ function run(f: SessionStartFacts, inputs: StepInput[]): DiagnosticSession {
 
 const yes = (nodeId: string): StepInput => ({ nodeId, kind: "yes_no", answer: "yes" });
 const no = (nodeId: string): StepInput => ({ nodeId, kind: "yes_no", answer: "no" });
-const pathOf = (s: DiagnosticSession) => s.evidence.filter((e) => e.kind !== "code" && e.kind !== "symptom").map((e) => e.nodeId);
+const pathOf = (s: DiagnosticSession) => s.evidence.filter((e) => e.kind !== "code" && e.kind !== "symptom" && e.kind !== "specification").map((e) => e.nodeId);
 
 /** A small valid workflow to break in different ways. */
 function tiny(): WorkflowDefinition {
@@ -147,7 +150,13 @@ describe("checking a workflow", () => {
     expect(codes(m("V", {}))).toContain("invalid_range");
     expect(codes(m("V", { min: Number.NaN }))).toContain("invalid_range");
     // A vehicle specification needs a route for when it is missing.
-    expect(codes(m("kPa", { min: { spec: "x" } }))).toContain("no_unsupported_route");
+    // Vehicle values never sit in a workflow range.
+    expect(codes(m("kPa", { min: { spec: "x" } }))).toContain("invalid_range");
+    // A step judged against a specification needs a route for when it cannot be resolved.
+    const withSpec = withNodes((n) =>
+      n.map((x) => (x.id === "q" ? { id: "q", type: "measurement", title: "M", measurement: { quantity: "Q", unit: "kPa", plausible: { min: 0, max: 10 } }, specification: "x", outcomes: [{ id: "low", when: { relativeToSpec: "below" }, to: "c1" }], otherwise: "c2" } : x)) as WorkflowNode[],
+    );
+    expect(codes(withSpec)).toContain("no_unsupported_route");
   });
 
   it("requires a 'cannot be done' route for any step needing skill or tools", () => {
@@ -248,9 +257,12 @@ describe("running a workflow", () => {
   });
 
   it("does not evaluate a measurement without the vehicle's specification, and says so", () => {
-    const s = run(facts({ dtcs: ["P0300"], specs: {} }), [yes("confirm_symptom"), no("flashing_light"), { nodeId: "multi_vacuum", kind: "observation", choice: "nothing_found" }]);
+    const r = replaySession(W, facts({ dtcs: ["P0300"] }), [yes("confirm_symptom"), no("flashing_light"), { nodeId: "multi_vacuum", kind: "observation", choice: "nothing_found" }], undefined, {
+      specifications: createInMemorySpecificationProvider([]),
+    });
+    const s = r.ok ? r.session : null;
     expect(s).toMatchObject({ status: "completed", conclusionNodeId: "concl_professional", endResult: "referred" });
-    expect(s.evidence.find((e) => e.nodeId === "fuel_pressure")).toMatchObject({ kind: "unsupported", unsupportedReason: "missing_spec" });
+    expect(s!.evidence.find((e) => e.nodeId === "fuel_pressure" && e.kind === "unsupported")).toMatchObject({ unsupportedReason: "spec_not_found" });
   });
 
   it("never presents a step above the person's level or needing a tool they lack", () => {
@@ -323,9 +335,9 @@ describe("evidence, replay and resume", () => {
   it("replays: the same workflow, facts and inputs always give the same session", () => {
     const f = facts({ dtcs: ["P0301"] });
     const live = run(f, coilPath);
-    const replayed = replaySession(W, f, live.inputs, "2026-10-15T10:00:00Z");
+    const replayed = replaySession(W, f, live.inputs, "2026-10-15T10:00:00Z", SPECS);
     expect(replayed.ok && JSON.stringify(replayed.session)).toBe(JSON.stringify(live));
-    const again = replaySession(W, f, live.inputs, "2026-10-15T10:00:00Z");
+    const again = replaySession(W, f, live.inputs, "2026-10-15T10:00:00Z", SPECS);
     expect(again.ok && JSON.stringify(again.session)).toBe(JSON.stringify(live));
   });
 

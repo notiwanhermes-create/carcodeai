@@ -22,13 +22,13 @@
 import {
   INCONCLUSIVE_REASONS,
   SKILL_ORDER,
-  SPEC_TRUST,
-  type Bound,
   type Capabilities,
   type CauseEffect,
   type Condition,
   type ConditionId,
   type DiagnosticSession,
+  type DiagnosticSpecification,
+  type EngineOptions,
   type Evidence,
   type EvidenceSource,
   type InputSource,
@@ -38,8 +38,10 @@ import {
   type NumericRange,
   type RepairVerificationNode,
   type SessionStartFacts,
+  type SpecRelation,
   type SpecTrust,
-  type SpecificationUse,
+  type SpecificationReference,
+  type SpecificationResolution,
   type StepInput,
   type StepResult,
   type Unit,
@@ -49,11 +51,24 @@ import {
 } from "./types";
 import { convert, isUnit } from "./units";
 import { successors, validateWorkflow } from "./validate";
+import { describeResolution, pinnedSpecificationProvider, resolveSpecification } from "./specifications";
 
 /** A guard on top of the no-loops check: no run may take more automatic steps than this. */
 export const MAX_AUTOMATIC_STEPS = 500;
 
 const fail = (error: string): StepResult => ({ ok: false, error });
+
+/** Plain data, deep-copied and frozen. */
+function frozen<T>(value: T): T {
+  const freeze = (v: unknown): unknown => {
+    if (v && typeof v === "object") {
+      for (const k of Object.keys(v)) freeze((v as Record<string, unknown>)[k]);
+      Object.freeze(v);
+    }
+    return v;
+  };
+  return freeze(JSON.parse(JSON.stringify(value))) as T;
+}
 
 /* ───────────────────────── workflow lookup ───────────────────────── */
 
@@ -77,104 +92,98 @@ function prepare(workflow: WorkflowDefinition): Prepared | { error: string } {
 
 /* ───────────────────────── specifications ───────────────────────── */
 
-type SpecEntry = { value: number; trust: SpecTrust | "unspecified"; source?: string };
-
-/** The session's specifications, each with its trust. Bare numbers are "unspecified". */
-function specTable(facts: SessionStartFacts): Map<string, SpecEntry> {
-  const table = new Map<string, SpecEntry>();
-  for (const [name, raw] of Object.entries(facts.specs ?? {})) {
-    if (typeof raw === "number") {
-      if (Number.isFinite(raw)) table.set(name, { value: raw, trust: "unspecified" });
-    } else if (raw && Number.isFinite(raw.value)) {
-      table.set(name, { value: raw.value, trust: raw.trust, ...(raw.source ? { source: raw.source } : {}) });
-    }
-  }
-  return table;
-}
-
-function validSpecs(specs: SessionStartFacts["specs"]): boolean {
-  if (specs === undefined) return true;
-  if (!specs || typeof specs !== "object") return false;
-  return Object.values(specs).every(
-    (v) =>
-      (typeof v === "number" && Number.isFinite(v)) ||
-      (!!v && typeof v === "object" && Number.isFinite(v.value) && (SPEC_TRUST as readonly string[]).includes(v.trust) && (v.source === undefined || typeof v.source === "string")),
-  );
-}
-
-function resolveBound(bound: Bound | undefined, specs: Map<string, SpecEntry>): number | undefined | null {
-  if (bound === undefined) return undefined;
-  if (typeof bound === "number") return bound;
-  return specs.get(bound.spec)?.value ?? null;
-}
-
-function specsIn(range: NumericRange, specs: Map<string, SpecEntry>): SpecificationUse[] {
-  const out: SpecificationUse[] = [];
-  for (const b of [range.min, range.max]) {
-    if (typeof b !== "object" || !b) continue;
-    const entry = specs.get(b.spec);
-    if (entry && !out.some((u) => u.name === b.spec)) out.push({ name: b.spec, value: entry.value, trust: entry.trust, ...(entry.source ? { source: entry.source } : {}) });
-  }
-  return out;
-}
-
 /** Only a verified specification may drive the engine. Everything else is informational. */
-export const isTrustedSpec = (trust: SpecTrust | "unspecified") => trust === "verified";
+export const isTrustedSpec = (trust: SpecTrust) => trust === "verified";
+
+function inRange(value: number, range: NumericRange): boolean {
+  if (range.min !== undefined && (range.minInclusive === false ? value <= range.min : value < range.min)) return false;
+  if (range.max !== undefined && (range.maxInclusive === false ? value >= range.max : value > range.max)) return false;
+  return true;
+}
+
+function conditionState(session: DiagnosticSession, id: ConditionId): "met" | "not_met" | "unknown" {
+  if (session.establishedConditions.includes(id)) return "met";
+  if (session.refutedConditions.includes(id)) return "not_met";
+  return "unknown";
+}
+
+type UnsupportedSpecReason = "spec_not_found" | "spec_ambiguous" | "spec_unavailable" | "spec_incompatible_unit";
+
+type Usable =
+  | { ok: true; status: "verified" | "informational"; spec: DiagnosticSpecification; expected: { min?: number; max?: number }; plausible?: { min: number; max: number } }
+  | { ok: false; reason: UnsupportedSpecReason };
 
 /**
- * Whether a measurement step's ranges can be evaluated: every specification
- * they name is supplied ("missing" otherwise) and trusted ("untrusted"
- * otherwise). One untrusted specification makes the whole step
- * unevaluable: with first-match ranges, judging only some of them could
- * still pick a route on the untrusted value's account.
+ * Whether a step can use its pinned specification at all, with the values
+ * converted into the step's unit. Only the same kind of quantity converts.
  */
-function specState(node: WorkflowNode, specs: Map<string, SpecEntry>): "available" | "missing" | "untrusted" {
-  if (node.type !== "measurement") return "available";
-  let untrusted = false;
-  for (const o of node.outcomes) {
-    for (const b of [o.when.min, o.when.max]) {
-      if (typeof b !== "object" || !b) continue;
-      const entry = specs.get(b.spec);
-      if (!entry) return "missing";
-      if (!isTrustedSpec(entry.trust)) untrusted = true;
-    }
+function usable(node: MeasurementNode, r: SpecificationResolution | undefined): Usable {
+  if (!r || r.status === "unavailable") return { ok: false, reason: "spec_unavailable" };
+  if (r.status === "not_found") return { ok: false, reason: "spec_not_found" };
+  if (r.status === "ambiguous") return { ok: false, reason: "spec_ambiguous" };
+  const spec = r.specification;
+  const to = node.measurement.unit;
+  const conv = (n: number | undefined) => (n === undefined ? undefined : convert(n, spec.unit, to));
+  const min = conv(spec.expected.min);
+  const max = conv(spec.expected.max);
+  if (min === null || max === null) return { ok: false, reason: "spec_incompatible_unit" };
+  let plausible: { min: number; max: number } | undefined;
+  if (spec.plausible) {
+    const pmin = convert(spec.plausible.min, spec.unit, to);
+    const pmax = convert(spec.plausible.max, spec.unit, to);
+    if (pmin === null || pmax === null) return { ok: false, reason: "spec_incompatible_unit" };
+    plausible = { min: pmin, max: pmax };
   }
-  return untrusted ? "untrusted" : "available";
-}
-
-function inRange(value: number, range: NumericRange, specs: Map<string, SpecEntry>): boolean {
-  const min = resolveBound(range.min, specs);
-  const max = resolveBound(range.max, specs);
-  if (min === null || max === null) return false;
-  if (min !== undefined && (range.minInclusive === false ? value <= min : value < min)) return false;
-  if (max !== undefined && (range.maxInclusive === false ? value >= max : value > max)) return false;
-  return true;
+  return { ok: true, status: r.status, spec, expected: { ...(min !== undefined ? { min } : {}), ...(max !== undefined ? { max } : {}) }, ...(plausible ? { plausible } : {}) };
 }
 
 type Judged =
   | { ok: false; error: string }
-  | { ok: true; status: "missing" }
-  | { ok: true; status: "untrusted"; value: number; specs: SpecificationUse[] }
-  | { ok: true; status: "evaluated"; value: number; outcome: MeasurementOutcome | null; range: string; specs: SpecificationUse[] };
+  | { ok: true; status: "unusable"; reason: UnsupportedSpecReason }
+  | { ok: true; status: "unjudged"; value: number; reason: "untrusted_spec" | "condition_not_met" | "condition_unknown"; specification: SpecificationReference }
+  | { ok: true; status: "evaluated"; value: number; outcome: MeasurementOutcome | null; range: string; relation?: SpecRelation; specification?: SpecificationReference };
 
 /**
- * A reading checked against the step: right kind of unit, plausible, then
- * judged against the first matching range, but only when every specification
- * the ranges use is supplied and verified. An untrusted specification leaves
- * the reading unjudged; its value is kept for display only.
+ * A reading checked against the step: right kind of unit and physically
+ * plausible (generic limits, plus a verified specification's own plausible
+ * range), then judged. With a specification, the reading is judged ONLY when
+ * the specification is verified and every condition it requires is
+ * established; otherwise it is recorded but left unjudged, with the reason.
  */
-function judge(node: MeasurementNode, raw: number, unit: Unit, specs: Map<string, SpecEntry>): Judged {
+function judge(node: MeasurementNode, raw: number, unit: Unit, session: DiagnosticSession): Judged {
   if (!isUnit(unit) || typeof raw !== "number" || !Number.isFinite(raw)) return { ok: false, error: "invalid_measurement" };
   const value = convert(raw, unit, node.measurement.unit);
   if (value === null) return { ok: false, error: `wrong_unit: this step measures in ${node.measurement.unit}` };
   const { min, max } = node.measurement.plausible;
   if (value < min || value > max) return { ok: false, error: `implausible_measurement: ${value} ${node.measurement.unit} is outside ${min}–${max} ${node.measurement.unit}; check the reading` };
-  const state = specState(node, specs);
-  if (state === "missing") return { ok: true, status: "missing" };
-  const used = node.outcomes.flatMap((o) => specsIn(o.when, specs)).filter((u, i, all) => all.findIndex((x) => x.name === u.name) === i);
-  if (state === "untrusted") return { ok: true, status: "untrusted", value, specs: used };
-  const outcome = node.outcomes.find((o) => inRange(value, o.when, specs)) ?? null;
-  return { ok: true, status: "evaluated", value, outcome, range: outcome?.id ?? "otherwise", specs: used };
+
+  if (!node.specification) {
+    const outcome = node.outcomes.find((o) => !("relativeToSpec" in o.when) && inRange(value, o.when as NumericRange)) ?? null;
+    return { ok: true, status: "evaluated", value, outcome, range: outcome?.id ?? "otherwise" };
+  }
+
+  const u = usable(node, session.specifications[node.specification]);
+  if (!u.ok) return { ok: true, status: "unusable", reason: u.reason };
+  const trusted = u.status === "verified";
+  if (trusted && u.plausible && (value < u.plausible.min || value > u.plausible.max)) {
+    return { ok: false, error: `implausible_measurement: ${value} ${node.measurement.unit} is outside this specification's plausible ${u.plausible.min}–${u.plausible.max} ${node.measurement.unit}; check the reading` };
+  }
+  const specification: SpecificationReference = {
+    id: u.spec.id,
+    revision: u.spec.revision,
+    status: u.status,
+    trust: u.spec.trust,
+    source: { ...u.spec.source },
+    sourceUnit: u.spec.unit,
+    expected: u.expected,
+    conditions: (u.spec.conditions ?? []).map((id) => ({ id, state: conditionState(session, id) })),
+  };
+  if (!trusted) return { ok: true, status: "unjudged", value, reason: "untrusted_spec", specification };
+  if (specification.conditions.some((c) => c.state === "not_met")) return { ok: true, status: "unjudged", value, reason: "condition_not_met", specification };
+  if (specification.conditions.some((c) => c.state === "unknown")) return { ok: true, status: "unjudged", value, reason: "condition_unknown", specification };
+  const relation: SpecRelation = u.expected.min !== undefined && value < u.expected.min ? "below" : u.expected.max !== undefined && value > u.expected.max ? "above" : "within";
+  const outcome = node.outcomes.find((o) => "relativeToSpec" in o.when && o.when.relativeToSpec === relation) ?? null;
+  return { ok: true, status: "evaluated", value, outcome, range: outcome?.id ?? "otherwise", relation, specification };
 }
 
 /* ───────────────────────── helpers ───────────────────────── */
@@ -215,6 +224,8 @@ function freezeSession(session: DiagnosticSession): DiagnosticSession {
     evidence: Object.freeze([...session.evidence]),
     inputs: Object.freeze([...session.inputs]),
     establishedConditions: Object.freeze([...session.establishedConditions]),
+    refutedConditions: Object.freeze([...session.refutedConditions]),
+    specifications: Object.freeze({ ...session.specifications }),
     remainingCauses: Object.freeze([...session.remainingCauses]),
     supportedCauses: Object.freeze([...session.supportedCauses]),
   });
@@ -224,24 +235,27 @@ type NewEvidence = Omit<Evidence, "seq" | "phase">;
 
 /** A new session with one more piece of evidence and its effect on the candidate causes and conditions. */
 function record(session: DiagnosticSession, entry: NewEvidence, effect: CauseEffect = {}): DiagnosticSession {
-  const evidence = Object.freeze({
-    ...entry,
-    ...(entry.measured ? { measured: Object.freeze({ ...entry.measured }) } : {}),
-    ...(entry.judgement ? { judgement: Object.freeze({ ...entry.judgement, specs: Object.freeze(entry.judgement.specs.map((s) => Object.freeze({ ...s }))) }) } : {}),
-    ...(entry.established ? { established: Object.freeze([...entry.established]) } : {}),
-    phase: session.phase,
-    seq: session.evidence.length + 1,
-  }) as Evidence;
+  const evidence = frozen({ ...entry, phase: session.phase, seq: session.evidence.length + 1 }) as Evidence;
   const ruledOut = new Set(effect.rulesOut ?? []);
   const remainingCauses = session.remainingCauses.filter((id) => !ruledOut.has(id));
   const supportedCauses = [...session.supportedCauses];
   for (const id of effect.supports ?? []) if (remainingCauses.includes(id) && !supportedCauses.includes(id)) supportedCauses.push(id);
-  const establishedConditions = [...session.establishedConditions];
-  for (const c of entry.established ?? []) if (!establishedConditions.includes(c)) establishedConditions.push(c);
+  // A condition is established, refuted (known not to hold) or unknown; the latest evidence about it wins.
+  let establishedConditions = [...session.establishedConditions];
+  let refutedConditions = [...session.refutedConditions];
+  for (const c of entry.refuted ?? []) {
+    establishedConditions = establishedConditions.filter((x) => x !== c);
+    if (!refutedConditions.includes(c)) refutedConditions.push(c);
+  }
+  for (const c of entry.established ?? []) {
+    refutedConditions = refutedConditions.filter((x) => x !== c);
+    if (!establishedConditions.includes(c)) establishedConditions.push(c);
+  }
   return {
     ...session,
     evidence: [...session.evidence, evidence],
     establishedConditions,
+    refutedConditions,
     remainingCauses,
     supportedCauses: supportedCauses.filter((id) => remainingCauses.includes(id)),
   };
@@ -252,10 +266,21 @@ function record(session: DiagnosticSession, entry: NewEvidence, effect: CauseEff
  * conclusions, steps the person cannot do), stopping at the next step that
  * needs input, or at the end.
  */
-function advance(p: Prepared, from: DiagnosticSession, nodeId: NodeId, at?: string): StepResult {
+/**
+ * The session with `node`'s specification pinned: resolved once through the
+ * provider and recorded as evidence. Already pinned means no new lookup.
+ */
+function pinSpecification(session: DiagnosticSession, node: MeasurementNode, options: EngineOptions, at?: string): DiagnosticSession {
+  const id = node.specification!;
+  if (Object.prototype.hasOwnProperty.call(session.specifications, id)) return session;
+  const resolution = resolveSpecification(options.specifications, id);
+  const next = record(session, { nodeId: node.id, kind: "specification", specification: id, value: describeResolution(id, resolution), source: "specification_provider", to: node.id, ...(at ? { at } : {}) });
+  return { ...next, specifications: { ...session.specifications, [id]: resolution } };
+}
+
+function advance(p: Prepared, from: DiagnosticSession, nodeId: NodeId, at: string | undefined, options: EngineOptions): StepResult {
   let session = from;
   let id = nodeId;
-  const specs = specTable(session.facts);
   const stamp = at ? { at } : {};
   for (let step = 0; step < MAX_AUTOMATIC_STEPS; step++) {
     const node = p.byId.get(id);
@@ -268,11 +293,16 @@ function advance(p: Prepared, from: DiagnosticSession, nodeId: NodeId, at?: stri
       id = node.ifUnsupported;
       continue;
     }
-    // A missing specification: the step cannot be evaluated at all, so it is not presented.
-    if (specState(node, specs) === "missing" && node.ifUnsupported) {
-      session = record(session, { nodeId: node.id, kind: "unsupported", value: "missing_spec", unsupportedReason: "missing_spec", source: "engine", to: node.ifUnsupported, ...stamp });
-      id = node.ifUnsupported;
-      continue;
+    // A step that judges against a specification resolves it now. One that is not found, ambiguous,
+    // unavailable or in another kind of unit cannot be judged at all, so the step is not presented.
+    if (node.type === "measurement" && node.specification) {
+      session = pinSpecification(session, node, options, at);
+      const u = usable(node, session.specifications[node.specification]);
+      if (!u.ok && node.ifUnsupported) {
+        session = record(session, { nodeId: node.id, kind: "unsupported", value: u.reason, unsupportedReason: u.reason, source: "engine", to: node.ifUnsupported, ...stamp });
+        id = node.ifUnsupported;
+        continue;
+      }
     }
 
     // The checker proves every route establishes what a step needs; this is the run-time guard.
@@ -320,7 +350,8 @@ function verify(
   node: RepairVerificationNode,
   results: VerificationEntry[],
   source: InputSource | undefined,
-  at?: string,
+  at: string | undefined,
+  options: EngineOptions,
 ): { ok: false; error: string } | { ok: true; session: DiagnosticSession; verdict: "verified" | "not_verified" | "inconclusive" } {
   if (!Array.isArray(results)) return { ok: false, error: "invalid_verification: results are required" };
   const ids = node.criteria.map((c) => c.id);
@@ -328,7 +359,6 @@ function verify(
   if (given.length !== ids.length || new Set(given).size !== given.length || given.some((g) => !ids.includes(g))) {
     return { ok: false, error: `invalid_verification: answer each of ${ids.join(", ")} exactly once` };
   }
-  const specs = specTable(session.facts);
   const stamp = at ? { at } : {};
   let next = session;
   const outcomes: CriterionResult[] = [];
@@ -353,20 +383,26 @@ function verify(
       if (target.type === "measurement") {
         if (!("value" in entry)) return { ok: false, error: `invalid_verification: "${criterion.id}" needs a new reading` };
         entrySource = source ?? "instrument";
-        const judged = judge(target, entry.value, entry.unit, specs);
+        // The re-test uses the specification pinned when the fault was found (resolved now only if it never was).
+        if (target.specification) next = pinSpecification(next, target, options, at);
+        const judged = judge(target, entry.value, entry.unit, next);
         if (!judged.ok) return { ok: false, error: `invalid_verification: "${criterion.id}": ${judged.error}` };
-        if (judged.status === "missing") {
+        if (judged.status === "unusable") {
           result = "inconclusive";
-          value = `inconclusive (${entry.value} ${entry.unit}, specification missing)`;
-        } else if (judged.status === "untrusted") {
-          // An unverified specification never decides whether the repair worked.
+          value = `inconclusive (${entry.value} ${entry.unit}, ${judged.reason})`;
+        } else if (judged.status === "unjudged") {
+          // An unverified specification, or a condition not confirmed, never decides whether the repair worked.
           result = "inconclusive";
-          value = `inconclusive (${entry.value} ${entry.unit}, specification not verified)`;
-          extra = { ...extra, measured: { value: judged.value, unit: target.measurement.unit }, judgement: { evaluated: false, reason: "untrusted_spec", specs: judged.specs } };
+          value = `inconclusive (${entry.value} ${entry.unit}, ${judged.reason})`;
+          extra = { ...extra, measured: { value: judged.value, unit: target.measurement.unit }, judgement: { evaluated: false, reason: judged.reason, specification: judged.specification } };
         } else {
           result = criterion.passWhen.includes(judged.range) ? "met" : "not_met";
           value = `${result} (${entry.value} ${entry.unit})`;
-          extra = { ...extra, measured: { value: judged.value, unit: target.measurement.unit }, judgement: { evaluated: true, range: judged.range, specs: judged.specs } };
+          extra = {
+            ...extra,
+            measured: { value: judged.value, unit: target.measurement.unit },
+            judgement: { evaluated: true, range: judged.range, ...(judged.relation ? { relation: judged.relation } : {}), ...(judged.specification ? { specification: judged.specification } : {}) },
+          };
         }
       } else {
         if (!("observed" in entry)) return { ok: false, error: `invalid_verification: "${criterion.id}" needs the new result` };
@@ -386,17 +422,16 @@ function verify(
 /* ───────────────────────── public API ───────────────────────── */
 
 /** Start a session. Start facts (codes, symptoms) are recorded as the first evidence. */
-export function startSession(workflow: WorkflowDefinition, facts: SessionStartFacts, at?: string): StepResult {
+export function startSession(workflow: WorkflowDefinition, facts: SessionStartFacts, at?: string, options: EngineOptions = {}): StepResult {
   const p = prepare(workflow);
   if ("error" in p) return fail(p.error);
   if (!facts?.capabilities || !(facts.capabilities.maxLevel in SKILL_ORDER) || !Array.isArray(facts.capabilities.tools)) return fail("invalid_facts: capabilities are required");
   if (facts.dtcSource !== undefined && facts.dtcSource !== "person" && facts.dtcSource !== "scan_tool") return fail("invalid_facts: dtcSource must be person or scan_tool");
-  if (!validSpecs(facts.specs)) return fail("invalid_facts: a specification must be a number, or a value with a known trust level");
+  if ("specs" in (facts as object)) return fail("invalid_facts: specifications come from a SpecificationProvider, not the session facts");
   const normalized: SessionStartFacts = {
     ...facts,
     dtcs: (facts.dtcs ?? []).map((c) => c.trim().toUpperCase()).filter(Boolean),
     symptoms: [...(facts.symptoms ?? [])],
-    specs: Object.fromEntries(Object.entries(facts.specs ?? {}).map(([k, v]) => [k, typeof v === "number" ? v : Object.freeze({ ...v })])),
   };
   let session: DiagnosticSession = {
     workflowId: workflow.id,
@@ -410,6 +445,8 @@ export function startSession(workflow: WorkflowDefinition, facts: SessionStartFa
     evidence: [],
     inputs: [],
     establishedConditions: [],
+    refutedConditions: [],
+    specifications: {},
     remainingCauses: workflow.causes.map((c) => c.id),
     supportedCauses: [],
     conclusionNodeId: null,
@@ -421,7 +458,7 @@ export function startSession(workflow: WorkflowDefinition, facts: SessionStartFa
   const stamp = at ? { at } : {};
   for (const code of normalized.dtcs ?? []) session = record(session, { nodeId: start.id, kind: "code", value: code, source: normalized.dtcSource ?? "person", to: start.next, ...stamp });
   for (const symptom of normalized.symptoms ?? []) session = record(session, { nodeId: start.id, kind: "symptom", value: symptom, source: "person", to: start.next, ...stamp });
-  return advance(p, session, start.next, at);
+  return advance(p, session, start.next, at, options);
 }
 
 /** The step waiting for input, or null when the session is complete. */
@@ -438,7 +475,7 @@ export function currentStep(workflow: WorkflowDefinition, session: DiagnosticSes
  * outside what is physically plausible, a source that cannot have produced
  * it) is refused and the session is unchanged.
  */
-export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSession, input: StepInput, at?: string): StepResult {
+export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSession, input: StepInput, at?: string, options: EngineOptions = {}): StepResult {
   const p = prepare(workflow);
   if ("error" in p) return fail(p.error);
   if (session.workflowId !== workflow.id || session.workflowVersion !== workflow.version) return fail("wrong_workflow");
@@ -454,7 +491,7 @@ export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSess
   const stamp = at ? { at } : {};
   const base = { nodeId: node.id, source, ...stamp };
   const logged: DiagnosticSession = { ...session, inputs: [...session.inputs, Object.freeze({ ...input, ...stamp })] };
-  const go = (next: DiagnosticSession, to: NodeId) => advance(p, next, to, at);
+  const go = (next: DiagnosticSession, to: NodeId) => advance(p, next, to, at, options);
 
   if (input.kind === "unable") {
     if (!node.ifUnsupported) return fail("no_alternative: this step has no route for when it cannot be done");
@@ -473,8 +510,10 @@ export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSess
     case "prerequisite": {
       if (input.kind !== "prerequisite") return fail("wrong_input_kind");
       const to = input.met ? node.ifMet : node.ifNotMet;
-      const established: ConditionId[] = input.met ? [...(node.establishes ?? [])] : [];
-      return go(record(logged, { ...base, kind: "prerequisite", value: input.met ? "met" : "not_met", to, ...(established.length ? { established } : {}) }), to);
+      // Met establishes the prerequisite's conditions; not met shows they do not hold (until something establishes them).
+      const named: ConditionId[] = [...(node.establishes ?? [])];
+      const effect = named.length ? (input.met ? { established: named } : { refuted: named }) : {};
+      return go(record(logged, { ...base, kind: "prerequisite", value: input.met ? "met" : "not_met", to, ...effect }), to);
     }
     case "question": {
       if (node.answer === "yes_no") {
@@ -501,22 +540,23 @@ export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSess
     }
     case "measurement": {
       if (input.kind !== "measurement") return fail("wrong_input_kind");
-      const judged = judge(node, input.value, input.unit, specTable(session.facts));
+      const judged = judge(node, input.value, input.unit, session);
       if (!judged.ok) return fail(judged.error);
-      // Specifications missing were already routed away in advance(); this cannot happen for a presented step.
-      if (judged.status === "missing") return fail("missing_spec");
+      // An unusable specification was already routed away in advance(); this cannot happen for a presented step.
+      if (judged.status === "unusable") return fail(judged.reason);
       const measured = { value: judged.value, unit: node.measurement.unit };
-      if (judged.status === "untrusted") {
+      if (judged.status === "unjudged") {
         // Recorded and shown, never judged: no range, no effect on causes, and the route is the step's
         // inconclusive route (or, without one, its cannot-be-done route), never a pass or fail route.
         const to = node.ifInconclusive ?? node.ifUnsupported!;
-        return go(record(logged, { ...base, kind: "measurement", value: `${input.value} ${input.unit}`, measured, judgement: { evaluated: false, reason: "untrusted_spec", specs: judged.specs }, to }), to);
+        return go(
+          record(logged, { ...base, kind: "measurement", value: `${input.value} ${input.unit}`, measured, judgement: { evaluated: false, reason: judged.reason, specification: judged.specification }, to }),
+          to,
+        );
       }
       const to = judged.outcome?.to ?? node.otherwise;
-      return go(
-        record(logged, { ...base, kind: "measurement", value: `${input.value} ${input.unit}`, measured, judgement: { evaluated: true, range: judged.range, specs: judged.specs }, to }, judged.outcome ?? {}),
-        to,
-      );
+      const judgement = { evaluated: true as const, range: judged.range, ...(judged.relation ? { relation: judged.relation } : {}), ...(judged.specification ? { specification: judged.specification } : {}) };
+      return go(record(logged, { ...base, kind: "measurement", value: `${input.value} ${input.unit}`, measured, judgement, to }, judged.outcome ?? {}), to);
     }
     case "check": {
       if (input.kind !== "check" || (input.result !== "pass" && input.result !== "fail")) return fail("wrong_input_kind");
@@ -530,7 +570,7 @@ export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSess
     }
     case "repair_verification": {
       if (input.kind !== "verification") return fail("wrong_input_kind");
-      const checked = verify(p, logged, node, input.results, input.source, at);
+      const checked = verify(p, logged, node, input.results, input.source, at, options);
       if (!checked.ok) return fail(checked.error);
       const to = checked.verdict === "verified" ? node.ifVerified : checked.verdict === "not_verified" ? node.ifNotVerified : node.ifInconclusive!;
       // The verdict is decided by the engine from the criteria just recorded.
@@ -543,12 +583,24 @@ export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSess
 }
 
 /** Run a whole list of inputs from the start. The same workflow, facts and inputs always give the same session. */
-export function replaySession(workflow: WorkflowDefinition, facts: SessionStartFacts, inputs: ReadonlyArray<StepInput & { at?: string }>, startedAt?: string): StepResult {
-  let result = startSession(workflow, facts, startedAt);
+/**
+ * Run a whole list of inputs from the start. The same workflow, facts, inputs
+ * and specification answers always give the same session. (A replay with a
+ * provider whose data has since changed is a NEW run; to reproduce a saved
+ * session use resumeSession, which replays against what that session pinned.)
+ */
+export function replaySession(
+  workflow: WorkflowDefinition,
+  facts: SessionStartFacts,
+  inputs: ReadonlyArray<StepInput & { at?: string }>,
+  startedAt?: string,
+  options: EngineOptions = {},
+): StepResult {
+  let result = startSession(workflow, facts, startedAt, options);
   for (const input of inputs) {
     if (!result.ok) return result;
     const { at, ...step } = input;
-    result = submitStep(workflow, result.session, step as StepInput, at);
+    result = submitStep(workflow, result.session, step as StepInput, at, options);
   }
   return result;
 }
@@ -571,7 +623,7 @@ export function sessionOutcome(session: Pick<DiagnosticSession, "status" | "curr
 }
 
 /** Outcome fields added in V2A. Compared when a saved session has them; an older save without them is still checked on everything else. */
-const V2A_OUTCOME_FIELDS = ["phase", "verification", "establishedConditions", "faultModel"] as const;
+const V2A_OUTCOME_FIELDS = ["phase", "verification", "establishedConditions", "refutedConditions", "faultModel", "specifications"] as const;
 
 /**
  * Continue a saved session. Its inputs are replayed against the workflow and
@@ -588,7 +640,10 @@ export function resumeSession(workflow: WorkflowDefinition, saved: unknown): Ste
   if (s.workflowId !== workflow.id || s.workflowVersion !== workflow.version) return fail("wrong_workflow");
   if (!Array.isArray(s.remainingCauses) || !Array.isArray(s.supportedCauses)) return fail("invalid_session");
   const startedAt = typeof s.startedAt === "string" ? s.startedAt : s.evidence.find((e) => e?.kind === "code" || e?.kind === "symptom")?.at;
-  const rebuilt = replaySession(workflow, s.facts, s.inputs, startedAt);
+  // History is replayed against the specifications the session pinned, never the provider's current data,
+  // so a later change in that data cannot rewrite a recorded judgement. (specificationDrift reports such changes.)
+  const pinned = s.specifications && typeof s.specifications === "object" ? s.specifications : {};
+  const rebuilt = replaySession(workflow, s.facts, s.inputs, startedAt, { specifications: pinnedSpecificationProvider(pinned) });
   if (!rebuilt.ok) return fail(`invalid_session: ${rebuilt.error}`);
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
   const savedOutcome = sessionOutcome({

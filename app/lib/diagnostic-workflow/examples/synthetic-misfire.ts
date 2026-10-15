@@ -8,12 +8,13 @@
  * general troubleshooting practice to exercise the engine. It is not a repair
  * procedure for any vehicle and is not shown to users.
  *
- * It contains no manufacturer values. The two vehicle-dependent limits
- * (minimum compression, fuel pressure range) are NAMED SPECIFICATIONS that a
- * session must supply; without them those steps are not evaluated and the
- * workflow refers the vehicle to a professional instead. Only VERIFIED
- * specifications are used to judge a reading; an unverified one leaves it
- * unjudged and the step takes its inconclusive route.
+ * It contains no vehicle values at all. Its two vehicle-dependent limits
+ * (minimum compression, fuel supply pressure) are requested BY ID from a
+ * SpecificationProvider ("synthetic.cylinder_compression_min",
+ * "synthetic.fuel_supply_pressure_idle"); the matching SYNTHETIC / TEST ONLY
+ * values live in ./synthetic-specifications.ts. A specification that cannot
+ * be resolved sends the step to a professional. Only a VERIFIED specification
+ * judges a reading; anything else leaves it unjudged (inconclusive route).
  *
  * Trouble codes appear only as identifiers to branch on (the generic random /
  * per-cylinder misfire codes). No code definitions are written here.
@@ -24,6 +25,8 @@
  * Version 2 (V2A): states its single-primary-fault assumption, names the
  * "engine off and cool" condition, routes inconclusive results, and verifies a
  * repair against named criteria (the fuel route re-tests the fuel pressure).
+ * Version 3 (V2B): measurements name specifications instead of carrying spec
+ * bounds.
  */
 import type { WorkflowDefinition } from "../types";
 
@@ -31,7 +34,7 @@ const CYLINDER_MISFIRE_CODES = ["P0301", "P0302", "P0303", "P0304", "P0305", "P0
 
 export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
   id: "synthetic.engine-misfire",
-  version: 2,
+  version: 3,
   title: "Engine misfire (synthetic example)",
   provenance: "SYNTHETIC: written for CarCode's engine tests from general troubleshooting practice. Not BMW data, not ISTA data, not any manufacturer's data.",
   faultModel: "single_primary_fault",
@@ -174,9 +177,10 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
       measurement: { quantity: "Cylinder compression", unit: "kPa", plausible: { min: 0, max: 3500 } },
       requires: { level: "professional", tools: ["compression_tester"], hazards: ["Disable fuel and ignition before cranking"] },
       needsConditions: ["engine_off_cool"],
+      specification: "synthetic.cylinder_compression_min",
       outcomes: [
-        { id: "below_min", when: { max: { spec: "compression_min" }, maxInclusive: false }, to: "concl_mechanical", supports: ["low_compression"] },
-        { id: "at_or_above_min", when: { min: { spec: "compression_min" } }, to: "concl_wiring", rulesOut: ["low_compression"] },
+        { id: "below_min", when: { relativeToSpec: "below" }, to: "concl_mechanical", supports: ["low_compression"] },
+        { id: "at_or_above_min", when: { relativeToSpec: "within" }, to: "concl_wiring", rulesOut: ["low_compression"] },
       ],
       otherwise: "concl_professional",
       ifUnsupported: "concl_professional",
@@ -207,9 +211,10 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
       title: "Fuel pressure",
       measurement: { quantity: "Fuel supply pressure (low-pressure side)", unit: "kPa", plausible: { min: 0, max: 1000 } },
       requires: { level: "professional", tools: ["pressure_gauge"], hazards: ["Pressurised fuel"] },
+      specification: "synthetic.fuel_supply_pressure_idle",
       outcomes: [
-        { id: "below_min", when: { max: { spec: "fuel_pressure_min" }, maxInclusive: false }, to: "concl_fuel_supply", supports: ["fuel_supply"] },
-        { id: "within", when: { min: { spec: "fuel_pressure_min" }, max: { spec: "fuel_pressure_max" } }, to: "concl_professional", rulesOut: ["fuel_supply"] },
+        { id: "below_min", when: { relativeToSpec: "below" }, to: "concl_fuel_supply", supports: ["fuel_supply"] },
+        { id: "within", when: { relativeToSpec: "within" }, to: "concl_professional", rulesOut: ["fuel_supply"] },
       ],
       otherwise: "concl_professional",
       ifUnsupported: "concl_professional",

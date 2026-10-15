@@ -15,6 +15,13 @@
  *
  * Trouble codes appear only as identifiers to branch on (the generic random /
  * per-cylinder misfire codes). No code definitions are written here.
+ *
+ * The plausible ranges on its two measurements are generic physical limits
+ * meant only to catch typos. They are not specifications or pass limits.
+ *
+ * Version 2 (V2A): states its single-primary-fault assumption, names the
+ * "engine off and cool" condition, routes inconclusive results, and verifies a
+ * repair against named criteria (the fuel route re-tests the fuel pressure).
  */
 import type { WorkflowDefinition } from "../types";
 
@@ -22,9 +29,11 @@ const CYLINDER_MISFIRE_CODES = ["P0301", "P0302", "P0303", "P0304", "P0305", "P0
 
 export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
   id: "synthetic.engine-misfire",
-  version: 1,
+  version: 2,
   title: "Engine misfire (synthetic example)",
   provenance: "SYNTHETIC: written for CarCode's engine tests from general troubleshooting practice. Not BMW data, not ISTA data, not any manufacturer's data.",
+  faultModel: "single_primary_fault",
+  conditions: [{ id: "engine_off_cool", title: "Engine off, key out, and cool enough to touch" }],
   causes: [
     { id: "ignition_coil", title: "Ignition coil" },
     { id: "spark_plug", title: "Spark plug" },
@@ -98,6 +107,7 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
       requires: { level: "diy", hazards: ["Hot engine parts", "Ignition system high voltage when running"] },
       ifMet: "coil_swap",
       ifNotMet: "wait_cool",
+      establishes: ["engine_off_cool"],
       ifUnsupported: "concl_professional",
     },
     {
@@ -106,6 +116,7 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
       title: "Let the engine cool",
       prompt: "Wait until the engine has cooled, then continue.",
       next: "coil_swap",
+      establishes: ["engine_off_cool"],
     },
     {
       id: "coil_swap",
@@ -126,6 +137,7 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
       title: "Spark plug condition",
       prompt: "Remove the spark plug from the misfiring cylinder. How does it look?",
       requires: { level: "diy", tools: ["hand_tools"], hazards: ["Hot engine parts"] },
+      needsConditions: ["engine_off_cool"],
       options: [
         { id: "worn_or_damaged", label: "Worn electrode or cracked insulator" },
         { id: "fouled", label: "Wet or heavily fouled" },
@@ -137,6 +149,8 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
         { when: "normal", to: "injector_check", rulesOut: ["spark_plug"] },
       ],
       ifUnsupported: "concl_professional",
+      // Cannot tell from the plug: rule nothing out and test the injector.
+      ifInconclusive: "injector_check",
     },
     {
       id: "injector_check",
@@ -149,19 +163,22 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
         { when: "pass", to: "compression_test", rulesOut: ["injector"] },
       ],
       ifUnsupported: "concl_professional",
+      ifInconclusive: "concl_professional",
     },
     {
       id: "compression_test",
       type: "measurement",
       title: "Compression on the misfiring cylinder",
-      measurement: { quantity: "Cylinder compression", unit: "kPa" },
+      measurement: { quantity: "Cylinder compression", unit: "kPa", plausible: { min: 0, max: 3500 } },
       requires: { level: "professional", tools: ["compression_tester"], hazards: ["Disable fuel and ignition before cranking"] },
+      needsConditions: ["engine_off_cool"],
       outcomes: [
-        { when: { max: { spec: "compression_min" }, maxInclusive: false }, to: "concl_mechanical", supports: ["low_compression"] },
-        { when: { min: { spec: "compression_min" } }, to: "concl_wiring", rulesOut: ["low_compression"] },
+        { id: "below_min", when: { max: { spec: "compression_min" }, maxInclusive: false }, to: "concl_mechanical", supports: ["low_compression"] },
+        { id: "at_or_above_min", when: { min: { spec: "compression_min" } }, to: "concl_wiring", rulesOut: ["low_compression"] },
       ],
       otherwise: "concl_professional",
       ifUnsupported: "concl_professional",
+      ifInconclusive: "concl_professional",
     },
 
     /* ── several cylinders: things all cylinders share ── */
@@ -179,19 +196,22 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
         { when: "hiss_or_damage", to: "concl_vacuum", supports: ["vacuum_leak"] },
         { when: "nothing_found", to: "fuel_pressure" },
       ],
+      // Not sure (a noisy engine bay): rule nothing out and measure.
+      ifInconclusive: "fuel_pressure",
     },
     {
       id: "fuel_pressure",
       type: "measurement",
       title: "Fuel pressure",
-      measurement: { quantity: "Fuel rail pressure", unit: "kPa" },
+      measurement: { quantity: "Fuel supply pressure (low-pressure side)", unit: "kPa", plausible: { min: 0, max: 1000 } },
       requires: { level: "professional", tools: ["pressure_gauge"], hazards: ["Pressurised fuel"] },
       outcomes: [
-        { when: { max: { spec: "fuel_pressure_min" }, maxInclusive: false }, to: "concl_fuel_supply", supports: ["fuel_supply"] },
-        { when: { min: { spec: "fuel_pressure_min" }, max: { spec: "fuel_pressure_max" } }, to: "concl_professional", rulesOut: ["fuel_supply"] },
+        { id: "below_min", when: { max: { spec: "fuel_pressure_min" }, maxInclusive: false }, to: "concl_fuel_supply", supports: ["fuel_supply"] },
+        { id: "within", when: { min: { spec: "fuel_pressure_min" }, max: { spec: "fuel_pressure_max" } }, to: "concl_professional", rulesOut: ["fuel_supply"] },
       ],
       otherwise: "concl_professional",
       ifUnsupported: "concl_professional",
+      ifInconclusive: "concl_professional",
     },
 
     /* ── conclusions ── */
@@ -201,25 +221,45 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
     { id: "concl_mechanical", type: "conclusion", title: "Low compression", cause: "low_compression", recommendation: "Have the engine's mechanical condition checked (for example a leak-down test).", next: "end_referred" },
     { id: "concl_wiring", type: "conclusion", title: "Wiring or engine control", cause: "wiring_or_control", recommendation: "Have the ignition and injector circuits and the engine control checked.", next: "end_referred" },
     { id: "concl_vacuum", type: "conclusion", title: "Air leak", cause: "vacuum_leak", recommendation: "Repair or replace the leaking hose or seal.", next: "verify_repair" },
-    { id: "concl_fuel_supply", type: "conclusion", title: "Low fuel pressure", cause: "fuel_supply", recommendation: "Have the fuel supply (pump, filter, regulator) checked.", next: "verify_repair" },
+    { id: "concl_fuel_supply", type: "conclusion", title: "Low fuel pressure", cause: "fuel_supply", recommendation: "Have the fuel supply (pump, filter, regulator) checked.", next: "verify_fuel_repair" },
     { id: "concl_professional", type: "conclusion", title: "Needs a professional", recommendation: "This next step needs a workshop. Take the vehicle in and share what was found so far.", next: "end_referred" },
     { id: "concl_stop_driving", type: "conclusion", title: "Severe misfire", recommendation: "Avoid driving: a flashing light means a severe misfire that can damage the exhaust catalyst. Have it checked.", next: "end_referred" },
     { id: "concl_read_codes", type: "conclusion", title: "Read the codes first", recommendation: "Have the trouble codes read: they usually show which cylinder misfires.", next: "end_referred" },
     { id: "concl_intermittent", type: "conclusion", title: "Not happening now", recommendation: "Note when it happens (cold, warm, load, speed) and have the codes read.", next: "end_not_reproducible" },
     { id: "concl_not_fixed", type: "conclusion", title: "Repair did not fix it", recommendation: "Keep the record of what was tried and have a professional continue from here.", next: "end_referred" },
+    { id: "concl_verify_inconclusive", type: "conclusion", title: "Repair not confirmed yet", recommendation: "It is too early to tell whether the repair worked. Drive again in the conditions where the misfire happened, then check again.", next: "end_inconclusive" },
 
     /* ── after the repair ── */
     {
       id: "verify_repair",
       type: "repair_verification",
       title: "Did the repair fix it?",
-      prompt: "After the repair, clear the codes and drive in the conditions where the misfire happened. Is the engine smooth, with no misfire code coming back?",
+      prompt: "After the repair, clear the codes and drive in the conditions where the misfire happened.",
+      criteria: [
+        { id: "smooth", kind: "symptom_absent", prompt: "Is the engine smooth in the conditions where it misfired?" },
+        { id: "codes_gone", kind: "codes_absent", codes: "reported" },
+      ],
       ifVerified: "end_resolved",
       ifNotVerified: "concl_not_fixed",
+      ifInconclusive: "concl_verify_inconclusive",
+    },
+    {
+      id: "verify_fuel_repair",
+      type: "repair_verification",
+      title: "Did the fuel supply repair fix it?",
+      prompt: "After the repair, measure the fuel pressure again the same way, then drive in the conditions where the misfire happened.",
+      criteria: [
+        { id: "pressure_ok", kind: "retest", step: "fuel_pressure", passWhen: ["within"] },
+        { id: "smooth", kind: "symptom_absent", prompt: "Is the engine smooth in the conditions where it misfired?" },
+      ],
+      ifVerified: "end_resolved",
+      ifNotVerified: "concl_not_fixed",
+      ifInconclusive: "concl_verify_inconclusive",
     },
 
     { id: "end_resolved", type: "end", title: "Resolved", result: "resolved" },
     { id: "end_referred", type: "end", title: "Referred", result: "referred" },
     { id: "end_not_reproducible", type: "end", title: "Not reproducible now", result: "not_reproducible" },
+    { id: "end_inconclusive", type: "end", title: "Not confirmed yet", result: "inconclusive" },
   ],
 };

@@ -5,4 +5,4 @@
 export * from "./types";
 export { convert, isUnit } from "./units";
 export { validateWorkflow, successors, type ValidationResult, type WorkflowProblem } from "./validate";
-export { MAX_AUTOMATIC_STEPS, currentStep, replaySession, resumeSession, separatingSteps, startSession, submitStep } from "./engine";
+export { MAX_AUTOMATIC_STEPS, currentStep, replaySession, resumeSession, separatingSteps, sessionOutcome, startSession, submitStep } from "./engine";

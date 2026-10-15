@@ -5,9 +5,25 @@
  * every transition pointing at a real step, every step reachable, no loops,
  * every possible answer to a step going somewhere, and every step that needs
  * skill or tools having somewhere to go when the person cannot do it.
+ *
+ * V2A adds: a declared fault model; named conditions that every route
+ * establishes before the steps needing them; inconclusive routes only where
+ * they make sense; plausible ranges on measurements, with fixed pass bounds
+ * inside them; and repair verifications that name real criteria.
  * Problems are reported all at once, each with a stable code.
  */
-import { SKILL_ORDER, type Condition, type NodeId, type NumericRange, type WorkflowDefinition, type WorkflowNode } from "./types";
+import {
+  FAULT_MODELS,
+  INCONCLUSIVE_TYPES,
+  SKILL_ORDER,
+  type Condition,
+  type ConditionId,
+  type MeasurementNode,
+  type NodeId,
+  type NumericRange,
+  type WorkflowDefinition,
+  type WorkflowNode,
+} from "./types";
 import { isUnit } from "./units";
 
 export type WorkflowProblem = { code: string; nodeId?: NodeId; message: string };
@@ -48,6 +64,50 @@ export function successors(node: WorkflowNode): NodeId[] {
       break;
   }
   if (node.ifUnsupported) out.push(node.ifUnsupported);
+  if (node.ifInconclusive) out.push(node.ifInconclusive);
+  return out;
+}
+
+/** Every transition out of a node, with the named conditions taking it establishes. */
+function edges(node: WorkflowNode): Array<{ to: NodeId; establishes: ConditionId[] }> {
+  const plain = (to: NodeId) => ({ to, establishes: [] as ConditionId[] });
+  if (node.type === "prerequisite") {
+    return [{ to: node.ifMet, establishes: node.establishes ?? [] }, plain(node.ifNotMet), ...[node.ifUnsupported, node.ifInconclusive].filter((x): x is NodeId => !!x).map(plain)];
+  }
+  if (node.type === "action") {
+    return [{ to: node.next, establishes: node.establishes ?? [] }, ...[node.ifUnsupported, node.ifInconclusive].filter((x): x is NodeId => !!x).map(plain)];
+  }
+  return successors(node).map(plain);
+}
+
+/** The keys a step's results can take, for checking a re-test's passWhen. */
+function resultKeys(node: WorkflowNode): string[] | null {
+  if (node.type === "check") return ["pass", "fail"];
+  if (node.type === "observation") return node.options.map((o) => o.id);
+  if (node.type === "measurement") return node.outcomes.map((o) => o.id);
+  return null;
+}
+
+function conditionNames(c: Condition): ConditionId[] {
+  if ("established" in c) return [c.established];
+  if ("all" in c) return c.all.flatMap(conditionNames);
+  if ("any" in c) return c.any.flatMap(conditionNames);
+  if ("not" in c) return conditionNames(c.not);
+  return [];
+}
+
+function measurementProblems(node: MeasurementNode): string[] {
+  const out: string[] = [];
+  const p = node.measurement?.plausible;
+  if (!p || !Number.isFinite(p.min) || !Number.isFinite(p.max) || p.min >= p.max) {
+    out.push("needs a plausible range with a finite minimum below a finite maximum");
+    return out;
+  }
+  for (const o of node.outcomes) {
+    for (const b of [o.when.min, o.when.max]) {
+      if (typeof b === "number" && (b < p.min || b > p.max)) out.push(`range "${o.id}" has a fixed bound outside the plausible range`);
+    }
+  }
   return out;
 }
 
@@ -79,6 +139,9 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
   }
   if (!workflow.id || !Number.isInteger(workflow.version) || workflow.version < 1) add("malformed", "A workflow needs an id and a whole-number version from 1.");
   if (!workflow.provenance?.trim()) add("no_provenance", "A workflow must say where its content came from.");
+  if (!(FAULT_MODELS as readonly string[]).includes(workflow.faultModel)) {
+    add("unsupported_fault_model", `A workflow must state its fault model, and only ${FAULT_MODELS.join(", ")} is supported.`);
+  }
 
   // Ids.
   const byId = new Map<NodeId, WorkflowNode>();
@@ -94,6 +157,11 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
   for (const cause of workflow.causes ?? []) {
     if (causeIds.has(cause.id)) add("duplicate_cause", `Two causes share the id "${cause.id}".`);
     causeIds.add(cause.id);
+  }
+  const conditionIds = new Set<ConditionId>();
+  for (const condition of workflow.conditions ?? []) {
+    if (!condition?.id || conditionIds.has(condition.id)) add("duplicate_condition", `A named condition is missing its id or shares the id "${condition?.id}".`);
+    conditionIds.add(condition?.id);
   }
 
   // Exactly one start.
@@ -131,6 +199,47 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
         if (problem) add("invalid_range", `"${node.id}": ${problem}.`, node.id);
       }
     }
+
+    if (node.type === "measurement") {
+      for (const problem of measurementProblems(node)) add("invalid_plausible_range", `"${node.id}": ${problem}.`, node.id);
+      const ids = node.outcomes.map((o) => o.id);
+      if (ids.some((id) => typeof id !== "string" || !id.trim()) || new Set(ids).size !== ids.length || ids.includes("otherwise")) {
+        add("invalid_range_id", `"${node.id}": every range needs its own id (and not "otherwise").`, node.id);
+      }
+    }
+
+    // Inconclusive routes only where a result can fail to decide; a repair verification must have one.
+    if (node.ifInconclusive && !INCONCLUSIVE_TYPES.has(node.type)) add("inconclusive_not_allowed", `"${node.id}" is a ${node.type} step, which cannot be inconclusive.`, node.id);
+    if (node.type === "repair_verification") {
+      if (!node.ifInconclusive) add("no_inconclusive_route", `"${node.id}" must say where an inconclusive verification leads.`, node.id);
+      const criteria = Array.isArray(node.criteria) ? node.criteria : [];
+      if (criteria.length === 0) add("no_verification_criteria", `"${node.id}" must name what has to hold after the repair.`, node.id);
+      const seen = new Set<string>();
+      for (const c of criteria) {
+        if (!c?.id || seen.has(c.id)) add("invalid_criterion", `"${node.id}": every criterion needs its own id.`, node.id);
+        seen.add(c?.id);
+        if (c?.kind === "codes_absent" && c.codes !== "reported" && !(Array.isArray(c.codes) && c.codes.length > 0)) {
+          add("invalid_criterion", `"${node.id}": criterion "${c.id}" names no codes.`, node.id);
+        }
+        if (c?.kind === "retest") {
+          const target = byId.get(c.step);
+          const keys = target ? resultKeys(target) : null;
+          if (!keys) add("invalid_retest", `"${node.id}": criterion "${c.id}" re-tests "${c.step}", which is not a check, observation or measurement.`, node.id);
+          else if (!Array.isArray(c.passWhen) || c.passWhen.length === 0 || c.passWhen.some((k) => !keys.includes(k))) {
+            add("invalid_retest", `"${node.id}": criterion "${c.id}" must pass on results "${c.step}" can give (${keys.join(", ")}).`, node.id);
+          }
+        }
+        if (!c || !["symptom_absent", "codes_absent", "retest"].includes(c.kind)) add("invalid_criterion", `"${node.id}": a criterion has an unknown kind.`, node.id);
+      }
+    }
+
+    // Named conditions are declared.
+    const named = [
+      ...(node.needsConditions ?? []),
+      ...((node.type === "prerequisite" || node.type === "action") ? node.establishes ?? [] : []),
+      ...(node.type === "branch" ? node.rules.flatMap((r) => conditionNames(r.if)) : []),
+    ];
+    for (const name of named) if (!conditionIds.has(name)) add("unknown_condition", `"${node.id}" refers to an undeclared condition "${name}".`, node.id);
 
     // A step above owner level, or needing tools, says where to go when it cannot be done.
     const needs = node.requires;
@@ -183,6 +292,36 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
       state.set(id, "done");
     };
     visit(starts[0].id, []);
+
+    // Every route to a step establishes the named conditions it needs. With no
+    // loops, walk the steps in order and keep, for each, the conditions that
+    // hold on EVERY route reaching it.
+    if (!problems.some((p) => p.code === "cycle" || p.code === "broken_transition")) {
+      const order: NodeId[] = [];
+      const seen = new Set<NodeId>();
+      const post = (id: NodeId): void => {
+        if (seen.has(id) || !byId.has(id)) return;
+        seen.add(id);
+        for (const next of successors(byId.get(id)!)) post(next);
+        order.push(id);
+      };
+      post(starts[0].id);
+      order.reverse();
+      const guaranteed = new Map<NodeId, Set<ConditionId>>([[starts[0].id, new Set()]]);
+      for (const id of order) {
+        const here = guaranteed.get(id) ?? new Set<ConditionId>();
+        for (const edge of edges(byId.get(id)!)) {
+          const arriving = new Set([...here, ...edge.establishes]);
+          const known = guaranteed.get(edge.to);
+          guaranteed.set(edge.to, known ? new Set([...known].filter((c) => arriving.has(c))) : arriving);
+        }
+      }
+      for (const id of order) {
+        const node = byId.get(id)!;
+        const missing = (node.needsConditions ?? []).filter((c) => !guaranteed.get(id)?.has(c));
+        if (missing.length) add("condition_not_guaranteed", `"${id}" needs ${missing.join(", ")}, which not every route to it establishes.`, id);
+      }
+    }
   }
 
   // With no loops and every answer routed, every run finishes at an end node, as long as one exists.

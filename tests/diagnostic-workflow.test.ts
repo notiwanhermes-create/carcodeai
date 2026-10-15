@@ -62,6 +62,7 @@ function tiny(): WorkflowDefinition {
     version: 1,
     title: "Tiny",
     provenance: "SYNTHETIC: test only",
+    faultModel: "single_primary_fault",
     causes: [{ id: "a", title: "A" }, { id: "b", title: "B" }],
     nodes: [
       { id: "s", type: "start", title: "Start", next: "q" },
@@ -280,7 +281,7 @@ describe("running a workflow", () => {
     expect(submitStep(W, s, { nodeId: "confirm_symptom", kind: "yes_no", answer: "maybe" as "yes" })).toEqual({ ok: false, error: "wrong_input_kind" });
     const choiceStep = run(facts(), [yes("confirm_symptom"), no("flashing_light")]);
     expect(submitStep(W, choiceStep, { nodeId: "ask_pattern", kind: "choice", choice: "eight" })).toEqual({ ok: false, error: "unknown_option" });
-    expect(submitStep({ ...W, version: 2 }, s, yes("confirm_symptom"))).toEqual({ ok: false, error: "wrong_workflow" });
+    expect(submitStep({ ...W, version: W.version + 1 }, s, yes("confirm_symptom"))).toEqual({ ok: false, error: "wrong_workflow" });
     expect(JSON.stringify(s)).toBe(before);
   });
 });
@@ -345,7 +346,7 @@ describe("evidence, replay and resume", () => {
     expect(resumeSession(W, edited)).toMatchObject({ ok: false, error: expect.stringMatching(/^invalid_session/) });
     const rewritten = { ...saved, evidence: saved.evidence.map((e: { value: string }, i: number) => (i === 1 ? { ...e, value: "no" } : e)) };
     expect(resumeSession(W, rewritten).ok).toBe(false);
-    expect(resumeSession({ ...W, version: 2 }, saved)).toEqual({ ok: false, error: "wrong_workflow" });
+    expect(resumeSession({ ...W, version: W.version + 1 }, saved)).toEqual({ ok: false, error: "wrong_workflow" });
     expect(resumeSession(W, null)).toEqual({ ok: false, error: "invalid_session" });
   });
 });
@@ -363,7 +364,7 @@ describe("completion and repair verification", () => {
   });
 
   it("ends as resolved when the repair is verified", () => {
-    const done = step(toCoil(), { nodeId: "verify_repair", kind: "verification", verified: true });
+    const done = step(toCoil(), { nodeId: "verify_repair", kind: "verification", results: [{ criterion: "smooth", result: "met" }, { criterion: "codes_gone", result: "met" }] });
     expect(done).toMatchObject({ status: "completed", currentNodeId: null, endResult: "resolved", repairVerified: true, conclusionNodeId: "concl_coil" });
     // A completed session takes no more input.
     expect(submitStep(W, done, yes("confirm_symptom"))).toEqual({ ok: false, error: "session_complete" });
@@ -371,7 +372,7 @@ describe("completion and repair verification", () => {
   });
 
   it("does not claim success when the repair did not fix it", () => {
-    const failed = step(toCoil(), { nodeId: "verify_repair", kind: "verification", verified: false });
+    const failed = step(toCoil(), { nodeId: "verify_repair", kind: "verification", results: [{ criterion: "smooth", result: "not_met" }, { criterion: "codes_gone", result: "met" }] });
     expect(failed).toMatchObject({ status: "completed", endResult: "referred", repairVerified: false, conclusionNodeId: "concl_not_fixed" });
     // The earlier conclusion stays in the evidence: what was tried is never lost.
     expect(failed.evidence.map((e) => e.nodeId)).toContain("coil_swap");
@@ -383,14 +384,14 @@ describe("completion and repair verification", () => {
 
 describe("the synthetic misfire workflow reaches the right branches", () => {
   const single = [yes("confirm_symptom"), no("flashing_light"), { nodeId: "single_prereq", kind: "prerequisite", met: true } as StepInput];
-  const cases: Array<[string, SessionStartFacts, StepInput[], { conclusion: string; end?: string }]> = [
+  const cases: Array<[string, SessionStartFacts, StepInput[], { conclusion: string; end?: string; verify?: string }]> = [
     ["fault follows the coil", facts({ dtcs: ["P0301"] }), [...single, yes("coil_swap")], { conclusion: "concl_coil" }],
     ["worn spark plug", facts({ dtcs: ["P0301"] }), [...single, no("coil_swap"), { nodeId: "plug_inspection", kind: "observation", choice: "worn_or_damaged" }], { conclusion: "concl_plug" }],
     ["injector fails its test", facts({ dtcs: ["P0301"] }), [...single, no("coil_swap"), { nodeId: "plug_inspection", kind: "observation", choice: "fouled" }, { nodeId: "injector_check", kind: "check", result: "fail" }], { conclusion: "concl_injector" }],
     ["low compression", facts({ dtcs: ["P0301"] }), [...single, no("coil_swap"), { nodeId: "plug_inspection", kind: "observation", choice: "normal" }, { nodeId: "injector_check", kind: "check", result: "pass" }, { nodeId: "compression_test", kind: "measurement", value: 600, unit: "kPa" }], { conclusion: "concl_mechanical", end: "referred" }],
     ["everything mechanical is fine", facts({ dtcs: ["P0301"] }), [...single, no("coil_swap"), { nodeId: "plug_inspection", kind: "observation", choice: "normal" }, { nodeId: "injector_check", kind: "check", result: "pass" }, { nodeId: "compression_test", kind: "measurement", value: 1100, unit: "kPa" }], { conclusion: "concl_wiring", end: "referred" }],
     ["air leak on a random misfire", facts({ dtcs: ["P0300"] }), [yes("confirm_symptom"), no("flashing_light"), { nodeId: "multi_vacuum", kind: "observation", choice: "hiss_or_damage" }], { conclusion: "concl_vacuum" }],
-    ["low fuel pressure", facts({ dtcs: ["P0300"] }), [yes("confirm_symptom"), no("flashing_light"), { nodeId: "multi_vacuum", kind: "observation", choice: "nothing_found" }, { nodeId: "fuel_pressure", kind: "measurement", value: 200, unit: "kPa" }], { conclusion: "concl_fuel_supply" }],
+    ["low fuel pressure", facts({ dtcs: ["P0300"] }), [yes("confirm_symptom"), no("flashing_light"), { nodeId: "multi_vacuum", kind: "observation", choice: "nothing_found" }, { nodeId: "fuel_pressure", kind: "measurement", value: 200, unit: "kPa" }], { conclusion: "concl_fuel_supply", verify: "verify_fuel_repair" }],
     ["flashing light: stop", facts({ dtcs: ["P0300"] }), [yes("confirm_symptom"), yes("flashing_light")], { conclusion: "concl_stop_driving", end: "referred" }],
   ];
 
@@ -399,7 +400,7 @@ describe("the synthetic misfire workflow reaches the right branches", () => {
       const s = run(f, inputs);
       expect(s.conclusionNodeId).toBe(expected.conclusion);
       if (expected.end) expect(s).toMatchObject({ status: "completed", endResult: expected.end });
-      else expect(s.currentNodeId).toBe("verify_repair");
+      else expect(s.currentNodeId).toBe(expected.verify ?? "verify_repair");
       // Every recorded step is on a real transition of the workflow.
       const ids = new Set(W.nodes.map((n) => n.id));
       for (const e of s.evidence) expect(ids.has(e.to)).toBe(true);

@@ -11,7 +11,9 @@
  * It contains no manufacturer values. The two vehicle-dependent limits
  * (minimum compression, fuel pressure range) are NAMED SPECIFICATIONS that a
  * session must supply; without them those steps are not evaluated and the
- * workflow refers the vehicle to a professional instead.
+ * workflow refers the vehicle to a professional instead. Only VERIFIED
+ * specifications are used to judge a reading; an unverified one leaves it
+ * unjudged and the step takes its inconclusive route.
  *
  * Trouble codes appear only as identifiers to branch on (the generic random /
  * per-cylinder misfire codes). No code definitions are written here.

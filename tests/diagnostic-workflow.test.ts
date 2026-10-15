@@ -25,8 +25,8 @@ import {
 } from "../app/lib/diagnostic-workflow";
 import { SYNTHETIC_MISFIRE_WORKFLOW as W } from "../app/lib/diagnostic-workflow/examples/synthetic-misfire";
 
-/** Made-up numbers for tests only. Not specifications for any vehicle. */
-const TEST_ONLY_SPECS = { compression_min: 900, fuel_pressure_min: 300, fuel_pressure_max: 450 };
+/** Made-up numbers for tests only, not specifications for any vehicle. Marked verified so they may drive the engine. */
+const TEST_ONLY_SPECS = { compression_min: { value: 900, trust: "verified" as const }, fuel_pressure_min: { value: 300, trust: "verified" as const }, fuel_pressure_max: { value: 450, trust: "verified" as const } };
 
 const PRO: Capabilities = { maxLevel: "professional", tools: ["hand_tools", "scan_tool", "compression_tester", "pressure_gauge"] };
 const DIY: Capabilities = { maxLevel: "diy", tools: ["hand_tools", "scan_tool"] };
@@ -53,7 +53,7 @@ function run(f: SessionStartFacts, inputs: StepInput[]): DiagnosticSession {
 
 const yes = (nodeId: string): StepInput => ({ nodeId, kind: "yes_no", answer: "yes" });
 const no = (nodeId: string): StepInput => ({ nodeId, kind: "yes_no", answer: "no" });
-const pathOf = (s: DiagnosticSession) => s.evidence.filter((e) => e.kind !== "start_fact").map((e) => e.nodeId);
+const pathOf = (s: DiagnosticSession) => s.evidence.filter((e) => e.kind !== "code" && e.kind !== "symptom").map((e) => e.nodeId);
 
 /** A small valid workflow to break in different ways. */
 function tiny(): WorkflowDefinition {
@@ -170,8 +170,8 @@ describe("running a workflow", () => {
     expect(s.currentNodeId).toBe("confirm_symptom");
     expect(currentStep(W, s)?.title).toBe("Confirm the symptom");
     expect(s.evidence.map((e) => [e.seq, e.kind, e.value])).toEqual([
-      [1, "start_fact", "dtc:P0303"],
-      [2, "start_fact", "symptom:rough_idle"],
+      [1, "code", "P0303"],
+      [2, "symptom", "rough_idle"],
     ]);
     expect(s.remainingCauses).toEqual(W.causes.map((c) => c.id));
   });
@@ -296,7 +296,7 @@ describe("evidence, replay and resume", () => {
     s = step(s, yes("confirm_symptom"), "2026-10-15T10:01:00Z");
     s = step(s, no("flashing_light"), "2026-10-15T10:02:00Z");
     expect(s.evidence.map((e) => [e.seq, e.nodeId, e.kind, e.value, e.at])).toEqual([
-      [1, "start", "start_fact", "dtc:P0304", "2026-10-15T10:00:00Z"],
+      [1, "start", "code", "P0304", "2026-10-15T10:00:00Z"],
       [2, "confirm_symptom", "answer", "yes", "2026-10-15T10:01:00Z"],
       [3, "flashing_light", "answer", "no", "2026-10-15T10:02:00Z"],
       [4, "pattern", "branch", "rule:1", "2026-10-15T10:02:00Z"],

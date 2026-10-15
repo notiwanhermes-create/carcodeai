@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  replaySession,
   resumeSession,
   separatingSteps,
   sessionOutcome,
@@ -22,7 +23,8 @@ import {
 } from "../app/lib/diagnostic-workflow";
 import { SYNTHETIC_MISFIRE_WORKFLOW as W } from "../app/lib/diagnostic-workflow/examples/synthetic-misfire";
 
-const TEST_ONLY_SPECS = { compression_min: 900, fuel_pressure_min: 300, fuel_pressure_max: 450 };
+/** Made-up, marked verified so they may drive the engine. Not values for any vehicle. */
+const TEST_ONLY_SPECS = { compression_min: { value: 900, trust: "verified" as const }, fuel_pressure_min: { value: 300, trust: "verified" as const }, fuel_pressure_max: { value: 450, trust: "verified" as const } };
 const PRO: Capabilities = { maxLevel: "professional", tools: ["hand_tools", "scan_tool", "compression_tester", "pressure_gauge"] };
 const facts = (over: Partial<SessionStartFacts> = {}): SessionStartFacts => ({ capabilities: PRO, specs: TEST_ONLY_SPECS, ...over });
 
@@ -150,14 +152,14 @@ describe("V2A: evidence phase and source", () => {
 
   it("records who produced each piece of evidence", () => {
     const s = run(facts({ dtcs: ["P0300"], dtcSource: "scan_tool" }), [...MULTI, { nodeId: "multi_vacuum", kind: "observation", choice: "nothing_found" }, { nodeId: "fuel_pressure", kind: "measurement", value: 200, unit: "kPa" }]);
-    const bySource = s.evidence.map((e) => [e.nodeId, e.source]);
+    const bySource = s.evidence.map((e) => [e.nodeId, e.kind, e.source]);
     expect(bySource).toEqual([
-      ["start", "scan_tool"],
-      ["confirm_symptom", "person"],
-      ["flashing_light", "person"],
-      ["pattern", "engine"],
-      ["multi_vacuum", "person"],
-      ["fuel_pressure", "instrument"],
+      ["start", "code", "scan_tool"],
+      ["confirm_symptom", "answer", "person"],
+      ["flashing_light", "answer", "person"],
+      ["pattern", "branch", "engine"],
+      ["multi_vacuum", "observation", "person"],
+      ["fuel_pressure", "measurement", "instrument"],
     ]);
     // Steps the engine skips are the engine's doing.
     const owner = run(facts({ dtcs: ["P0301"], capabilities: { maxLevel: "owner", tools: [] } }), MULTI);
@@ -232,22 +234,23 @@ describe("V2A: measurements", () => {
     const low = ok(submitStep(W, atCompression(), { nodeId: "compression_test", kind: "measurement", value: 600, unit: "kPa" }));
     expect(low.evidence.find((e) => e.nodeId === "compression_test")).toMatchObject({
       measured: { value: 600, unit: "kPa" },
-      judgement: { range: "below_min", specs: [{ name: "compression_min", value: 900, trust: "unspecified" }] },
+      judgement: { evaluated: true, range: "below_min", specs: [{ name: "compression_min", value: 900, trust: "verified" }] },
     });
     const sourced = run(
-      facts({ dtcs: ["P0300"], specs: { fuel_pressure_min: { value: 300, trust: "verified", source: "TEST ONLY table" }, fuel_pressure_max: { value: 450, trust: "reference" } } }),
+      facts({ dtcs: ["P0300"], specs: { fuel_pressure_min: { value: 300, trust: "verified", source: "TEST ONLY table" }, fuel_pressure_max: { value: 450, trust: "verified" } } }),
       [...MULTI, { nodeId: "multi_vacuum", kind: "observation", choice: "nothing_found" }, { nodeId: "fuel_pressure", kind: "measurement", value: 400, unit: "kPa" }],
     );
     expect(sourced.evidence.find((e) => e.nodeId === "fuel_pressure")?.judgement).toEqual({
+      evaluated: true,
       range: "within",
       specs: [
         { name: "fuel_pressure_min", value: 300, trust: "verified", source: "TEST ONLY table" },
-        { name: "fuel_pressure_max", value: 450, trust: "reference" },
+        { name: "fuel_pressure_max", value: 450, trust: "verified" },
       ],
     });
     // A plausible reading above every range is judged "otherwise".
     const high = run(facts({ dtcs: ["P0300"] }), [...MULTI, { nodeId: "multi_vacuum", kind: "observation", choice: "nothing_found" }, { nodeId: "fuel_pressure", kind: "measurement", value: 800, unit: "kPa" }]);
-    expect(high.evidence.find((e) => e.nodeId === "fuel_pressure")?.judgement?.range).toBe("otherwise");
+    expect(high.evidence.find((e) => e.nodeId === "fuel_pressure")?.judgement).toMatchObject({ evaluated: true, range: "otherwise" });
   });
 
   it("refuses specifications with an unknown trust level", () => {
@@ -285,6 +288,134 @@ describe("V2A: the single-primary-fault assumption", () => {
 });
 
 /* ───────────────────────── separating tests: reachable only ───────────────────────── */
+
+describe("V2A: only a verified specification may drive the engine", () => {
+  const toCompression: StepInput[] = [...SINGLE, no("coil_swap"), { nodeId: "plug_inspection", kind: "observation", choice: "normal" }, { nodeId: "injector_check", kind: "check", result: "pass" }];
+  const compressionSpec = (spec: number | { value: number; trust: "verified" | "reference" | "unverified"; source?: string }) =>
+    facts({ dtcs: ["P0301"], specs: { ...TEST_ONLY_SPECS, compression_min: spec } });
+  const reading = (value: number): StepInput => ({ nodeId: "compression_test", kind: "measurement", value, unit: "kPa" });
+  const UNTRUSTED = [
+    ["unverified", { value: 900, trust: "unverified" as const, source: "TEST ONLY forum post" }],
+    ["reference", { value: 900, trust: "reference" as const }],
+    ["a bare number", 900],
+  ] as const;
+
+  it("1. a verified specification can drive a pass", () => {
+    const s = run(compressionSpec({ value: 900, trust: "verified" }), [...toCompression, reading(1100)]);
+    expect(s.evidence.at(-1)).toMatchObject({ nodeId: "compression_test", judgement: { evaluated: true, range: "at_or_above_min" }, to: "concl_wiring" });
+    expect(s.conclusionNodeId).toBe("concl_wiring");
+    expect(s.remainingCauses).not.toContain("low_compression");
+  });
+
+  it("2. a verified specification can drive a fail", () => {
+    const s = run(compressionSpec({ value: 900, trust: "verified" }), [...toCompression, reading(600)]);
+    expect(s.evidence.at(-1)).toMatchObject({ judgement: { evaluated: true, range: "below_min" }, to: "concl_mechanical" });
+    expect(s.supportedCauses).toEqual(["low_compression"]);
+  });
+
+  for (const [label, spec] of UNTRUSTED) {
+    it(`3-6. ${label} specification cannot drive pass or fail, change causes, or pick a pass/fail route`, () => {
+      const before = run(compressionSpec(spec), toCompression);
+      for (const value of [1100, 600]) {
+        const s = ok(submitStep(W, before, reading(value)));
+        const e = s.evidence.at(-1)!;
+        // No pass and no fail: the reading is recorded but not judged.
+        expect(e.judgement).toMatchObject({ evaluated: false, reason: "untrusted_spec" });
+        expect(e.judgement && "range" in e.judgement).toBe(false);
+        // No effect on the causes.
+        expect(s.remainingCauses).toEqual(before.remainingCauses);
+        expect(s.supportedCauses).toEqual(before.supportedCauses);
+        // The inconclusive route, never a pass or fail route.
+        expect(e.to).toBe("concl_professional");
+        expect(s.conclusionNodeId).not.toMatch(/concl_wiring|concl_mechanical/);
+      }
+    });
+  }
+
+  it("6. without an inconclusive route, an untrusted specification takes the cannot-be-done route, not a pass/fail route", () => {
+    const w: WorkflowDefinition = {
+      id: "test.trust",
+      version: 1,
+      title: "Trust",
+      provenance: "SYNTHETIC: test only",
+      faultModel: "single_primary_fault",
+      causes: [{ id: "a", title: "A" }, { id: "b", title: "B" }],
+      nodes: [
+        { id: "s", type: "start", title: "Start", next: "m" },
+        {
+          id: "m",
+          type: "measurement",
+          title: "M",
+          measurement: { quantity: "Q", unit: "V", plausible: { min: 0, max: 20 } },
+          outcomes: [
+            { id: "low", when: { max: { spec: "v_min" }, maxInclusive: false }, to: "e_fail", supports: ["a"], rulesOut: ["b"] },
+            { id: "ok", when: { min: { spec: "v_min" } }, to: "e_pass", rulesOut: ["a"] },
+          ],
+          otherwise: "e_ref",
+          ifUnsupported: "e_ref",
+        },
+        { id: "e_fail", type: "end", title: "Fail", result: "concluded" },
+        { id: "e_pass", type: "end", title: "Pass", result: "concluded" },
+        { id: "e_ref", type: "end", title: "Referred", result: "referred" },
+      ],
+    };
+    expect(validateWorkflow(w)).toEqual({ ok: true });
+    const untrusted = run(facts({ specs: { v_min: { value: 12, trust: "unverified" } } }), [{ nodeId: "m", kind: "measurement", value: 9, unit: "V" }], w);
+    expect(untrusted).toMatchObject({ endResult: "referred", remainingCauses: ["a", "b"], supportedCauses: [] });
+    const trusted = run(facts({ specs: { v_min: { value: 12, trust: "verified" } } }), [{ nodeId: "m", kind: "measurement", value: 9, unit: "V" }], w);
+    expect(trusted).toMatchObject({ endResult: "concluded", remainingCauses: ["a"], supportedCauses: ["a"] });
+  });
+
+  it("7. keeps the untrusted value, source and trust, and the reading, as information", () => {
+    const s = run(compressionSpec({ value: 900, trust: "unverified", source: "TEST ONLY forum post" }), [...toCompression, reading(600)]);
+    expect(s.evidence.at(-1)).toMatchObject({
+      value: "600 kPa",
+      measured: { value: 600, unit: "kPa" },
+      judgement: { evaluated: false, reason: "untrusted_spec", specs: [{ name: "compression_min", value: 900, trust: "unverified", source: "TEST ONLY forum post" }] },
+    });
+    expect(s.facts.specs?.compression_min).toEqual({ value: 900, trust: "unverified", source: "TEST ONLY forum post" });
+  });
+
+  it("8. replays deterministically, and a saved untrusted session resumes to the same result", () => {
+    const f = compressionSpec({ value: 900, trust: "unverified" });
+    const live = run(f, [...toCompression, reading(600)]);
+    const replayed = ok(replaySession(W, f, live.inputs, "2026-10-15T10:00:00Z"));
+    expect(JSON.stringify(replayed)).toBe(JSON.stringify(live));
+    const resumed = resumeSession(W, JSON.parse(JSON.stringify(live)));
+    expect(resumed.ok && sessionOutcome(resumed.session)).toEqual(sessionOutcome(live));
+  });
+
+  it("an untrusted specification never decides whether a repair worked", () => {
+    const w: WorkflowDefinition = {
+      id: "test.trust-retest",
+      version: 1,
+      title: "Trust re-test",
+      provenance: "SYNTHETIC: test only",
+      faultModel: "single_primary_fault",
+      causes: [{ id: "a", title: "A" }],
+      nodes: [
+        { id: "s", type: "start", title: "Start", next: "m" },
+        {
+          id: "m",
+          type: "measurement",
+          title: "M",
+          measurement: { quantity: "Q", unit: "V", plausible: { min: 0, max: 20 } },
+          outcomes: [{ id: "ok", when: { min: { spec: "v_min" } }, to: "c" }],
+          otherwise: "c",
+          ifUnsupported: "e",
+          ifInconclusive: "c",
+        },
+        { id: "c", type: "conclusion", title: "A", cause: "a", recommendation: "Fix A.", next: "v" },
+        { id: "v", type: "repair_verification", title: "V", criteria: [{ id: "r", kind: "retest", step: "m", passWhen: ["ok"] }], ifVerified: "e", ifNotVerified: "e", ifInconclusive: "e" },
+        { id: "e", type: "end", title: "End", result: "concluded" },
+      ],
+    };
+    const s = run(facts({ specs: { v_min: { value: 12, trust: "reference" } } }), [{ nodeId: "m", kind: "measurement", value: 13, unit: "V" }], w);
+    const done = ok(submitStep(w, s, { nodeId: "v", kind: "verification", results: [{ criterion: "r", value: 13, unit: "V" }] }));
+    expect(done).toMatchObject({ verification: "inconclusive", repairVerified: null });
+    expect(done.evidence.find((e) => e.criterion === "r")).toMatchObject({ judgement: { evaluated: false, reason: "untrusted_spec" } });
+  });
+});
 
 describe("V2A: separating tests are only steps the session can still reach", () => {
   it("leaves out steps on another branch", () => {
@@ -336,7 +467,7 @@ describe("V2A: repair verification", () => {
   it("re-tests the step that found the fault and links the new result to the old one", () => {
     const s = atFuelVerify();
     const before = s.evidence.find((e) => e.nodeId === "fuel_pressure")!;
-    expect(before).toMatchObject({ phase: "before_repair", judgement: { range: "below_min" } });
+    expect(before).toMatchObject({ phase: "before_repair", judgement: { evaluated: true, range: "below_min" } });
     const fixed = ok(submitStep(W, s, { nodeId: "verify_fuel_repair", kind: "verification", results: [{ criterion: "pressure_ok", value: 380, unit: "kPa" }, { criterion: "smooth", result: "met" }] }));
     expect(fixed).toMatchObject({ endResult: "resolved", verification: "verified" });
     expect(fixed.evidence.find((e) => e.criterion === "pressure_ok")).toMatchObject({
@@ -346,7 +477,7 @@ describe("V2A: repair verification", () => {
       value: "met (380 kPa)",
       comparesTo: before.seq,
       measured: { value: 380, unit: "kPa" },
-      judgement: { range: "within" },
+      judgement: { evaluated: true, range: "within" },
     });
     // Still low after the repair: not fixed, whatever the person feels.
     const still = ok(submitStep(W, s, { nodeId: "verify_fuel_repair", kind: "verification", results: [{ criterion: "pressure_ok", value: 210, unit: "kPa" }, { criterion: "smooth", result: "met" }] }));

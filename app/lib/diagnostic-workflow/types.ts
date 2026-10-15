@@ -106,15 +106,17 @@ export type MeasurementDefinition = {
 };
 
 /**
- * How far a specification value can be trusted. PLACEHOLDER for V2B: V2A
- * records the trust of every specification used in a judgement but does not
- * yet act on it. Whether "reference" or "unverified" values may decide pass
- * or fail is an open product decision.
+ * How far a specification value can be trusted. Approved rule: only a
+ * "verified" value may drive the engine (pass or fail, ruling causes in or
+ * out, choosing a route). "reference" and "unverified" values, and bare
+ * numbers (recorded as "unspecified"), are informational only: kept and shown
+ * with the reading, never used to judge it. A step that needs one is left
+ * unjudged and takes its inconclusive (or cannot-be-done) route.
  */
 export const SPEC_TRUST = ["verified", "reference", "unverified"] as const;
 export type SpecTrust = (typeof SPEC_TRUST)[number];
 
-/** A specification value with where it came from. A bare number is accepted and recorded as trust "unspecified". */
+/** A specification value with where it came from. A bare number is accepted, recorded as trust "unspecified", and is informational only. */
 export type SpecificationValue = { value: number; trust: SpecTrust; source?: string };
 
 /** One specification as it was used to judge a reading. */
@@ -318,8 +320,8 @@ export type SessionStartFacts = {
   capabilities: Capabilities;
   /**
    * Values for the named specifications the workflow refers to, in the unit
-   * of the step that uses them. A bare number, or a value with its trust and
-   * source (recorded with each judgement; see SpecTrust).
+   * of the step that uses them. Only `{ value, trust: "verified" }` drives the
+   * engine; anything else is informational only (see SpecTrust).
    */
   specs?: Record<string, number | SpecificationValue>;
 };
@@ -367,8 +369,17 @@ export type Evidence = {
   /** 1, 2, 3 ... in the order recorded. */
   seq: number;
   nodeId: NodeId;
+  /**
+   * What the evidence IS (the step kind): a reported trouble code, a
+   * reported symptom, an answer, a visual or audible observation, a
+   * measurement, a component test (check), an action, an inconclusive
+   * result, a repair-verification criterion or verdict, a skipped step, an
+   * automatic branch. `source` says who produced it (scan/live data is
+   * source "scan_tool").
+   */
   kind:
-    | "start_fact"
+    | "code"
+    | "symptom"
     | "prerequisite"
     | "answer"
     | "observation"
@@ -380,14 +391,21 @@ export type Evidence = {
     | "verification"
     | "unsupported"
     | "branch";
-  /** What was recorded, in a stable plain form ("yes", "fail", "412 kPa", a rule index ...). */
+  /** What was recorded, in a stable plain form ("P0301", "rough_idle", "yes", "fail", "412 kPa", a rule index ...). */
   value: string;
   phase: EvidencePhase;
   source: EvidenceSource;
   /** For a measurement: the value converted into the step's unit. */
   measured?: { value: number; unit: Unit };
-  /** For a measurement: which range judged it ("otherwise" when none matched) and the specifications used, with their trust. */
-  judgement?: { range: string; specs: SpecificationUse[] };
+  /**
+   * For a measurement: whether it was judged. Evaluated: which range judged it
+   * ("otherwise" when none matched). Not evaluated: why (a specification it
+   * needs is not verified). Either way, the specifications involved with their
+   * value, source and trust, for display.
+   */
+  judgement?:
+    | { evaluated: true; range: string; specs: SpecificationUse[] }
+    | { evaluated: false; reason: "untrusted_spec"; specs: SpecificationUse[] };
   /** For a verification criterion: which one. */
   criterion?: string;
   /** For a re-test after repair: the seq of the same step's before-repair evidence. */

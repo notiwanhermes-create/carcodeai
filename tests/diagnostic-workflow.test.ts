@@ -16,7 +16,7 @@ import {
   startSession,
   submitStep,
   validateWorkflow,
-  type Capabilities,
+  type DiagnosticCapabilityContext,
   type DiagnosticSession,
   type EngineOptions,
   type SessionStartFacts,
@@ -31,11 +31,14 @@ import { createInMemorySpecificationProvider } from "../app/lib/diagnostic-workf
 /** SYNTHETIC / TEST ONLY specifications, through the in-memory provider. Not values for any vehicle. */
 const SPECS: EngineOptions = { specifications: createInMemorySpecificationProvider(SYNTHETIC_SPECIFICATIONS) };
 
-const PRO: Capabilities = { maxLevel: "professional", tools: ["hand_tools", "scan_tool", "compression_tester", "pressure_gauge"] };
-const DIY: Capabilities = { maxLevel: "diy", tools: ["hand_tools", "scan_tool"] };
-const OWNER: Capabilities = { maxLevel: "owner", tools: [] };
+/** Explicit capabilities (V2C). Live data but no bidirectional control, so actuator tests are skipped. */
+const PRO: DiagnosticCapabilityContext = { skill: "professional", scanAccess: "live_data", instruments: ["hand_tools", "compression_tester", "pressure_gauge"], facilities: [] };
+/** A synthetic vehicle the synthetic misfire workflow applies to. Not a real vehicle. */
+const SYNTHETIC_VEHICLE = { fuel: "gasoline" as const, cylinders: 4 };
+const DIY: DiagnosticCapabilityContext = { skill: "diy", scanAccess: "codes", instruments: ["hand_tools"], facilities: [] };
+const OWNER: DiagnosticCapabilityContext = { skill: "owner", scanAccess: "none", instruments: [], facilities: [] };
 
-const facts = (over: Partial<SessionStartFacts> = {}): SessionStartFacts => ({ capabilities: PRO, ...over });
+const facts = (over: Partial<SessionStartFacts> = {}): SessionStartFacts => ({ capabilities: PRO, vehicle: SYNTHETIC_VEHICLE, ...over });
 
 function started(f: SessionStartFacts = facts(), at = "2026-10-15T10:00:00Z"): DiagnosticSession {
   const r = startSession(W, f, at, SPECS);
@@ -271,8 +274,8 @@ describe("running a workflow", () => {
     expect(owner).toMatchObject({ status: "completed", conclusionNodeId: "concl_professional", endResult: "referred" });
     expect(owner.evidence.find((e) => e.nodeId === "single_prereq")).toMatchObject({ kind: "unsupported", unsupportedReason: "level" });
     // A capable DIYer without a scan tool cannot do the swap test.
-    const noScanTool = run(facts({ dtcs: ["P0301"], capabilities: { maxLevel: "diy", tools: ["hand_tools"] } }), [yes("confirm_symptom"), no("flashing_light"), { nodeId: "single_prereq", kind: "prerequisite", met: true }]);
-    expect(noScanTool.evidence.find((e) => e.nodeId === "coil_swap")).toMatchObject({ kind: "unsupported", unsupportedReason: "tools" });
+    const noScanTool = run(facts({ dtcs: ["P0301"], capabilities: { skill: "diy", scanAccess: "none", instruments: ["hand_tools"], facilities: [] } }), [yes("confirm_symptom"), no("flashing_light"), { nodeId: "single_prereq", kind: "prerequisite", met: true }]);
+    expect(noScanTool.evidence.find((e) => e.nodeId === "coil_swap")).toMatchObject({ kind: "unsupported", unsupportedReason: "scan_access", missingCapabilities: ["scan_access:codes"] });
     // The owner-level air-leak check is offered to an owner.
     expect(run(facts({ dtcs: ["P0300"], capabilities: OWNER }), [yes("confirm_symptom"), no("flashing_light")]).currentNodeId).toBe("multi_vacuum");
   });

@@ -14,7 +14,7 @@ import {
   startSession,
   submitStep,
   validateWorkflow,
-  type Capabilities,
+  type DiagnosticCapabilityContext,
   type DiagnosticSpecification,
   type EngineOptions,
   type DiagnosticSession,
@@ -33,8 +33,11 @@ const SPECS: EngineOptions = { specifications: createInMemorySpecificationProvid
 const specsWith = (id: string, replacement: DiagnosticSpecification | null): EngineOptions => ({
   specifications: createInMemorySpecificationProvider([...SYNTHETIC_SPECIFICATIONS.filter((r) => r.id !== id), ...(replacement ? [replacement] : [])]),
 });
-const PRO: Capabilities = { maxLevel: "professional", tools: ["hand_tools", "scan_tool", "compression_tester", "pressure_gauge"] };
-const facts = (over: Partial<SessionStartFacts> = {}): SessionStartFacts => ({ capabilities: PRO, ...over });
+/** Explicit capabilities (V2C). Live data but no bidirectional control, so actuator tests are skipped. */
+const PRO: DiagnosticCapabilityContext = { skill: "professional", scanAccess: "live_data", instruments: ["hand_tools", "compression_tester", "pressure_gauge"], facilities: [] };
+/** A synthetic vehicle the synthetic misfire workflow applies to. Not a real vehicle. */
+const SYNTHETIC_VEHICLE = { fuel: "gasoline" as const, cylinders: 4 };
+const facts = (over: Partial<SessionStartFacts> = {}): SessionStartFacts => ({ capabilities: PRO, vehicle: SYNTHETIC_VEHICLE, ...over });
 
 function ok(r: ReturnType<typeof startSession>): DiagnosticSession {
   if (!r.ok) throw new Error(r.error);
@@ -61,9 +64,9 @@ const atFuelVerify = () =>
 /* ───────────────────────── checking a V2A workflow ───────────────────────── */
 
 describe("V2A: checking a workflow", () => {
-  it("accepts the synthetic misfire workflow (version 3 since V2B)", () => {
+  it("accepts the synthetic misfire workflow (version 4 since V2C)", () => {
     expect(validateWorkflow(W)).toEqual({ ok: true });
-    expect(W.version).toBe(3);
+    expect(W.version).toBe(4);
   });
 
   it("requires the single-primary-fault assumption to be stated", () => {
@@ -167,11 +170,13 @@ describe("V2A: evidence phase and source", () => {
       ["flashing_light", "answer", "person"],
       ["pattern", "branch", "engine"],
       ["multi_vacuum", "observation", "person"],
+      // V2C: skipped for capability (no bidirectional access). Decided by the engine, not evidence about a cause.
+      ["fuel_pump_actuator", "unsupported", "engine"],
       ["fuel_pressure", "specification", "specification_provider"],
       ["fuel_pressure", "measurement", "instrument"],
     ]);
     // Steps the engine skips are the engine's doing.
-    const owner = run(facts({ dtcs: ["P0301"], capabilities: { maxLevel: "owner", tools: [] } }), MULTI);
+    const owner = run(facts({ dtcs: ["P0301"], capabilities: { skill: "owner", scanAccess: "none", instruments: [], facilities: [] } }), MULTI);
     expect(owner.evidence.find((e) => e.kind === "unsupported")).toMatchObject({ source: "engine" });
   });
 

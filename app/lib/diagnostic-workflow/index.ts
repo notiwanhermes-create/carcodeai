@@ -4,6 +4,7 @@
  */
 export * from "./types";
 export { convert, isUnit } from "./units";
+export { applicabilityProblems, capabilityProblem, capabilityShortfall, checkApplicability, normalizeText, normalizeVehicleContext } from "./context";
 export { validateWorkflow, successors, type ValidationResult, type WorkflowProblem } from "./validate";
 export {
   describeResolution,

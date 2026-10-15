@@ -13,7 +13,10 @@
  * Problems are reported all at once, each with a stable code.
  */
 import {
+  FACILITIES,
   FAULT_MODELS,
+  INSTRUMENTS,
+  SCAN_ACCESS,
   INCONCLUSIVE_TYPES,
   SKILL_ORDER,
   SPEC_RELATIONS,
@@ -26,6 +29,7 @@ import {
   type WorkflowNode,
 } from "./types";
 import { isUnit } from "./units";
+import { applicabilityProblems } from "./context";
 
 export type WorkflowProblem = { code: string; nodeId?: NodeId; message: string };
 export type ValidationResult = { ok: true } | { ok: false; problems: WorkflowProblem[] };
@@ -50,6 +54,8 @@ export function successors(node: WorkflowNode): NodeId[] {
       out.push(...node.outcomes.map((o) => o.to), node.otherwise);
       break;
     case "check":
+    case "actuator_test":
+    case "service_function":
       out.push(...node.outcomes.map((o) => o.to));
       break;
     case "branch":
@@ -142,6 +148,10 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
   }
   if (!workflow.id || !Number.isInteger(workflow.version) || workflow.version < 1) add("malformed", "A workflow needs an id and a whole-number version from 1.");
   if (!workflow.provenance?.trim()) add("no_provenance", "A workflow must say where its content came from.");
+  if (workflow.applicability !== undefined) {
+    const problems = workflow.applicability && typeof workflow.applicability === "object" ? applicabilityProblems(workflow.applicability) : ["must be an object"];
+    for (const problem of problems) add("invalid_applicability", `Applicability: ${problem}.`);
+  }
   if (!(FAULT_MODELS as readonly string[]).includes(workflow.faultModel)) {
     add("unsupported_fault_model", `A workflow must state its fault model, and only ${FAULT_MODELS.join(", ")} is supported.`);
   }
@@ -260,12 +270,36 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
     ];
     for (const name of named) if (!conditionIds.has(name)) add("unknown_condition", `"${node.id}" refers to an undeclared condition "${name}".`, node.id);
 
-    // A step above owner level, or needing tools, says where to go when it cannot be done.
+    // A step needing more than an owner with nothing says where to go when it cannot be done.
     const needs = node.requires;
-    if (needs && (SKILL_ORDER[needs.level] > 0 || (needs.tools?.length ?? 0) > 0) && !node.ifUnsupported) {
-      add("no_unsupported_route", `"${node.id}" needs skill or tools but has no route for when it cannot be done.`, node.id);
+    const demanding = !!needs && (SKILL_ORDER[needs.level] > 0 || (needs.scan !== undefined && needs.scan !== "none") || (needs.instruments?.length ?? 0) > 0 || (needs.facilities?.length ?? 0) > 0);
+    if (demanding && !node.ifUnsupported) {
+      add("no_unsupported_route", `"${node.id}" needs skill, scan access, instruments or facilities but has no route for when it cannot be done.`, node.id);
     }
     if (needs && !(needs.level in SKILL_ORDER)) add("malformed", `"${node.id}" names an unknown skill level.`, node.id);
+    if (needs?.scan !== undefined && !(SCAN_ACCESS as readonly string[]).includes(needs.scan)) add("malformed", `"${node.id}" names an unknown scan access level.`, node.id);
+    if ((needs?.instruments ?? []).some((i) => !(INSTRUMENTS as readonly string[]).includes(i))) add("malformed", `"${node.id}" names an unknown instrument.`, node.id);
+    if ((needs?.facilities ?? []).some((f) => !(FACILITIES as readonly string[]).includes(f))) add("malformed", `"${node.id}" names an unknown facility.`, node.id);
+
+    // Actuator tests and service functions are modelling of work an external tool does: they need
+    // bidirectional scan access and hazard notes, and use generic ids only.
+    if (node.type === "actuator_test" || node.type === "service_function") {
+      if (needs?.scan !== "bidirectional") add("needs_bidirectional", `"${node.id}" commands the vehicle through an external tool, so it must require bidirectional scan access.`, node.id);
+      if (!(needs?.hazards?.length)) add("no_hazards", `"${node.id}" must state its hazards.`, node.id);
+      const genericId = node.type === "actuator_test" ? node.actuator : node.serviceFunction;
+      if (typeof genericId !== "string" || !/^[a-z0-9_.-]+$/.test(genericId)) add("invalid_generic_id", `"${node.id}" needs a generic lower-case id (no manufacturer commands).`, node.id);
+    }
+    if (node.type === "actuator_test") {
+      const ids = (node.results ?? []).map((r) => r.id);
+      if (ids.length < 2 || new Set(ids).size !== ids.length) add("incomplete_outcomes", `"${node.id}" needs two or more distinct results.`, node.id);
+      const covered = node.outcomes.map((o) => o.when);
+      if (covered.some((w) => !ids.includes(w))) add("unknown_option", `"${node.id}" has an outcome for a result it does not offer.`, node.id);
+      if (ids.some((id) => covered.filter((w) => w === id).length !== 1)) add("incomplete_outcomes", `"${node.id}" must route each result exactly once.`, node.id);
+    }
+    if (node.type === "service_function") {
+      const covered = node.outcomes.map((o) => o.when);
+      if (covered.length !== 2 || !covered.includes("completed") || !covered.includes("failed")) add("incomplete_outcomes", `"${node.id}" must route "completed" and "failed" (not_supported takes its cannot-be-done route).`, node.id);
+    }
 
     // Cause references are real.
     const effects = [

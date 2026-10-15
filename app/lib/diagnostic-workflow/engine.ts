@@ -22,7 +22,7 @@
 import {
   INCONCLUSIVE_REASONS,
   SKILL_ORDER,
-  type Capabilities,
+  type DiagnosticCapabilityContext,
   type CauseEffect,
   type Condition,
   type ConditionId,
@@ -52,6 +52,7 @@ import {
 import { convert, isUnit } from "./units";
 import { successors, validateWorkflow } from "./validate";
 import { describeResolution, pinnedSpecificationProvider, resolveSpecification } from "./specifications";
+import { capabilityProblem, capabilityShortfall, checkApplicability, normalizeText, normalizeVehicleContext } from "./context";
 
 /** A guard on top of the no-loops check: no run may take more automatic steps than this. */
 export const MAX_AUTOMATIC_STEPS = 500;
@@ -188,18 +189,17 @@ function judge(node: MeasurementNode, raw: number, unit: Unit, session: Diagnost
 
 /* ───────────────────────── helpers ───────────────────────── */
 
-function canDo(node: WorkflowNode, capabilities: Capabilities): { ok: true } | { ok: false; reason: "level" | "tools" } {
-  const needs = node.requires;
-  if (!needs) return { ok: true };
-  if (SKILL_ORDER[needs.level] > SKILL_ORDER[capabilities.maxLevel]) return { ok: false, reason: "level" };
-  if ((needs.tools ?? []).some((tool) => !capabilities.tools.includes(tool))) return { ok: false, reason: "tools" };
-  return { ok: true };
-}
+/** Whether the person's declared capabilities cover a step (skill, scan access, instruments, facilities). */
+const canDo = (node: WorkflowNode, capabilities: DiagnosticCapabilityContext) => capabilityShortfall(node.requires, capabilities);
 
 function holds(condition: Condition, session: DiagnosticSession): boolean {
   if ("dtcAny" in condition) return (session.facts.dtcs ?? []).some((code) => condition.dtcAny.includes(code));
   if ("symptomAny" in condition) return (session.facts.symptoms ?? []).some((s) => condition.symptomAny.includes(s));
-  if ("vehicle" in condition) return session.facts.vehicle?.[condition.vehicle] === condition.equals;
+  if ("vehicle" in condition) {
+    // The pinned context is normalized (lower case text), so compare against the normalized value.
+    const expected = typeof condition.equals === "string" ? normalizeText(condition.equals) : condition.equals;
+    return session.facts.vehicle?.[condition.vehicle] === expected;
+  }
   if ("established" in condition) return session.establishedConditions.includes(condition.established);
   if ("answered" in condition) {
     const last = [...session.evidence].reverse().find((e) => e.nodeId === condition.answered && e.kind !== "code" && e.kind !== "symptom");
@@ -213,6 +213,8 @@ function holds(condition: Condition, session: DiagnosticSession): boolean {
 /** Who may have produced the input for a step of this type, and the default when the caller does not say. */
 function sourcesFor(node: WorkflowNode, input: StepInput): { allowed: InputSource[]; fallback: InputSource } {
   if (input.kind === "unable") return { allowed: ["person"], fallback: "person" };
+  // Actuator tests and service functions are run by an external tool; the result is the tool's report or the person's observation of it.
+  if (node.type === "actuator_test" || node.type === "service_function") return { allowed: ["scan_tool", "person"], fallback: "scan_tool" };
   if (node.type === "measurement") return { allowed: ["instrument", "scan_tool"], fallback: "instrument" };
   if (node.type === "check" || node.type === "repair_verification") return { allowed: ["person", "instrument", "scan_tool"], fallback: "person" };
   return { allowed: ["person"], fallback: "person" };
@@ -273,7 +275,8 @@ function record(session: DiagnosticSession, entry: NewEvidence, effect: CauseEff
 function pinSpecification(session: DiagnosticSession, node: MeasurementNode, options: EngineOptions, at?: string): DiagnosticSession {
   const id = node.specification!;
   if (Object.prototype.hasOwnProperty.call(session.specifications, id)) return session;
-  const resolution = resolveSpecification(options.specifications, id);
+  // The provider receives the session's PINNED vehicle context, never the currently selected vehicle.
+  const resolution = resolveSpecification(options.specifications, id, session.facts.vehicle);
   const next = record(session, { nodeId: node.id, kind: "specification", specification: id, value: describeResolution(id, resolution), source: "specification_provider", to: node.id, ...(at ? { at } : {}) });
   return { ...next, specifications: { ...session.specifications, [id]: resolution } };
 }
@@ -286,10 +289,19 @@ function advance(p: Prepared, from: DiagnosticSession, nodeId: NodeId, at: strin
     const node = p.byId.get(id);
     if (!node) return fail(`broken_transition: ${id}`);
 
-    // Steps the person cannot safely or practically do are never presented.
+    // Steps the person cannot safely or practically do are never presented. Why is kept; it is never evidence about a cause.
     const able = canDo(node, session.facts.capabilities);
     if (!able.ok && node.ifUnsupported) {
-      session = record(session, { nodeId: node.id, kind: "unsupported", value: able.reason, unsupportedReason: able.reason, source: "engine", to: node.ifUnsupported, ...stamp });
+      session = record(session, {
+        nodeId: node.id,
+        kind: "unsupported",
+        value: able.reason,
+        unsupportedReason: able.reason,
+        missingCapabilities: able.missing,
+        source: "engine",
+        to: node.ifUnsupported,
+        ...stamp,
+      });
       id = node.ifUnsupported;
       continue;
     }
@@ -425,11 +437,21 @@ function verify(
 export function startSession(workflow: WorkflowDefinition, facts: SessionStartFacts, at?: string, options: EngineOptions = {}): StepResult {
   const p = prepare(workflow);
   if ("error" in p) return fail(p.error);
-  if (!facts?.capabilities || !(facts.capabilities.maxLevel in SKILL_ORDER) || !Array.isArray(facts.capabilities.tools)) return fail("invalid_facts: capabilities are required");
+  const capabilityIssue = capabilityProblem(facts?.capabilities);
+  if (capabilityIssue) return fail(`invalid_facts: ${capabilityIssue}`);
+  const vehicle = normalizeVehicleContext(facts.vehicle);
+  if (!vehicle.ok) return fail(`invalid_facts: ${vehicle.error}`);
+  // An inapplicable workflow never starts, and unknown vehicle facts are never guessed.
+  const applies = checkApplicability(workflow.applicability, vehicle.vehicle);
+  if (applies.status === "not_applicable") return fail(`not_applicable: the vehicle does not match ${applies.mismatched.join(", ")}`);
+  if (applies.status === "insufficient_context") return fail(`insufficient_context: the vehicle's ${applies.missing.join(", ")} must be known`);
   if (facts.dtcSource !== undefined && facts.dtcSource !== "person" && facts.dtcSource !== "scan_tool") return fail("invalid_facts: dtcSource must be person or scan_tool");
   if ("specs" in (facts as object)) return fail("invalid_facts: specifications come from a SpecificationProvider, not the session facts");
   const normalized: SessionStartFacts = {
     ...facts,
+    // Pinned: this normalized, frozen copy is the vehicle for the whole session, its replays and resumes.
+    ...(facts.vehicle !== undefined ? { vehicle: vehicle.vehicle } : {}),
+    capabilities: Object.freeze({ ...facts.capabilities, instruments: [...facts.capabilities.instruments], facilities: [...facts.capabilities.facilities] }),
     dtcs: (facts.dtcs ?? []).map((c) => c.trim().toUpperCase()).filter(Boolean),
     symptoms: [...(facts.symptoms ?? [])],
   };
@@ -499,7 +521,7 @@ export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSess
   }
 
   if (input.kind === "inconclusive") {
-    if (node.type !== "check" && node.type !== "observation" && node.type !== "measurement") return fail("inconclusive_not_allowed: this step cannot be inconclusive");
+    if (!["check", "observation", "measurement", "actuator_test", "service_function"].includes(node.type)) return fail("inconclusive_not_allowed: this step cannot be inconclusive");
     if (!node.ifInconclusive) return fail("no_inconclusive_route: this step has no route for an inconclusive result");
     if (!(INCONCLUSIVE_REASONS as readonly string[]).includes(input.reason)) return fail("invalid_reason");
     // Inconclusive evidence never rules a cause in or out.
@@ -557,6 +579,26 @@ export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSess
       const to = judged.outcome?.to ?? node.otherwise;
       const judgement = { evaluated: true as const, range: judged.range, ...(judged.relation ? { relation: judged.relation } : {}), ...(judged.specification ? { specification: judged.specification } : {}) };
       return go(record(logged, { ...base, kind: "measurement", value: `${input.value} ${input.unit}`, measured, judgement, to }, judged.outcome ?? {}), to);
+    }
+    case "actuator_test": {
+      // MODELLING ONLY: an external tool commanded the actuator; this records what was observed. Nothing is executed here.
+      if (input.kind !== "actuator_result") return fail("wrong_input_kind");
+      if (!node.results.some((r) => r.id === input.result)) return fail("unknown_result");
+      const outcome = node.outcomes.find((o) => o.when === input.result)!;
+      return go(record(logged, { ...base, kind: "actuator_test", actuator: node.actuator, performedBy: "external_tool", value: input.result, to: outcome.to }, outcome), outcome.to);
+    }
+    case "service_function": {
+      // MODELLING ONLY: an external tool ran the function and reported its status. Nothing is executed here.
+      if (input.kind !== "service_result") return fail("wrong_input_kind");
+      const common = { ...base, kind: "service_function" as const, serviceFunction: node.serviceFunction, performedBy: "external_tool" as const, value: input.result };
+      if (input.result === "not_supported") {
+        // Not supported is not a failure: no effect on causes, and the cannot-be-done route.
+        if (!node.ifUnsupported) return fail("no_alternative: this step has no route for when it cannot be done");
+        return go(record(logged, { ...common, unsupportedReason: "function_not_supported", to: node.ifUnsupported }), node.ifUnsupported);
+      }
+      if (input.result !== "completed" && input.result !== "failed") return fail("wrong_input_kind");
+      const outcome = node.outcomes.find((o) => o.when === input.result)!;
+      return go(record(logged, { ...common, to: outcome.to }, outcome), outcome.to);
     }
     case "check": {
       if (input.kind !== "check" || (input.result !== "pass" && input.result !== "fail")) return fail("wrong_input_kind");
@@ -695,7 +737,12 @@ export function separatingSteps(workflow: WorkflowDefinition, session: Diagnosti
       title: node.title,
       canDo: canDo(node, session.facts.capabilities).ok,
       level: node.requires?.level ?? "owner",
-      tools: [...(node.requires?.tools ?? [])],
+      // Everything the step needs beyond skill: scan access, instruments and facilities.
+      tools: [
+        ...(node.requires?.scan && node.requires.scan !== "none" ? [`scan_access:${node.requires.scan}`] : []),
+        ...(node.requires?.instruments ?? []),
+        ...(node.requires?.facilities ?? []),
+      ],
       rulesOutUpTo: best,
     });
   }

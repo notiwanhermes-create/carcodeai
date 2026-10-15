@@ -21,6 +21,7 @@ import {
   type SpecificationId,
   type SpecificationProvider,
   type SpecificationResolution,
+  type VehicleContext,
 } from "./types";
 import { isUnit } from "./units";
 
@@ -91,11 +92,12 @@ export function normalizeResolution(id: SpecificationId, raw: unknown): Specific
 }
 
 /** Ask the provider, safely. No provider configured is an honest "unavailable", not a guess. */
-export function resolveSpecification(provider: SpecificationProvider | undefined, id: SpecificationId): SpecificationResolution {
+export function resolveSpecification(provider: SpecificationProvider | undefined, id: SpecificationId, vehicle?: Readonly<VehicleContext>): SpecificationResolution {
   if (!provider || typeof provider.resolve !== "function") return unavailable("no_provider");
   let raw: unknown;
   try {
-    raw = provider.resolve({ id });
+    // A frozen copy: a provider can read the pinned vehicle context but never change it.
+    raw = provider.resolve({ id, ...(vehicle ? { vehicle: Object.freeze({ ...vehicle }) } : {}) });
   } catch {
     return unavailable("provider_error");
   }
@@ -132,11 +134,14 @@ function resolutionKey(r: SpecificationResolution): string {
  * Explicit by design: the session's history is never rewritten, and a caller
  * that wants the new values has to start a new session.
  */
-export function specificationDrift(session: { specifications: Readonly<Record<SpecificationId, SpecificationResolution>> }, provider: SpecificationProvider | undefined) {
+export function specificationDrift(
+  session: { specifications: Readonly<Record<SpecificationId, SpecificationResolution>>; facts?: { vehicle?: Readonly<VehicleContext> } },
+  provider: SpecificationProvider | undefined,
+) {
   const out: Array<{ id: SpecificationId; recorded: SpecificationResolution; current: SpecificationResolution }> = [];
   for (const id of Object.keys(session.specifications).sort()) {
     const recorded = session.specifications[id];
-    const current = resolveSpecification(provider, id);
+    const current = resolveSpecification(provider, id, session.facts?.vehicle);
     if (resolutionKey(recorded) !== resolutionKey(current)) out.push({ id, recorded, current });
   }
   return out;

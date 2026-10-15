@@ -15,7 +15,7 @@ import {
   startSession,
   submitStep,
   validateWorkflow,
-  type Capabilities,
+  type DiagnosticCapabilityContext,
   type DiagnosticSession,
   type DiagnosticSpecification,
   type EngineOptions,
@@ -28,8 +28,11 @@ import { SYNTHETIC_MISFIRE_WORKFLOW as W } from "../app/lib/diagnostic-workflow/
 import { SYNTHETIC_SPECIFICATIONS } from "../app/lib/diagnostic-workflow/examples/synthetic-specifications";
 import { createInMemorySpecificationProvider as provider } from "../app/lib/diagnostic-workflow/examples/in-memory-specification-provider";
 
-const PRO: Capabilities = { maxLevel: "professional", tools: ["hand_tools", "scan_tool", "compression_tester", "pressure_gauge"] };
-const facts = (over: Partial<SessionStartFacts> = {}): SessionStartFacts => ({ capabilities: PRO, ...over });
+/** Explicit capabilities (V2C). Live data but no bidirectional control, so actuator tests are skipped. */
+const PRO: DiagnosticCapabilityContext = { skill: "professional", scanAccess: "live_data", instruments: ["hand_tools", "compression_tester", "pressure_gauge"], facilities: [] };
+/** A synthetic vehicle the synthetic misfire workflow applies to. Not a real vehicle. */
+const SYNTHETIC_VEHICLE = { fuel: "gasoline" as const, cylinders: 4 };
+const facts = (over: Partial<SessionStartFacts> = {}): SessionStartFacts => ({ capabilities: PRO, vehicle: SYNTHETIC_VEHICLE, ...over });
 const FUEL = SYNTHETIC_SPECIFICATIONS.find((r) => r.id === "synthetic.fuel_supply_pressure_idle")!;
 const COMPRESSION = SYNTHETIC_SPECIFICATIONS.find((r) => r.id === "synthetic.cylinder_compression_min")!;
 const SYNTHETIC: EngineOptions = { specifications: provider(SYNTHETIC_SPECIFICATIONS) };
@@ -231,7 +234,7 @@ describe("V2B: units and plausible ranges", () => {
 
   it("rejects a specification in another kind of unit: it cannot be used at all", () => {
     const s = run(facts({ dtcs: ["P0300"] }), TO_FUEL, withFuel({ ...FUEL, unit: "V", expected: { min: 3 } }));
-    expect(s.evidence.find((e) => e.kind === "unsupported")).toMatchObject({ nodeId: "fuel_pressure", unsupportedReason: "spec_incompatible_unit" });
+    expect(s.evidence.find((e) => e.kind === "unsupported" && e.nodeId === "fuel_pressure")).toMatchObject({ unsupportedReason: "spec_incompatible_unit" });
     expect(s).toMatchObject({ conclusionNodeId: "concl_professional" });
     expect(s.remainingCauses).toContain("fuel_supply");
   });

@@ -22,6 +22,12 @@
  * provider resolves it, and the engine records and pins what it used. See
  * docs/research/guided-diagnostics/v2b-specifications.md.
  *
+ * V2C adds a pinned VehicleContext with declarative workflow applicability,
+ * a structured DiagnosticCapabilityContext, and two modelling-only step
+ * kinds for work an EXTERNAL tool does (actuator tests, service functions).
+ * The engine never talks to a vehicle. See
+ * docs/research/guided-diagnostics/v2c-context-capabilities.md.
+ *
  * Original CarCode design, written from general troubleshooting practice.
  */
 import type { CheckLevel } from "../diagnosis-schema";
@@ -32,29 +38,47 @@ import type { CheckLevel } from "../diagnosis-schema";
 export type SkillLevel = CheckLevel;
 export const SKILL_ORDER: Record<SkillLevel, number> = { owner: 0, diy: 1, professional: 2 };
 
-export const TOOLS = [
-  "scan_tool",
-  "multimeter",
-  "pressure_gauge",
-  "compression_tester",
-  "oscilloscope",
-  "vehicle_lift",
-  "smoke_machine",
-  "hand_tools",
-  "other",
-] as const;
-export type Tool = (typeof TOOLS)[number];
+/**
+ * How far the person's scan tool reaches, in order. Each level includes the
+ * ones before it: reading codes, reading live data, then commanding
+ * components (bidirectional).
+ */
+export const SCAN_ACCESS = ["none", "codes", "live_data", "bidirectional"] as const;
+export type ScanAccess = (typeof SCAN_ACCESS)[number];
+export const SCAN_ORDER: Record<ScanAccess, number> = { none: 0, codes: 1, live_data: 2, bidirectional: 3 };
 
-/** What a step needs. A step with no requirements is an owner-level step needing no tools. */
+/** Generic instrument categories. No brands, no models. */
+export const INSTRUMENTS = ["hand_tools", "multimeter", "pressure_gauge", "compression_tester", "oscilloscope", "smoke_machine", "other"] as const;
+export type Instrument = (typeof INSTRUMENTS)[number];
+
+/** Generic facility categories. */
+export const FACILITIES = ["vehicle_lift", "workshop_space"] as const;
+export type Facility = (typeof FACILITIES)[number];
+
+/** What a step needs. A step with no requirements is an owner-level step needing nothing. */
 export type StepRequirements = {
   level: SkillLevel;
-  tools?: Tool[];
+  /** The minimum scan access. */
+  scan?: ScanAccess;
+  instruments?: Instrument[];
+  facilities?: Facility[];
   /** Short hazard notes the page must show with the step (hot engine, high voltage, fuel). */
   hazards?: string[];
 };
 
-/** What the person working through the workflow can do. */
-export type Capabilities = { maxLevel: SkillLevel; tools: Tool[] };
+/**
+ * What the person working through the workflow can actually do, stated
+ * explicitly. The engine reads only this; a preset name grants nothing.
+ */
+export type DiagnosticCapabilityContext = {
+  skill: SkillLevel;
+  scanAccess: ScanAccess;
+  instruments: Instrument[];
+  facilities: Facility[];
+};
+
+/** Why a step cannot be done with the person's capabilities. */
+export type CapabilityShortfall = "level" | "scan_access" | "instruments" | "facilities";
 
 /* ───────────────────────── the fault model ───────────────────────── */
 
@@ -150,8 +174,11 @@ export type DiagnosticSpecification = {
   note?: string;
 };
 
-/** What the engine asks a provider for. Deliberately narrow: an id, nothing else yet (no vehicle applicability in V2B). */
-export type SpecificationRequest = { id: SpecificationId };
+/**
+ * What the engine asks a provider for: an id and the session's PINNED vehicle
+ * context (so a future provider can pick the value for that vehicle). Nothing else.
+ */
+export type SpecificationRequest = { id: SpecificationId; vehicle?: Readonly<VehicleContext> };
 
 /**
  * A provider's answer. Never a bare number.
@@ -327,6 +354,37 @@ export type RepairVerificationNode = NodeBase & {
   ifNotVerified: NodeId;
 };
 
+/**
+ * MODELLING ONLY. An external, compatible diagnostic tool commands a
+ * component (a pump, a fan, a valve) and the person reports what happened.
+ * The engine never connects to the vehicle or sends anything. `actuator` is a
+ * generic id, never a manufacturer command. Requires bidirectional scan access
+ * and hazard notes; `results` are the possible observations.
+ */
+export type ActuatorTestNode = NodeBase & {
+  type: "actuator_test";
+  actuator: string;
+  results: { id: string; label: string }[];
+  outcomes: Outcome<string>[];
+};
+
+/** What an external tool reports after a service function. */
+export const SERVICE_RESULTS = ["completed", "failed", "not_supported"] as const;
+export type ServiceResult = (typeof SERVICE_RESULTS)[number];
+
+/**
+ * MODELLING ONLY. An external tool runs a generic routine or service
+ * procedure (a test routine, an adaptation reset) and reports its status. The
+ * engine never runs anything. "not_supported" (the tool or vehicle lacks the
+ * function) is not a failure: it takes the cannot-be-done route and can never
+ * rule a cause in or out. Requires bidirectional scan access and hazard notes.
+ */
+export type ServiceFunctionNode = NodeBase & {
+  type: "service_function";
+  serviceFunction: string;
+  outcomes: Outcome<"completed" | "failed">[];
+};
+
 /** The end of a workflow. `result` says how it ended. */
 export type EndNode = NodeBase & { type: "end"; result: "resolved" | "concluded" | "referred" | "not_reproducible" | "inconclusive" };
 
@@ -341,12 +399,14 @@ export type WorkflowNode =
   | BranchNode
   | ConclusionNode
   | RepairVerificationNode
+  | ActuatorTestNode
+  | ServiceFunctionNode
   | EndNode;
 
 export type NodeType = WorkflowNode["type"];
 
 /** Step types that may declare `ifInconclusive` (repair verification must). */
-export const INCONCLUSIVE_TYPES: ReadonlySet<NodeType> = new Set<NodeType>(["check", "observation", "measurement", "repair_verification"]);
+export const INCONCLUSIVE_TYPES: ReadonlySet<NodeType> = new Set<NodeType>(["check", "observation", "measurement", "repair_verification", "actuator_test", "service_function"]);
 
 /* ───────────────────────── conditions (for automatic branches) ───────────────────────── */
 
@@ -375,6 +435,8 @@ export type WorkflowDefinition = {
   provenance: string;
   /** Required: the fault model the elimination logic relies on. */
   faultModel: FaultModel;
+  /** Which vehicles it applies to. Absent means any vehicle. A session never starts unless it is applicable. */
+  applicability?: WorkflowApplicability;
   /** The candidate causes this workflow separates. */
   causes: Array<{ id: CauseId; title: string }>;
   /** Named conditions its steps establish and need. */
@@ -384,15 +446,47 @@ export type WorkflowDefinition = {
 
 /* ───────────────────────── a session ───────────────────────── */
 
+export const FUELS = ["gasoline", "diesel", "hybrid", "electric"] as const;
+export type Fuel = (typeof FUELS)[number];
+
+/**
+ * The vehicle facts that decide which workflows and specifications apply.
+ * Normalized when a session starts (strings trimmed, lower case; blanks are
+ * unknown) and pinned in the session's facts, so a later change of the
+ * selected vehicle never reaches an existing session. An absent field is
+ * UNKNOWN, never assumed.
+ */
 export type VehicleContext = {
   year?: number;
   make?: string;
   model?: string;
+  /** Engine or powertrain identifier, free text (e.g. "synthetic-i4-a"). */
   engine?: string;
-  fuel?: "gasoline" | "diesel" | "hybrid" | "electric" | "unknown";
+  fuel?: Fuel;
   cylinders?: number;
-  mileage?: { value: number; unit: "km" | "mi" };
+  /** Market or region, when a specification differs by it. */
+  market?: string;
 };
+
+/**
+ * Which vehicles a workflow applies to. Declarative: every stated field must
+ * hold, and a list means "any of". Unknown vehicle facts are never guessed.
+ */
+export type WorkflowApplicability = {
+  fuel?: Fuel[];
+  make?: string[];
+  engine?: string[];
+  market?: string[];
+  years?: { from?: number; to?: number };
+  cylinders?: { min?: number; max?: number };
+};
+
+export type ApplicabilityField = keyof WorkflowApplicability;
+
+export type ApplicabilityResult =
+  | { status: "applicable" }
+  | { status: "not_applicable"; mismatched: ApplicabilityField[] }
+  | { status: "insufficient_context"; missing: ApplicabilityField[] };
 
 export type SessionStartFacts = {
   vehicle?: VehicleContext;
@@ -402,7 +496,7 @@ export type SessionStartFacts = {
   dtcSource?: "person" | "scan_tool";
   /** Symptom ids the workflow understands (for example "rough_idle"). */
   symptoms?: string[];
-  capabilities: Capabilities;
+  capabilities: DiagnosticCapabilityContext;
 };
 
 /** Where a reading or answer came from. */
@@ -429,6 +523,10 @@ export type StepInput = (
   | { nodeId: NodeId; kind: "observation"; choice: string }
   | { nodeId: NodeId; kind: "measurement"; value: number; unit: Unit }
   | { nodeId: NodeId; kind: "check"; result: "pass" | "fail" }
+  /** What was observed while an external tool commanded the actuator. */
+  | { nodeId: NodeId; kind: "actuator_result"; result: string }
+  /** What the external tool reported for a service function. */
+  | { nodeId: NodeId; kind: "service_result"; result: ServiceResult }
   | { nodeId: NodeId; kind: "done" }
   | { nodeId: NodeId; kind: "verification"; results: VerificationEntry[] }
   /** The step was done, but the result does not decide anything. */
@@ -469,6 +567,8 @@ export type Evidence = {
     | "observation"
     | "measurement"
     | "check"
+    | "actuator_test"
+    | "service_function"
     | "action"
     | "inconclusive"
     | "verification_criterion"
@@ -500,10 +600,17 @@ export type Evidence = {
   refuted?: ConditionId[];
   /** For a specification resolution: the specification id. */
   specification?: SpecificationId;
+  /** For an actuator test or service function: its generic id. */
+  actuator?: string;
+  serviceFunction?: string;
+  /** Actuator tests and service functions are carried out by an external tool, never by the engine. */
+  performedBy?: "external_tool";
+  /** For a step skipped for capability: what was missing (e.g. "scan_access:bidirectional", "instrument:pressure_gauge"). */
+  missingCapabilities?: string[];
   /** Why a step could not be done, when it could not. */
   unsupportedReason?:
-    | "level"
-    | "tools"
+    | CapabilityShortfall
+    | "function_not_supported"
     | "spec_not_found"
     | "spec_ambiguous"
     | "spec_unavailable"

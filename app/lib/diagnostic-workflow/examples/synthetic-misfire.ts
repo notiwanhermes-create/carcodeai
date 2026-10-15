@@ -27,6 +27,12 @@
  * repair against named criteria (the fuel route re-tests the fuel pressure).
  * Version 3 (V2B): measurements name specifications instead of carrying spec
  * bounds.
+ * Version 4 (V2C): applies only to synthetic gasoline/hybrid engines with 2-8
+ * cylinders (unknown facts block the start); steps state capability needs
+ * (skill, scan access, instruments); and a SYNTHETIC fuel-pump actuator test
+ * (modelling only, run by an external tool) is offered only with
+ * bidirectional scan access. Without it, the workflow goes straight on to
+ * the pressure test: being unable is never evidence about a cause.
  */
 import type { WorkflowDefinition } from "../types";
 
@@ -34,10 +40,11 @@ const CYLINDER_MISFIRE_CODES = ["P0301", "P0302", "P0303", "P0304", "P0305", "P0
 
 export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
   id: "synthetic.engine-misfire",
-  version: 3,
+  version: 4,
   title: "Engine misfire (synthetic example)",
   provenance: "SYNTHETIC: written for CarCode's engine tests from general troubleshooting practice. Not BMW data, not ISTA data, not any manufacturer's data.",
   faultModel: "single_primary_fault",
+  applicability: { fuel: ["gasoline", "hybrid"], cylinders: { min: 2, max: 8 } },
   conditions: [{ id: "engine_off_cool", title: "Engine off, key out, and cool enough to touch" }],
   causes: [
     { id: "ignition_coil", title: "Ignition coil" },
@@ -129,7 +136,7 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
       answer: "yes_no",
       title: "Swap test: does the misfire follow the coil?",
       prompt: "Swap the ignition coil of the misfiring cylinder with a neighbouring one, clear the codes, and run the engine until the misfire is reported again. Did it move to the other cylinder?",
-      requires: { level: "diy", tools: ["hand_tools", "scan_tool"], hazards: ["Moving engine parts while running"] },
+      requires: { level: "diy", scan: "codes", instruments: ["hand_tools"], hazards: ["Moving engine parts while running"] },
       outcomes: [
         { when: "yes", to: "concl_coil", supports: ["ignition_coil"], rulesOut: ["spark_plug", "injector", "low_compression"] },
         { when: "no", to: "plug_inspection", rulesOut: ["ignition_coil"] },
@@ -141,7 +148,7 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
       type: "observation",
       title: "Spark plug condition",
       prompt: "Remove the spark plug from the misfiring cylinder. How does it look?",
-      requires: { level: "diy", tools: ["hand_tools"], hazards: ["Hot engine parts"] },
+      requires: { level: "diy", instruments: ["hand_tools"], hazards: ["Hot engine parts"] },
       needsConditions: ["engine_off_cool"],
       options: [
         { id: "worn_or_damaged", label: "Worn electrode or cracked insulator" },
@@ -162,7 +169,7 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
       type: "check",
       title: "Injector test",
       prompt: "Test the injector of the misfiring cylinder (for example a balance test or an injector swap).",
-      requires: { level: "professional", tools: ["scan_tool"] },
+      requires: { level: "professional", scan: "live_data" },
       outcomes: [
         { when: "fail", to: "concl_injector", supports: ["injector"] },
         { when: "pass", to: "compression_test", rulesOut: ["injector"] },
@@ -175,7 +182,7 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
       type: "measurement",
       title: "Compression on the misfiring cylinder",
       measurement: { quantity: "Cylinder compression", unit: "kPa", plausible: { min: 0, max: 3500 } },
-      requires: { level: "professional", tools: ["compression_tester"], hazards: ["Disable fuel and ignition before cranking"] },
+      requires: { level: "professional", instruments: ["compression_tester"], hazards: ["Disable fuel and ignition before cranking"] },
       needsConditions: ["engine_off_cool"],
       specification: "synthetic.cylinder_compression_min",
       outcomes: [
@@ -200,9 +207,30 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
       ],
       outcomes: [
         { when: "hiss_or_damage", to: "concl_vacuum", supports: ["vacuum_leak"] },
-        { when: "nothing_found", to: "fuel_pressure" },
+        { when: "nothing_found", to: "fuel_pump_actuator" },
       ],
       // Not sure (a noisy engine bay): rule nothing out and measure.
+      ifInconclusive: "fuel_pressure",
+    },
+    {
+      // SYNTHETIC / TEST ONLY. Modelling only: an external scan tool with bidirectional control runs the
+      // pump; the person reports what they hear. No commands, no manufacturer data. Without that access
+      // the step is skipped (not evidence of anything) and the workflow measures the pressure instead.
+      id: "fuel_pump_actuator",
+      type: "actuator_test",
+      title: "Fuel pump actuator test (external tool)",
+      prompt: "Use the scan tool's actuator test to run the fuel pump, and listen near the tank. What happens?",
+      actuator: "fuel_pump",
+      requires: { level: "diy", scan: "bidirectional", hazards: ["Ignition on and the fuel pump running: no open flames, fuel system closed"] },
+      results: [
+        { id: "runs", label: "The pump runs (an audible hum)" },
+        { id: "no_response", label: "No sound from the pump" },
+      ],
+      outcomes: [
+        { when: "runs", to: "fuel_pressure" },
+        { when: "no_response", to: "concl_fuel_supply", supports: ["fuel_supply"] },
+      ],
+      ifUnsupported: "fuel_pressure",
       ifInconclusive: "fuel_pressure",
     },
     {
@@ -210,7 +238,7 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
       type: "measurement",
       title: "Fuel pressure",
       measurement: { quantity: "Fuel supply pressure (low-pressure side)", unit: "kPa", plausible: { min: 0, max: 1000 } },
-      requires: { level: "professional", tools: ["pressure_gauge"], hazards: ["Pressurised fuel"] },
+      requires: { level: "professional", instruments: ["pressure_gauge"], hazards: ["Pressurised fuel"] },
       specification: "synthetic.fuel_supply_pressure_idle",
       outcomes: [
         { id: "below_min", when: { relativeToSpec: "below" }, to: "concl_fuel_supply", supports: ["fuel_supply"] },

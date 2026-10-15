@@ -26,6 +26,11 @@ tables and five optional columns). Read `docs/database.md` ("Deploying Phase
   it, in their own words. The causes the diagnosis listed are offered as
   shortcuts and a match is recorded only when the user picks one. The stored
   AI answer is never changed.
+- **Repairs that did not hold are kept.** If the problem comes back, the
+  diagnosis reopens and the repair stays in its history, marked as not having
+  held, with the date. It is shown as an earlier attempt, never as the
+  resolution, and is never edited or deleted. Another repair can then be
+  reported as the next attempt.
 - **A page for each vehicle** (`/garage/<id>`): year, make, model, trim, engine,
   mileage; open issues; one timeline of diagnoses, confirmed repairs and
   service records, newest first; service records; and three actions: diagnose
@@ -39,10 +44,19 @@ tables and five optional columns). Read `docs/database.md` ("Deploying Phase
 - **A vehicle's current mileage** is raised by a higher reading from the
   vehicle page, a diagnosis or a service record. Lowering it, or changing its
   unit, is possible only on the vehicle page and only after confirming.
-- **Removing a vehicle no longer removes history.** A vehicle with service
-  records or diagnoses is archived and can be restored from the dashboard;
-  only a vehicle with nothing attached is deleted. The database refuses the
-  deletion itself.
+- **Removing a vehicle archives it.** Nothing recorded for it is deleted and
+  it can be restored from the dashboard. This applies to every vehicle, with or
+  without history.
+- **Permanent deletion of an archived vehicle.** From the dashboard's archived
+  list or the vehicle's page, after a warning that its service records,
+  diagnoses and reported repairs go with it, and only once the user types
+  DELETE. The server checks ownership, the archive and the confirmation again,
+  and deletes everything in one transaction. No copy is kept by the app.
+- **Privacy page** now lists what is stored for signed-in users (vehicles,
+  service records, mileage, diagnosis history and follow-up answers, reported
+  repairs), says that a guest's saved data stays in the browser until imported
+  or cleared, names the AI provider among service providers, and describes
+  archiving and permanent deletion.
 - **Importing from a device shows what will be copied first.** Guest vehicles
   with their service records and saved diagnoses, and any history an earlier
   version kept in the browser for the account's own vehicles, are listed

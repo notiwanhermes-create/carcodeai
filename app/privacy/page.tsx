@@ -4,7 +4,7 @@ export default function PrivacyPage() {
   return (
     <main className="mx-auto max-w-3xl px-6 py-10">
       <h1 className="text-3xl font-semibold">Privacy Policy</h1>
-      <p className="mt-2 text-sm opacity-80">Effective date: February 8, 2026</p>
+      <p className="mt-2 text-sm opacity-80">Effective date: October 14, 2026</p>
 
       <div className="prose prose-invert mt-8 max-w-none">
         <p>
@@ -42,6 +42,26 @@ export default function PrivacyPage() {
         </ul>
         <p>Please avoid entering sensitive personal data into diagnostic fields.</p>
 
+        <h3>E. Your garage, if you are signed in</h3>
+        <p>When you are signed in, we store the following in your account so you can come back to it:</p>
+        <ul>
+          <li>Vehicles you save (for example year, make, model, trim, engine, nickname and VIN, if you enter them)</li>
+          <li>Maintenance and service records, including the dates, costs and notes you enter</li>
+          <li>Mileage readings, where you provide them</li>
+          <li>Your diagnosis history: what you entered, the result you were shown, and your answers to follow-up questions</li>
+          <li>
+            Whether an issue is open, resolved or dismissed, and the repairs you report, including repairs you later say did
+            not fix the problem
+          </li>
+        </ul>
+
+        <h3>F. If you use the Service without signing in</h3>
+        <p>
+          Vehicles, service records and diagnoses you save without an account are kept in your browser&apos;s storage on your
+          device, not in our database. They stay there until you import them into an account after signing in, remove them,
+          or clear your browser&apos;s data. What you submit for a diagnosis is still sent to us to produce the answer.
+        </p>
+
         <h2>2) How we use information</h2>
         <ul>
           <li>Provide and operate the Service</li>
@@ -59,10 +79,16 @@ export default function PrivacyPage() {
 
         <h2>4) Sharing of information</h2>
         <p>We do not sell your personal information.</p>
-        <p>We may share information with service providers (hosting, databases, analytics), authentication providers (Google sign-in), for legal/safety reasons, or during a business transfer.</p>
+        <p>We may share information with service providers (hosting, databases, analytics, and the AI provider that generates diagnoses from what you enter), authentication providers (Google sign-in), for legal/safety reasons, or during a business transfer.</p>
 
         <h2>5) Data retention</h2>
         <p>We keep personal information as long as necessary to provide the Service and for legitimate business purposes.</p>
+        <p>
+          Your saved vehicles and their history stay in your account until you delete them or ask us to delete your
+          account. Removing a vehicle from your garage archives it, and nothing is deleted. You can then delete an archived
+          vehicle permanently, which deletes it together with its service records, diagnoses and reported repairs. Copies
+          may remain in backups.
+        </p>
 
         <h2>6) Your choices and rights</h2>
         <p>

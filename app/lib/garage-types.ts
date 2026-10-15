@@ -30,8 +30,22 @@ export type StoredResult =
 
 export type FollowUpAnswer = { question: string; answer: string };
 
+/** Whether a reported repair still stands, or the problem came back after it. */
+export const FIX_OUTCOMES = ["fixed", "did_not_hold"] as const;
+export type FixOutcome = (typeof FIX_OUTCOMES)[number];
+
+export function isFixOutcome(value: unknown): value is FixOutcome {
+  return typeof value === "string" && (FIX_OUTCOMES as readonly string[]).includes(value);
+}
+
+/** A repair the user reported for a diagnosis. */
 export type ConfirmedFixDto = {
   id: string;
+  /** 1 for the first repair reported for the diagnosis, 2 for the next, and so on. */
+  attempt: number;
+  outcome: FixOutcome;
+  /** When the user said the problem came back. Null while the repair stands. */
+  returnedAt: string | null;
   description: string;
   /** Set only when the user said the repair was one of the listed causes. */
   matchedCauseRank: number | null;
@@ -71,7 +85,10 @@ export type DiagnosisDetailDto = DiagnosisSummaryDto & {
   odometerValue: number | null;
   odometerUnit: OdometerUnit | null;
   statusChangedAt: string | null;
+  /** The repair that currently stands as the resolution, if there is one. */
   confirmedFix: ConfirmedFixDto | null;
+  /** Repairs reported earlier that did not hold, oldest first. They are history and are never removed. */
+  previousFixes: ConfirmedFixDto[];
 };
 
 export type MaintenanceDto = {
@@ -91,12 +108,17 @@ export type MaintenanceDto = {
   createdAt: string;
 };
 
+/** What the user must type to delete an archived vehicle for good. The server checks for exactly this word. */
+export const PERMANENT_DELETE_CONFIRMATION = "DELETE";
+
 export type VehicleStats = {
   openIssues: number;
   diagnoses: number;
   lastDiagnosisAt: string | null;
   maintenanceRecords: number;
   lastMaintenance: { serviceType: string; date: string } | null;
+  /** Repairs the user reported, whether or not they held. */
+  repairs: number;
 };
 
 export type VehicleDto = {
@@ -117,7 +139,7 @@ export type VehicleDto = {
 
 export type TimelineItem =
   | { kind: "diagnosis"; id: string; at: string; title: string; codes: string[]; status: DiagnosisStatus }
-  | { kind: "fix"; id: string; at: string; diagnosisId: string; description: string; odometerValue: number | null; odometerUnit: OdometerUnit | null }
+  | { kind: "fix"; id: string; at: string; diagnosisId: string; description: string; outcome: FixOutcome; odometerValue: number | null; odometerUnit: OdometerUnit | null }
   | {
       kind: "maintenance";
       id: string;
@@ -168,7 +190,7 @@ export function splitCodes(codeInput: string): string[] {
 
 type TimelineSource = {
   diagnoses: Array<{ id: string; diagnosedAt: Date; symptoms: string; codeInput: string; status: string }>;
-  fixes: Array<{ id: string; diagnosisId: string; fixedOn: Date; createdAt: Date; description: string; odometerValue: number | null; odometerUnit: string | null }>;
+  fixes: Array<{ id: string; diagnosisId: string; fixedOn: Date; createdAt: Date; description: string; outcome: string; odometerValue: number | null; odometerUnit: string | null }>;
   maintenance: Array<{
     id: string;
     serviceType: string;
@@ -187,7 +209,8 @@ const unitOrNull = (u: string | null): OdometerUnit | null => (u === "km" || u =
 
 /**
  * One vehicle's history, newest first, built from the records themselves:
- * diagnoses, confirmed fixes and service records. Nothing is copied or stored
+ * diagnoses, reported repairs (those that held and those that did not) and
+ * service records. Nothing is copied or stored
  * for the timeline; it is a view over the three tables.
  *
  * Ordering: by calendar day first (a service record or repair dated today
@@ -222,6 +245,8 @@ export function buildTimeline(source: TimelineSource): TimelineItem[] {
         at: f.fixedOn.toISOString(),
         diagnosisId: f.diagnosisId,
         description: f.description,
+        // Anything unreadable is shown as a standing repair: the row is still the user's report.
+        outcome: isFixOutcome(f.outcome) ? f.outcome : "fixed",
         odometerValue: f.odometerValue,
         odometerUnit: unitOrNull(f.odometerUnit),
       },

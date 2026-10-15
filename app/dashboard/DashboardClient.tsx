@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { VehicleDeleteButton } from "@/components/VehicleDeleteButton";
+import { PermanentDeletePanel } from "@/components/garage/PermanentDeletePanel";
 import { MaintenanceForm, MaintenanceRow } from "@/components/garage/VehicleParts";
 import { formatDay } from "@/components/garage/shared";
 import { track } from "@/app/lib/analytics";
@@ -42,6 +43,8 @@ export default function DashboardClient() {
   const [showAddVehicle, setShowAddVehicle] = useState(false);
   const [showAddRecord, setShowAddRecord] = useState(false);
   const [notice, setNotice] = useState("");
+  // The archived vehicle whose "delete permanently" warning is open, if any.
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const [vYear, setVYear] = useState("");
   const [vMake, setVMake] = useState("");
@@ -134,27 +137,21 @@ export default function DashboardClient() {
   }
 
   /**
-   * Removing a vehicle never deletes its history. A vehicle with service
-   * records or diagnoses is archived and can be restored; only a vehicle with
-   * nothing attached is deleted. The server decides; the wording here says
-   * which one to expect.
+   * Removing a vehicle archives it: nothing recorded for it is deleted, and it
+   * can be restored. Deleting for good is a separate step, offered only for an
+   * archived vehicle (see the archived list below).
    */
   function requestDeleteVehicle(v: Vehicle) {
-    const hasHistory = records.some((r) => r.vehicleId === v.id) || (v.stats ? v.stats.diagnoses + v.stats.maintenanceRecords > 0 : false);
     setNotice("");
     setConfirmDialog({
       open: true,
-      title: hasHistory ? tr("archiveVehicleTitle", lang) : tr("deleteVehicle", lang),
-      message: hasHistory ? tr("archiveVehicleMsg", lang) : tr("deleteVehicleMsg", lang),
-      confirmLabel: hasHistory ? tr("archiveVehicleConfirm", lang) : tr("delete", lang),
+      title: tr("archiveVehicleTitle", lang),
+      message: tr("archiveVehicleMsg", lang),
+      confirmLabel: tr("archiveVehicleConfirm", lang),
       onConfirm: async () => {
-        const outcome = await deleteGarageVehicle(v.id);
-        if (outcome.archived) {
-          setNotice(tr("vehicleArchived", lang));
-          void fetchArchived();
-        } else {
-          setRecords((prev) => prev.filter((r) => r.vehicleId !== v.id));
-        }
+        await deleteGarageVehicle(v.id);
+        setNotice(tr("vehicleArchived", lang));
+        void fetchArchived();
         setSelectedVehicleId((prev) => (prev === v.id ? null : prev));
       },
     });
@@ -424,18 +421,49 @@ export default function DashboardClient() {
                 <div className="mb-2 text-xs font-semibold text-slate-400">Archived vehicles ({archived.length})</div>
                 <div className="space-y-2">
                   {archived.map((v) => (
-                    <div key={v.id} className="glass-card flex items-center justify-between gap-2 rounded-2xl p-3">
-                      <Link href={`/garage/${encodeURIComponent(v.id)}`} className="min-w-0 truncate text-xs text-slate-300 hover:text-blue-300">
-                        {v.year} {v.make} {v.model}
-                      </Link>
-                      <button
-                        type="button"
-                        data-restore
-                        onClick={() => restoreVehicle(v.id)}
-                        className="shrink-0 rounded-lg border border-white/10 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10 transition-all"
-                      >
-                        Restore
-                      </button>
+                    <div key={v.id} data-archived-vehicle className="space-y-2">
+                      <div className="glass-card flex items-center justify-between gap-2 rounded-2xl p-3">
+                        <Link href={`/garage/${encodeURIComponent(v.id)}`} className="min-w-0 truncate text-xs text-slate-300 hover:text-blue-300">
+                          {v.year} {v.make} {v.model}
+                        </Link>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <button
+                            type="button"
+                            data-restore
+                            onClick={() => restoreVehicle(v.id)}
+                            className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-slate-300 hover:bg-white/10 transition-all"
+                          >
+                            Restore
+                          </button>
+                          {deletingId !== v.id && (
+                            <button
+                              type="button"
+                              data-delete-permanently
+                              onClick={() => {
+                                setNotice("");
+                                setDeletingId(v.id);
+                              }}
+                              className="rounded-lg border border-red-500/30 px-2.5 py-1 text-xs text-red-300 hover:bg-red-500/10 transition-all"
+                            >
+                              Delete permanently…
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {deletingId === v.id && (
+                        <PermanentDeletePanel
+                          vehicleId={v.id}
+                          vehicleName={`${v.year} ${v.make} ${v.model}`}
+                          counts={v.stats ? { maintenance: v.stats.maintenanceRecords, diagnoses: v.stats.diagnoses, repairs: v.stats.repairs } : undefined}
+                          onCancel={() => setDeletingId(null)}
+                          onDeleted={() => {
+                            setDeletingId(null);
+                            setArchived((prev) => prev.filter((x) => x.id !== v.id));
+                            setRecords((prev) => prev.filter((r) => r.vehicleId !== v.id));
+                            setNotice("Vehicle deleted permanently, with its service records, diagnoses and reported repairs.");
+                          }}
+                        />
+                      )}
                     </div>
                   ))}
                 </div>

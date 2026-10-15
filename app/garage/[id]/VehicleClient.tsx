@@ -6,12 +6,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { track } from "@/app/lib/analytics";
 import type { VehicleDetailDto, VehicleDto } from "@/app/lib/garage-types";
 import { formatOdometer } from "@/app/lib/odometer";
+import { PermanentDeletePanel } from "@/components/garage/PermanentDeletePanel";
 import { MaintenanceForm, MaintenanceRow, MileageEditor, TimelineList } from "@/components/garage/VehicleParts";
 import { Card, CodeChips, GaragePage, SectionTitle, cn, formatDay, inputClass, primaryButton, quietButton } from "@/components/garage/shared";
 
 const RECENT = 8;
 
-type Panel = null | "mileage" | "maintenance" | "details" | "remove";
+type Panel = null | "mileage" | "maintenance" | "details" | "remove" | "permanent";
 
 /**
  * One vehicle: what it is, what is still open, what has happened to it, and its
@@ -68,7 +69,6 @@ export default function VehicleClient({ vehicleId }: { vehicleId: string }) {
   const name = `${vehicle.year} ${vehicle.make} ${vehicle.model}`;
   const archived = !!vehicle.archivedAt;
   const mileage = formatOdometer(vehicle.odometerValue, vehicle.odometerUnit);
-  const hasHistory = timeline.length > 0;
 
   function open(next: Panel) {
     setError("");
@@ -149,9 +149,32 @@ export default function VehicleClient({ vehicleId }: { vehicleId: string }) {
       {archived && (
         <div data-archived-banner className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4">
           <p className="text-sm text-amber-200">This vehicle is archived. It is out of your garage, and all of its history is kept.</p>
-          <button type="button" data-restore-vehicle className={cn(quietButton, "mt-3")} disabled={busy} onClick={() => patch({ archived: false })}>
-            Restore to my garage
-          </button>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button type="button" data-restore-vehicle className={quietButton} disabled={busy} onClick={() => patch({ archived: false })}>
+              Restore to my garage
+            </button>
+            {panel !== "permanent" && (
+              <button
+                type="button"
+                data-delete-permanently
+                className="rounded-xl border border-red-500/30 px-4 py-2 text-sm font-medium text-red-300 transition-all hover:bg-red-500/10"
+                onClick={() => open("permanent")}
+              >
+                Delete permanently…
+              </button>
+            )}
+          </div>
+          {panel === "permanent" && (
+            <div className="mt-3">
+              <PermanentDeletePanel
+                vehicleId={vehicle.id}
+                vehicleName={name}
+                counts={vehicle.stats ? { maintenance: vehicle.stats.maintenanceRecords, diagnoses: vehicle.stats.diagnoses, repairs: vehicle.stats.repairs } : undefined}
+                onCancel={() => setPanel(null)}
+                onDeleted={() => router.push("/dashboard")}
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -322,13 +345,12 @@ export default function VehicleClient({ vehicleId }: { vehicleId: string }) {
           ) : (
             <div data-remove-confirm className="rounded-2xl border border-white/10 bg-white/5 p-4">
               <p className="text-sm text-slate-200">
-                {hasHistory
-                  ? "This vehicle has history, so it will be archived, not deleted. It leaves your garage, its diagnoses, repairs and service records are kept, and you can restore it later."
-                  : "This vehicle has no history. It will be deleted. This cannot be undone."}
+                The vehicle will be archived, not deleted. It leaves your garage, everything recorded for it is kept, and you can
+                restore it later. Deleting it for good is a separate step, available once it is archived.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <button type="button" data-remove-confirm-yes className={primaryButton} disabled={busy} onClick={remove}>
-                  {hasHistory ? "Archive vehicle" : "Delete vehicle"}
+                  Archive vehicle
                 </button>
                 <button type="button" className={quietButton} disabled={busy} onClick={() => setPanel(null)}>
                   Cancel

@@ -24,6 +24,9 @@
 //   diagnoses_odometer_check                 CHECK (odometer_value >= 0, unit is 'km' or 'mi')
 //   confirmed_fixes_odometer_check           CHECK (odometer_value >= 0, unit is 'km' or 'mi')
 //   confirmed_fixes_description_check        CHECK (description is not blank)
+//   confirmed_fixes_outcome_check            CHECK (outcome is 'fixed' or 'did_not_hold')
+//   confirmed_fixes_attempt_check            CHECK (attempt >= 1)
+//   confirmed_fixes_returned_check           CHECK (returned_at is set exactly when outcome is 'did_not_hold')
 
 generator client {
   provider = "prisma-client"
@@ -211,8 +214,9 @@ model Diagnosis {
   /// Deleting an account deletes its diagnoses.
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   /// A vehicle that has diagnoses cannot be deleted from under them.
-  vehicle      Vehicle       @relation(fields: [vehicleId], references: [id], onDelete: NoAction)
-  confirmedFix ConfirmedFix?
+  vehicle        Vehicle        @relation(fields: [vehicleId], references: [id], onDelete: NoAction)
+  /// Every repair the user reported for this problem, in the order reported.
+  confirmedFixes ConfirmedFix[]
 
   @@unique([userId, ticketId])
   @@unique([userId, importKey])
@@ -221,16 +225,31 @@ model Diagnosis {
   @@map("diagnoses")
 }
 
-/// What actually fixed a diagnosed problem, as reported by the user.
+/// A repair the user reported for a diagnosed problem.
 ///
 /// Kept apart from the diagnosis on purpose: the diagnosis is the AI's
-/// hypothesis, this is the outcome. `matchedCause*` is filled in only when the
-/// user says the repair was one of the causes the diagnosis listed.
+/// hypothesis, this is what the user says happened. `matchedCause*` is filled
+/// in only when the user says the repair was one of the causes the diagnosis
+/// listed.
+///
+/// A diagnosis can collect several over time. Reopening a resolved diagnosis
+/// does not delete its repair: the repair stays, marked "did_not_hold", and a
+/// later repair is stored as the next attempt. A repair that did not hold is
+/// never edited or removed afterwards (only deleting the vehicle for good, or
+/// the account, removes it).
 model ConfirmedFix {
   id          String @id @default(cuid())
   userId      String @map("user_id")
   vehicleId   String @map("vehicle_id")
-  diagnosisId String @unique @map("diagnosis_id")
+  diagnosisId String @map("diagnosis_id")
+
+  /// 1 for the first repair reported for the diagnosis, 2 for the next, and so on.
+  attempt    Int       @default(1)
+  /// "fixed": the repair that currently stands as the resolution.
+  /// "did_not_hold": the user later said the problem came back.
+  outcome    String    @default("fixed")
+  /// When the user said the problem came back.
+  returnedAt DateTime? @map("returned_at") @db.Timestamptz()
 
   /// The repair in the user's own words.
   description       String
@@ -247,9 +266,11 @@ model ConfirmedFix {
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   vehicle   Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: NoAction)
-  /// The outcome goes with its diagnosis.
+  /// A reported repair goes with its diagnosis.
   diagnosis Diagnosis @relation(fields: [diagnosisId], references: [id], onDelete: Cascade)
 
+  /// One row per attempt: a double submit cannot record the same repair twice.
+  @@unique([diagnosisId, attempt])
   @@index([vehicleId, fixedOn])
   @@index([userId, createdAt])
   @@map("confirmed_fixes")

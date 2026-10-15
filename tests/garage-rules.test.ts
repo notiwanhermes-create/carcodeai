@@ -85,7 +85,7 @@ describe("a vehicle's timeline", () => {
         { id: "d-old", diagnosedAt: day("2026-03-01T10:00:00Z"), symptoms: "Rough idle", codeInput: "P0300", status: "resolved" },
         { id: "d-new", diagnosedAt: day("2026-09-20T08:00:00Z"), symptoms: "", codeInput: "P0171", status: "open" },
       ],
-      fixes: [{ id: "f1", diagnosisId: "d-old", fixedOn: day("2026-03-05T00:00:00Z"), createdAt: day("2026-03-06T09:00:00Z"), description: "Ignition coil", odometerValue: 138200, odometerUnit: "km" }],
+      fixes: [{ id: "f1", diagnosisId: "d-old", fixedOn: day("2026-03-05T00:00:00Z"), createdAt: day("2026-03-06T09:00:00Z"), description: "Ignition coil", outcome: "fixed", odometerValue: 138200, odometerUnit: "km" }],
       maintenance: [
         { id: "m1", serviceType: "Oil Change", date: "2026-06-15", serviceDate: day("2026-06-15T00:00:00Z"), createdAt: day("2026-06-15T12:00:00Z"), odometer: "140000", odometerValue: 140000, odometerUnit: "km", cost: "60", notes: null },
       ],
@@ -93,7 +93,7 @@ describe("a vehicle's timeline", () => {
 
     expect(timeline.map((t) => `${t.kind}:${t.id}`)).toEqual(["diagnosis:d-new", "maintenance:m1", "fix:f1", "diagnosis:d-old"]);
     expect(timeline[0]).toMatchObject({ kind: "diagnosis", title: "P0171", codes: ["P0171"], status: "open" });
-    expect(timeline[2]).toMatchObject({ kind: "fix", diagnosisId: "d-old", description: "Ignition coil", odometerValue: 138200, odometerUnit: "km" });
+    expect(timeline[2]).toMatchObject({ kind: "fix", diagnosisId: "d-old", description: "Ignition coil", outcome: "fixed", odometerValue: 138200, odometerUnit: "km" });
     // Each record appears once: the timeline is a view, not a copy.
     expect(new Set(timeline.map((t) => t.id)).size).toBe(timeline.length);
   });
@@ -101,7 +101,7 @@ describe("a vehicle's timeline", () => {
   it("orders records of the same day by when they were entered, and places undated ones by entry time", () => {
     const timeline = buildTimeline({
       diagnoses: [{ id: "d1", diagnosedAt: day("2026-10-12T09:00:00Z"), symptoms: "Noise", codeInput: "", status: "weird" }],
-      fixes: [{ id: "f1", diagnosisId: "d1", fixedOn: day("2026-10-12T00:00:00Z"), createdAt: day("2026-10-12T15:00:00Z"), description: "Belt", odometerValue: null, odometerUnit: "leagues" }],
+      fixes: [{ id: "f1", diagnosisId: "d1", fixedOn: day("2026-10-12T00:00:00Z"), createdAt: day("2026-10-12T15:00:00Z"), description: "Belt", outcome: "did_not_hold", odometerValue: null, odometerUnit: "leagues" }],
       maintenance: [
         { id: "m-same-day", serviceType: "Inspection", date: "2026-10-12", serviceDate: day("2026-10-12T00:00:00Z"), createdAt: day("2026-10-12T18:00:00Z"), odometer: null, odometerValue: null, odometerUnit: null, cost: null, notes: null },
         { id: "m-free-text", serviceType: "Other", date: "last spring", serviceDate: null, createdAt: day("2026-10-01T10:00:00Z"), odometer: "about 90k", odometerValue: null, odometerUnit: null, cost: null, notes: null },
@@ -111,7 +111,7 @@ describe("a vehicle's timeline", () => {
     expect(timeline.map((t) => t.id)).toEqual(["m-same-day", "f1", "d1", "m-free-text"]);
     // An unknown status reads as open; an unknown unit as no unit. Old text is kept.
     expect(timeline[2]).toMatchObject({ status: "open" });
-    expect(timeline[1]).toMatchObject({ odometerUnit: null });
+    expect(timeline[1]).toMatchObject({ odometerUnit: null, outcome: "did_not_hold" });
     expect(timeline[3]).toMatchObject({ dateText: "last spring", odometer: "about 90k" });
   });
 });

@@ -41,7 +41,7 @@ const vehicle: VehicleDto = {
   odometerUnit: "km",
   odometerUpdatedAt: "2026-10-01T00:00:00.000Z",
   archivedAt: null,
-  stats: { openIssues: 1, diagnoses: 2, lastDiagnosisAt: "2026-10-10T09:00:00.000Z", maintenanceRecords: 1, lastMaintenance: { serviceType: "Oil Change", date: "2026-06-15" } },
+  stats: { openIssues: 1, diagnoses: 2, lastDiagnosisAt: "2026-10-10T09:00:00.000Z", maintenanceRecords: 1, lastMaintenance: { serviceType: "Oil Change", date: "2026-06-15" }, repairs: 1 },
 };
 
 const diagnosis: DiagnosisDetailDto = {
@@ -81,6 +81,7 @@ const diagnosis: DiagnosisDetailDto = {
   odometerUnit: "km",
   statusChangedAt: null,
   confirmedFix: null,
+  previousFixes: [],
 };
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -184,7 +185,7 @@ describe("Did you fix this problem?", () => {
           diagnosis: {
             ...start,
             status: "resolved",
-            confirmedFix: { id: "fix-1", description: body.description, matchedCauseRank: body.matchedCauseRank ?? null, matchedCauseTitle: body.matchedCauseRank ? "Worn spark plugs" : null, fixedOn: body.fixedOn, odometerValue: null, odometerUnit: null, notes: null },
+            confirmedFix: { id: "fix-1", attempt: 1, outcome: "fixed", returnedAt: null, description: body.description, matchedCauseRank: body.matchedCauseRank ?? null, matchedCauseTitle: body.matchedCauseRank ? "Worn spark plugs" : null, fixedOn: body.fixedOn, odometerValue: null, odometerUnit: null, notes: null },
           },
         });
       }
@@ -248,7 +249,7 @@ describe("Did you fix this problem?", () => {
     const resolved: DiagnosisDetailDto = {
       ...diagnosis,
       status: "resolved",
-      confirmedFix: { id: "fix-1", description: "Cracked intake boot", matchedCauseRank: null, matchedCauseTitle: null, fixedOn: "2026-10-12", odometerValue: 138200, odometerUnit: "km", notes: "Found by the shop" },
+      confirmedFix: { id: "fix-1", attempt: 1, outcome: "fixed", returnedAt: null, description: "Cracked intake boot", matchedCauseRank: null, matchedCauseTitle: null, fixedOn: "2026-10-12", odometerValue: 138200, odometerUnit: "km", notes: "Found by the shop" },
     };
     setup(resolved);
     expect((document.querySelector("[data-confirmed-fix]") as HTMLElement).textContent).toBe("Cracked intake boot");
@@ -260,17 +261,42 @@ describe("Did you fix this problem?", () => {
     const resolved: DiagnosisDetailDto = {
       ...diagnosis,
       status: "resolved",
-      confirmedFix: { id: "fix-1", description: "Worn spark plugs", matchedCauseRank: 1, matchedCauseTitle: "Worn spark plugs", fixedOn: "2026-10-12", odometerValue: null, odometerUnit: null, notes: null },
+      confirmedFix: { id: "fix-1", attempt: 1, outcome: "fixed", returnedAt: null, description: "Worn spark plugs", matchedCauseRank: 1, matchedCauseTitle: "Worn spark plugs", fixedOn: "2026-10-12", odometerValue: null, odometerUnit: null, notes: null },
     };
     const { calls } = setup(resolved);
     expect(screen.getByText("You said this matched cause 1 in the diagnosis: Worn spark plugs.")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "It came back" }));
     expect(calls).toHaveLength(0); // one more step first
-    expect(screen.getByText("This reopens the issue and removes the recorded repair.")).toBeTruthy();
+    expect(screen.getByText("This reopens the issue. The repair you reported stays in its history, marked as not having held.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Reopen" }));
     await waitFor(() => expect(calls).toHaveLength(1));
     expect(calls[0].body).toEqual({ outcome: "reopen" });
+  });
+
+  it("shows a repair that did not hold as an earlier attempt, never as the resolution, and lets a new one be reported", async () => {
+    const earlier = { id: "fix-1", attempt: 1, outcome: "did_not_hold" as const, returnedAt: "2026-10-12T10:00:00.000Z", description: "Replaced the spark plugs", matchedCauseRank: 1, matchedCauseTitle: "Worn spark plugs", fixedOn: "2026-09-01", odometerValue: 137000, odometerUnit: "km" as const, notes: null };
+    const reopened: DiagnosisDetailDto = { ...diagnosis, status: "open", confirmedFix: null, previousFixes: [earlier] };
+    const { calls } = setup(reopened);
+
+    // Open again, with the earlier repair listed as history.
+    expect(screen.getByText("Did you fix this problem?")).toBeTruthy();
+    expect(screen.queryByText("Confirmed repair")).toBeNull();
+    const history = document.querySelector("[data-previous-fixes]") as HTMLElement;
+    expect(history.textContent).toContain("An earlier repair that did not hold");
+    expect(history.textContent).toContain("Replaced the spark plugs");
+    expect(history.textContent).toContain("Reported as the fix Sep 1, 2026 · 137,000 km · you said the problem came back Oct 12, 2026");
+    expect(history.querySelector("[data-previous-fix]")?.getAttribute("data-fix-outcome")).toBe("did_not_hold");
+    // Nothing in it can be edited or removed.
+    expect(within(history).queryByRole("button")).toBeNull();
+
+    // A new repair starts from an empty form.
+    fireEvent.click(screen.getByRole("button", { name: "Yes, fixed" }));
+    expect((document.querySelector("[data-fix-description]") as HTMLInputElement).value).toBe("");
+    fireEvent.change(document.querySelector("[data-fix-description]") as HTMLInputElement, { target: { value: "Cracked vacuum hose" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save repair" }));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0].body).toMatchObject({ outcome: "fixed", description: "Cracked vacuum hose" });
   });
 });
 
@@ -320,7 +346,7 @@ describe("a vehicle's mileage", () => {
 describe("a vehicle's page", () => {
   const timeline: TimelineItem[] = [
     { kind: "diagnosis", id: "dx-1", at: "2026-10-10T09:00:00.000Z", title: "Rough idle when cold", codes: ["P0300"], status: "open" },
-    { kind: "fix", id: "fix-0", at: "2026-08-05T00:00:00.000Z", diagnosisId: "dx-0", description: "Replaced the battery", odometerValue: 136000, odometerUnit: "km" },
+    { kind: "fix", id: "fix-0", at: "2026-08-05T00:00:00.000Z", diagnosisId: "dx-0", description: "Replaced the battery", outcome: "fixed", odometerValue: 136000, odometerUnit: "km" },
     { kind: "maintenance", id: "m-1", at: "2026-06-15T00:00:00.000Z", serviceType: "Oil Change", dateText: "2026-06-15", odometer: "130,250 km", odometerValue: 130250, odometerUnit: "km", cost: "60" },
     { kind: "maintenance", id: "m-old", at: "2025-03-01T00:00:00.000Z", serviceType: "Other", dateText: "last spring", odometer: "about 90k", odometerValue: null, odometerUnit: null },
   ];
@@ -348,6 +374,14 @@ describe("a vehicle's page", () => {
     expect(rows[3].textContent).toContain("last spring");
     expect(rows[3].textContent).toContain("about 90k");
     expect(document.body.textContent).not.toMatch(/km miles/);
+  });
+
+  it("labels a repair that did not hold as such, not as a confirmed repair", () => {
+    render(<TimelineList vehicleId="veh-1" items={[{ kind: "fix", id: "fix-9", at: "2026-09-01T00:00:00.000Z", diagnosisId: "dx-1", description: "Replaced the spark plugs", outcome: "did_not_hold", odometerValue: null, odometerUnit: null }]} />);
+    const row = document.querySelector("[data-timeline-kind]") as HTMLElement;
+    expect(row.textContent).toContain("Repair that did not hold");
+    expect(row.textContent).not.toContain("Confirmed repair");
+    expect(row.querySelector("[data-fix-outcome]")?.getAttribute("data-fix-outcome")).toBe("did_not_hold");
   });
 
   it("can show just the most recent entries", () => {
@@ -399,13 +433,15 @@ describe("a vehicle's page", () => {
     expect(post?.body).toMatchObject({ vehicleId: "veh-1", serviceType: "Oil Change", odometer: "139500", odometerUnit: "mi" });
   });
 
-  it("says a vehicle with history will be archived, not deleted, before removing it", async () => {
+  it("says a removed vehicle will be archived, not deleted, before removing it", async () => {
     const calls = stubFetch((call) => (call.method === "DELETE" ? json({ ok: true, archived: true }) : json(detail)));
     render(<VehicleClient vehicleId="veh-1" />);
     fireEvent.click(await screen.findByRole("button", { name: "Remove this vehicle from my garage" }));
 
     expect(calls.some((c) => c.method === "DELETE")).toBe(false); // nothing happens on the first click
-    expect(screen.getByText(/it will be archived, not deleted/)).toBeTruthy();
+    expect(screen.getByText(/will be archived, not deleted/)).toBeTruthy();
+    // A vehicle still in the garage offers no permanent deletion.
+    expect(screen.queryByRole("button", { name: "Delete permanently…" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Archive vehicle" }));
     await waitFor(() => expect(push).toHaveBeenCalledWith("/dashboard"));
   });
@@ -424,6 +460,47 @@ describe("a vehicle's page", () => {
     await waitFor(() => expect(document.querySelector("[data-archived-banner]")).toBeNull());
   });
 
+  it("deletes an archived vehicle permanently only after the warning and the typed confirmation", async () => {
+    const calls = stubFetch((call) =>
+      call.url.endsWith("/permanent-delete") ? json({ ok: true, deleted: { maintenance: 1, diagnoses: 2, repairs: 1 } }) : json({ ...detail, vehicle: { ...vehicle, archivedAt: "2026-10-12T00:00:00.000Z" } }),
+    );
+    render(<VehicleClient vehicleId="veh-1" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete permanently…" }));
+
+    // The warning names everything that goes with it.
+    const panel = document.querySelector("[data-permanent-delete]") as HTMLElement;
+    expect(panel.textContent).toContain("Delete 2015 Toyota Camry permanently?");
+    expect(panel.textContent).toContain("its service records, its diagnoses and the repairs you reported (1 service record, 2 diagnoses and 1 reported repair)");
+    expect(panel.textContent).toContain("They cannot be restored afterwards.");
+
+    // The button does nothing until DELETE is typed.
+    const confirm = within(panel).getByRole("button", { name: "Delete permanently" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.click(confirm);
+    fireEvent.change(within(panel).getByLabelText("Type DELETE to confirm"), { target: { value: "delete" } });
+    expect(confirm.disabled).toBe(true);
+    expect(calls.some((c) => c.url.endsWith("/permanent-delete"))).toBe(false);
+
+    fireEvent.change(within(panel).getByLabelText("Type DELETE to confirm"), { target: { value: "DELETE" } });
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/dashboard"));
+    const sent = calls.filter((c) => c.url.endsWith("/permanent-delete"));
+    expect(sent).toEqual([{ url: "/api/garage/veh-1/permanent-delete", method: "POST", body: { confirm: "DELETE" } }]);
+  });
+
+  it("keeps the vehicle and says nothing was deleted when the server refuses", async () => {
+    stubFetch((call) =>
+      call.url.endsWith("/permanent-delete") ? json({ error: "Archive the vehicle first. Only an archived vehicle can be deleted for good.", code: "not_archived" }, 409) : json({ ...detail, vehicle: { ...vehicle, archivedAt: "2026-10-12T00:00:00.000Z" } }),
+    );
+    render(<VehicleClient vehicleId="veh-1" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete permanently…" }));
+    fireEvent.change(screen.getByLabelText("Type DELETE to confirm"), { target: { value: "DELETE" } });
+    fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Archive the vehicle first");
+    expect(push).not.toHaveBeenCalled();
+  });
+
   it("says so when the vehicle is not in this garage", async () => {
     stubFetch(() => json({ error: "Vehicle not found." }, 404));
     render(<VehicleClient vehicleId="someone-elses" />);
@@ -432,7 +509,7 @@ describe("a vehicle's page", () => {
 });
 
 describe("the dashboard", () => {
-  const bare: VehicleDto = { id: "veh-2", year: "2020", make: "Honda", model: "Civic", odometerValue: null, odometerUnit: null, odometerUpdatedAt: null, archivedAt: null, stats: { openIssues: 0, diagnoses: 0, lastDiagnosisAt: null, maintenanceRecords: 0, lastMaintenance: null } };
+  const bare: VehicleDto = { id: "veh-2", year: "2020", make: "Honda", model: "Civic", odometerValue: null, odometerUnit: null, odometerUpdatedAt: null, archivedAt: null, stats: { openIssues: 0, diagnoses: 0, lastDiagnosisAt: null, maintenanceRecords: 0, lastMaintenance: null, repairs: 0 } };
   const archivedTruck: VehicleDto = { ...bare, id: "veh-3", make: "Ford", model: "F-150", archivedAt: "2026-09-01T00:00:00.000Z" };
   const record: MaintenanceDto = { id: "m-1", vehicleId: "veh-1", serviceType: "Oil Change", date: "2026-06-15", serviceDate: "2026-06-15", odometer: "130,250 km", odometerValue: 130250, odometerUnit: "km", cost: "60", createdAt: "2026-06-15T12:00:00.000Z" };
 
@@ -440,6 +517,7 @@ describe("the dashboard", () => {
     return stubFetch((call) => {
       if (call.url.includes("/api/garage?archived=1")) return json({ vehicles: [archivedTruck] });
       if (call.method === "DELETE") return json({ ok: true, archived: true });
+      if (call.url.endsWith("/permanent-delete")) return json({ ok: true, deleted: { maintenance: 0, diagnoses: 0, repairs: 0 } });
       if (call.url.includes("/api/garage")) return json({ vehicles: [vehicle, bare] });
       if (call.url.includes("/api/maintenance")) return json({ records: [record] });
       return json({});
@@ -476,7 +554,7 @@ describe("the dashboard", () => {
     expect(document.body.textContent).not.toMatch(/km miles/);
   });
 
-  it("archives a vehicle that has history, says so, and lists archived vehicles with a way back", async () => {
+  it("archives a removed vehicle, says so, and lists archived vehicles with a way back", async () => {
     const calls = dashboard();
     render(<DashboardClient />);
     await waitFor(() => expect(document.querySelectorAll("[data-vehicle-card]")).toHaveLength(2));
@@ -490,11 +568,39 @@ describe("the dashboard", () => {
     expect(within(archivedList).getByRole("button", { name: "Restore" })).toBeTruthy();
 
     fireEvent.click(within(document.querySelector("[data-vehicle-card]") as HTMLElement).getByRole("button", { name: "Delete" }));
-    // The dialog says what will really happen to a vehicle with history.
-    expect(screen.getByText(/it will be archived, not deleted/)).toBeTruthy();
+    // The dialog says what will really happen.
+    expect(screen.getByText(/will be archived, not deleted/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Archive" }));
 
     await waitFor(() => expect(calls.some((c) => c.method === "DELETE" && c.url === "/api/garage/veh-1")).toBe(true));
-    await waitFor(() => expect((document.querySelector("[data-garage-notice]") as HTMLElement | null)?.textContent).toBe("Vehicle archived. Its history is kept."));
+    await waitFor(() => expect((document.querySelector("[data-garage-notice]") as HTMLElement | null)?.textContent).toBe("Vehicle archived. Nothing was deleted."));
+    // Archiving never asks the server to delete anything for good.
+    expect(calls.some((c) => c.url.endsWith("/permanent-delete"))).toBe(false);
+  });
+
+  it("offers permanent deletion only for an archived vehicle, behind the typed confirmation", async () => {
+    const calls = dashboard();
+    render(<DashboardClient />);
+    const row = await waitFor(() => {
+      const el = document.querySelector("[data-archived-vehicle]") as HTMLElement | null;
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    // The garage's own cards have no permanent deletion.
+    for (const card of Array.from(document.querySelectorAll("[data-vehicle-card]"))) {
+      expect(within(card as HTMLElement).queryByRole("button", { name: "Delete permanently…" })).toBeNull();
+    }
+
+    fireEvent.click(within(row).getByRole("button", { name: "Delete permanently…" }));
+    const panel = row.querySelector("[data-permanent-delete]") as HTMLElement;
+    expect(panel.textContent).toContain("Delete 2020 Ford F-150 permanently?");
+    fireEvent.click(within(panel).getByRole("button", { name: "Delete permanently" }));
+    expect(calls.some((c) => c.url.endsWith("/permanent-delete"))).toBe(false);
+
+    fireEvent.change(within(panel).getByLabelText("Type DELETE to confirm"), { target: { value: "DELETE" } });
+    fireEvent.click(within(panel).getByRole("button", { name: "Delete permanently" }));
+    await waitFor(() => expect(document.querySelector("[data-archived-list]")).toBeNull());
+    expect(calls.filter((c) => c.url.endsWith("/permanent-delete"))).toEqual([{ url: "/api/garage/veh-3/permanent-delete", method: "POST", body: { confirm: "DELETE" } }]);
+    expect((document.querySelector("[data-garage-notice]") as HTMLElement).textContent).toBe("Vehicle deleted permanently, with its service records, diagnoses and reported repairs.");
   });
 });

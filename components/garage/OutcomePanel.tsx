@@ -7,10 +7,13 @@
  * diagnosis and never inside it: the diagnosis stays exactly what the AI said.
  * The listed causes are offered as shortcuts, but the repair can be anything
  * the user types.
+ *
+ * If the problem comes back, the repair is kept and shown as an earlier repair
+ * that did not hold. A new repair can then be reported next to it.
  */
 import { useState } from "react";
 import { track } from "@/app/lib/analytics";
-import type { DiagnosisDetailDto } from "@/app/lib/garage-types";
+import type { ConfirmedFixDto, DiagnosisDetailDto } from "@/app/lib/garage-types";
 import { formatOdometer, type OdometerUnit } from "@/app/lib/odometer";
 import { Card, SectionTitle, cn, formatDay, inputClass, primaryButton, quietButton } from "./shared";
 
@@ -30,6 +33,30 @@ function today(): string {
 function listedCauses(diagnosis: DiagnosisDetailDto): Array<{ rank: number; title: string }> {
   if (diagnosis.result.kind === "structured") return diagnosis.result.diagnosis.causes.map((c) => ({ rank: c.rank, title: c.title }));
   return diagnosis.result.causes.map((c, i) => ({ rank: i + 1, title: c.title }));
+}
+
+/** Repairs the user reported earlier for this problem, which did not hold. Kept as history, never edited. */
+function PreviousFixes({ fixes }: { fixes: ConfirmedFixDto[] }) {
+  if (fixes.length === 0) return null;
+  return (
+    <div data-previous-fixes className="mt-4 border-t border-white/10 pt-3">
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{fixes.length === 1 ? "An earlier repair that did not hold" : "Earlier repairs that did not hold"}</div>
+      <ul className="mt-2 space-y-2">
+        {fixes.map((f) => (
+          <li key={f.id} data-previous-fix data-fix-outcome={f.outcome} className="rounded-xl border border-white/10 bg-white/5 p-3">
+            <div className="text-sm text-slate-200">{f.description}</div>
+            <div className="mt-1 text-xs text-slate-400">
+              Reported as the fix {formatDay(f.fixedOn)}
+              {f.odometerValue != null ? ` · ${formatOdometer(f.odometerValue, f.odometerUnit)}` : ""}
+              {f.returnedAt ? ` · you said the problem came back ${formatDay(f.returnedAt)}` : ""}
+            </div>
+            {f.matchedCauseTitle && <div className="mt-1 text-xs text-slate-500">You said this matched cause {f.matchedCauseRank} in the diagnosis: {f.matchedCauseTitle}.</div>}
+            {f.notes && <p className="mt-1 whitespace-pre-wrap text-xs text-slate-400">{f.notes}</p>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 export function OutcomePanel({ diagnosis, defaultUnit, onChange }: Props) {
@@ -220,7 +247,7 @@ export function OutcomePanel({ diagnosis, defaultUnit, onChange }: Props) {
                   </button>
                 ) : (
                   <>
-                    <span className="self-center text-xs text-amber-300">This reopens the issue and removes the recorded repair.</span>
+                    <span className="self-center text-xs text-amber-300">This reopens the issue. The repair you reported stays in its history, marked as not having held.</span>
                     <button type="button" data-outcome-reopen-confirm className={primaryButton} disabled={busy} onClick={() => answer("reopen")}>
                       Reopen
                     </button>
@@ -248,6 +275,7 @@ export function OutcomePanel({ diagnosis, defaultUnit, onChange }: Props) {
 
       {error && <p role="alert" className="mt-3 text-sm text-red-300">{error}</p>}
       {note && <p className="mt-3 text-sm text-slate-300">{note}</p>}
+      <PreviousFixes fixes={diagnosis.previousFixes ?? []} />
     </Card>
   );
 }

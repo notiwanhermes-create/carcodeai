@@ -96,9 +96,11 @@ export async function PATCH(req: NextRequest, { params }: Context) {
 /**
  * Remove a vehicle from the garage.
  *
- * A vehicle with no history is deleted. A vehicle that has service records,
- * diagnoses or confirmed repairs is ARCHIVED instead: it leaves the garage, but
- * nothing is deleted and it can be restored. The answer says which happened.
+ * This ARCHIVES the vehicle. It leaves the garage, nothing recorded for it is
+ * deleted, and it can be restored. No vehicle is ever deleted by this request,
+ * whether or not it has history: deleting for good is a separate, explicit step
+ * that only works on a vehicle that is already archived (see
+ * ./permanent-delete/route.ts).
  */
 export async function DELETE(_req: NextRequest, { params }: Context) {
   const session = await auth();
@@ -113,21 +115,9 @@ export async function DELETE(_req: NextRequest, { params }: Context) {
     return NextResponse.json({ error: "Vehicle not found." }, { status: 404 });
   }
 
-  const [records, diagnoses, fixes] = await Promise.all([
-    prisma.maintenanceRecord.count({ where: { vehicleId: id, userId } }),
-    prisma.diagnosis.count({ where: { vehicleId: id, userId } }),
-    prisma.confirmedFix.count({ where: { vehicleId: id, userId } }),
-  ]);
-
-  if (records + diagnoses + fixes > 0) {
-    await prisma.vehicle.updateMany({ where: { id, userId, archivedAt: null }, data: { archivedAt: new Date() } });
-    return NextResponse.json({ ok: true, archived: true });
-  }
-
   // One statement, scoped to the signed-in user: someone else's vehicle id matches nothing.
-  const { count } = await prisma.vehicle.deleteMany({ where: { id, userId } });
-  if (count === 0) {
-    return NextResponse.json({ error: "Vehicle not found." }, { status: 404 });
+  if (!vehicle.archivedAt) {
+    await prisma.vehicle.updateMany({ where: { id, userId, archivedAt: null }, data: { archivedAt: new Date() } });
   }
-  return NextResponse.json({ ok: true, archived: false });
+  return NextResponse.json({ ok: true, archived: true });
 }

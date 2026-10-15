@@ -43,6 +43,7 @@ export function garageSuite() {
       return {
         garage: await import("../../../app/api/garage/route"),
         vehicle: await import("../../../app/api/garage/[id]/route"),
+        permanentDelete: await import("../../../app/api/garage/[id]/permanent-delete/route"),
         importer: await import("../../../app/api/garage/import/route"),
         maintenance: await import("../../../app/api/maintenance/route"),
         maintenanceItem: await import("../../../app/api/maintenance/[id]/route"),
@@ -344,7 +345,8 @@ export function garageSuite() {
       expect(fixed.status).toBe(200);
       expect(fixed.body.diagnosis).toMatchObject({
         status: "resolved",
-        confirmedFix: { description: "Ignition coil #3", matchedCauseRank: null, matchedCauseTitle: null, fixedOn: "2026-10-12", odometerValue: 138200, odometerUnit: "km", notes: "Shop found it on cylinder 3" },
+        confirmedFix: { attempt: 1, outcome: "fixed", returnedAt: null, description: "Ignition coil #3", matchedCauseRank: null, matchedCauseTitle: null, fixedOn: "2026-10-12", odometerValue: 138200, odometerUnit: "km", notes: "Shop found it on cylinder 3" },
+        previousFixes: [],
       });
       expect(await one(`SELECT user_id, vehicle_id, diagnosis_id, description, matched_cause_rank, matched_cause_title FROM confirmed_fixes`)).toEqual({
         user_id: "ann", vehicle_id: vehicleId, diagnosis_id: id, description: "Ignition coil #3", matched_cause_rank: null, matched_cause_title: null,
@@ -384,21 +386,109 @@ export function garageSuite() {
       expect((await outcome(app, id, { outcome: "not_yet" })).status).toBe(409);
       expect((await outcome(app, id, { outcome: "reopen" })).body.diagnosis.status).toBe("open");
 
-      // Fixed, then "it came back": the recorded repair is removed with the reopen.
+      // Fixed, then "it came back": open again, and the repair stays on file as one that did not hold.
       await outcome(app, id, { outcome: "fixed", description: "New battery" });
       expect((await outcome(app, id, { outcome: "dismissed" })).status).toBe(409);
       expect(await count("confirmed_fixes")).toBe(1);
       const back = await outcome(app, id, { outcome: "reopen" });
-      expect(back.body.diagnosis).toMatchObject({ status: "open", confirmedFix: null });
-      expect(await count("confirmed_fixes")).toBe(0);
+      expect(back.body.diagnosis).toMatchObject({ status: "open", confirmedFix: null, previousFixes: [{ description: "New battery", outcome: "did_not_hold" }] });
+      expect(await count("confirmed_fixes")).toBe(1);
 
       // What is not accepted.
       for (const bad of [{ outcome: "fixed", description: "   " }, { outcome: "fixed" }, { outcome: "fixed", description: "x".repeat(301) }, { outcome: "fixed", description: "Coil", fixedOn: "2026-02-31" },
         { outcome: "fixed", description: "Coil", fixedOn: "2999-01-01" }, { outcome: "fixed", description: "Coil", odometerValue: "lots" }, { outcome: "solved" }, {}]) {
         expect((await outcome(app, id, bad)).status, JSON.stringify(bad)).toBe(400);
       }
-      expect(await count("confirmed_fixes")).toBe(0);
+      expect(await count("confirmed_fixes")).toBe(1);
       expect((await outcome(app, "no-such-diagnosis", { outcome: "reopen" })).status).toBe(404);
+    });
+
+    it("keeps a repair that did not hold, marks it so, and records the next repair beside it", async () => {
+      const app = await startApp();
+      const vehicleId = await addVehicle(app);
+      modelBehaviour = async () => modelReply(modelDiagnosis({ causes: [modelCause({ rank: 1, title: "Worn spark plugs" }), modelCause({ rank: 2, title: "Vacuum leak" })] }));
+      const id = (await diagnose(app, { vehicleId })).body.saved.id as string;
+      const predicted = (await one(`SELECT result FROM diagnoses WHERE id = $1`, [id])).result;
+
+      // Resolved with a repair that matched a listed cause.
+      await outcome(app, id, { outcome: "fixed", description: "Replaced the spark plugs", matchedCauseRank: 1, fixedOn: "2026-09-01", odometerValue: 137000, odometerUnit: "km", notes: "All four" });
+      const original = await one(`SELECT * FROM confirmed_fixes`);
+      expect(original).toMatchObject({ attempt: 1, outcome: "fixed", returned_at: null, description: "Replaced the spark plugs", matched_cause_rank: 1 });
+
+      // 1) Resolved → reopen.
+      const reopened = await outcome(app, id, { outcome: "reopen" });
+      expect(reopened.status).toBe(200);
+      expect(await one(`SELECT status FROM diagnoses WHERE id = $1`, [id])).toEqual({ status: "open" });
+
+      // 2) The old repair still exists, and 3) it is marked as no longer holding. Nothing the user wrote changed.
+      const kept = await one(`SELECT * FROM confirmed_fixes WHERE id = $1`, [original.id]);
+      expect(kept.outcome).toBe("did_not_hold");
+      expect(kept.returned_at).toBeInstanceOf(Date);
+      const reportedPart = (row: Record<string, unknown>) => Object.fromEntries(Object.entries(row).filter(([key]) => key !== "outcome" && key !== "returned_at"));
+      expect(reportedPart(kept)).toEqual(reportedPart(original));
+      expect(reopened.body.diagnosis).toMatchObject({
+        status: "open",
+        confirmedFix: null,
+        fix: null,
+        previousFixes: [{ id: original.id, attempt: 1, outcome: "did_not_hold", returnedAt: expect.any(String), description: "Replaced the spark plugs", matchedCauseRank: 1, matchedCauseTitle: "Worn spark plugs", fixedOn: "2026-09-01", notes: "All four" }],
+      });
+      // An open issue again: it counts as one, and the card still counts the repair that was reported.
+      expect((await detail(app, vehicleId)).openIssues.map((d: { id: string }) => d.id)).toEqual([id]);
+
+      // 4) A new repair can be recorded later. It is the next attempt; the first stays as it was.
+      const second = await outcome(app, id, { outcome: "fixed", description: "Cracked vacuum hose", matchedCauseRank: 2, fixedOn: "2026-10-05" });
+      expect(second.body.diagnosis).toMatchObject({
+        status: "resolved",
+        confirmedFix: { attempt: 2, outcome: "fixed", description: "Cracked vacuum hose", matchedCauseTitle: "Vacuum leak" },
+        fix: { description: "Cracked vacuum hose", fixedOn: "2026-10-05" },
+        previousFixes: [{ id: original.id, outcome: "did_not_hold", description: "Replaced the spark plugs" }],
+      });
+      expect(await count("confirmed_fixes")).toBe(2);
+
+      // Correcting the current repair edits only that one. The earlier one is never edited.
+      await outcome(app, id, { outcome: "fixed", description: "Cracked vacuum hose and intake boot", fixedOn: "2026-10-05" });
+      expect(await count("confirmed_fixes")).toBe(2);
+      expect(await one(`SELECT * FROM confirmed_fixes WHERE id = $1`, [original.id])).toEqual(kept);
+
+      // It can come back again: the second is kept too, and both stay in order.
+      await outcome(app, id, { outcome: "reopen" });
+      expect((await rows(`SELECT attempt, outcome, returned_at IS NOT NULL AS returned FROM confirmed_fixes ORDER BY attempt`))).toEqual([
+        { attempt: 1, outcome: "did_not_hold", returned: true },
+        { attempt: 2, outcome: "did_not_hold", returned: true },
+      ]);
+      // Saying it went away afterwards keeps that history as well.
+      expect((await outcome(app, id, { outcome: "dismissed" })).body.diagnosis).toMatchObject({ status: "dismissed", previousFixes: [{ attempt: 1 }, { attempt: 2 }] });
+      expect(await count("confirmed_fixes")).toBe(2);
+
+      // The timeline shows every reported repair, and which ones did not hold.
+      const page = await detail(app, vehicleId);
+      expect(page.timeline.filter((t: { kind: string }) => t.kind === "fix").map((t: { description: string; outcome: string }) => [t.description, t.outcome])).toEqual([
+        ["Cracked vacuum hose and intake boot", "did_not_hold"],
+        ["Replaced the spark plugs", "did_not_hold"],
+      ]);
+      expect(page.vehicle.stats).toMatchObject({ openIssues: 0, repairs: 2 });
+
+      // The AI's answer was never touched by any of this.
+      expect((await one(`SELECT result FROM diagnoses WHERE id = $1`, [id])).result).toEqual(predicted);
+    });
+
+    // Two submissions at the same moment cannot be run on this test database (one shared
+    // backend; see docs/database.md). The database rule that one attempt is stored once is
+    // tested in the constraints suite; here, the same repair submitted twice in a row.
+    it("records one repair when the same repair is submitted twice", async () => {
+      const app = await startApp();
+      const vehicleId = await addVehicle(app);
+      const id = (await diagnose(app, { vehicleId })).body.saved.id as string;
+      await outcome(app, id, { outcome: "fixed", description: "New battery" });
+      await outcome(app, id, { outcome: "reopen" });
+
+      const a = await outcome(app, id, { outcome: "fixed", description: "New alternator" });
+      const b = await outcome(app, id, { outcome: "fixed", description: "New alternator" });
+      expect([a.status, b.status]).toEqual([200, 200]);
+      expect(await rows(`SELECT attempt, outcome, description FROM confirmed_fixes ORDER BY attempt`)).toEqual([
+        { attempt: 1, outcome: "did_not_hold", description: "New battery" },
+        { attempt: 2, outcome: "fixed", description: "New alternator" },
+      ]);
     });
 
     /* ───────────── the vehicle timeline ───────────── */
@@ -458,9 +548,9 @@ export function garageSuite() {
       expect(card).toMatchObject({ year: "2015", make: "Toyota", model: "Camry", trim: "SE", odometerValue: 138000, odometerUnit: "km" });
       expect(card.stats).toEqual({
         openIssues: 1, diagnoses: 2, lastDiagnosisAt: expect.any(String), maintenanceRecords: 2,
-        lastMaintenance: { serviceType: "Oil Change", date: "2026-09-20" },
+        lastMaintenance: { serviceType: "Oil Change", date: "2026-09-20" }, repairs: 1,
       });
-      expect(vehicles.find((v) => v.id === empty)!.stats).toEqual({ openIssues: 0, diagnoses: 0, lastDiagnosisAt: null, maintenanceRecords: 0, lastMaintenance: null });
+      expect(vehicles.find((v) => v.id === empty)!.stats).toEqual({ openIssues: 0, diagnoses: 0, lastDiagnosisAt: null, maintenanceRecords: 0, lastMaintenance: null, repairs: 0 });
       // No invented scores of any kind.
       expect(JSON.stringify(vehicles)).not.toMatch(/health|score|condition|urgency|remaining|percent/i);
       expect((await detail(app, camry)).openIssues.map((d: { id: string }) => d.id)).toEqual([open]);
@@ -535,7 +625,7 @@ export function garageSuite() {
 
     /* ───────────── removing a vehicle ───────────── */
 
-    it("deletes a vehicle that has no history, and archives one that does", async () => {
+    it("archives a removed vehicle, with or without history, and keeps everything recorded for it", async () => {
       const app = await startApp();
       const bare = await addVehicle(app, { year: "2001", make: "Mazda", model: "Miata", engine: "" });
       const used = await addVehicle(app);
@@ -548,14 +638,17 @@ export function garageSuite() {
       };
       const garage = async (query = "") => ((await (await app.garage.GET(request(`/api/garage${query}`))).json()).vehicles as Array<{ id: string }>).map((v) => v.id);
 
-      expect(await remove(bare)).toEqual({ status: 200, body: { ok: true, archived: false } });
-      expect(await count(`garage_vehicles WHERE id = '${bare}'`)).toBe(0);
+      // Removing never deletes: even a vehicle with nothing recorded is archived.
+      expect(await remove(bare)).toEqual({ status: 200, body: { ok: true, archived: true } });
+      expect(await count(`garage_vehicles WHERE id = '${bare}' AND archived_at IS NOT NULL`)).toBe(1);
+      // Removing it again changes nothing.
+      expect(await remove(bare)).toEqual({ status: 200, body: { ok: true, archived: true } });
 
       // With history: nothing is deleted. It leaves the garage and can come back.
       expect(await remove(used)).toEqual({ status: 200, body: { ok: true, archived: true } });
       expect(await garage()).toEqual([]);
-      expect(await garage("?archived=1")).toEqual([used]);
-      expect([await count("garage_vehicles"), await count("diagnoses"), await count("confirmed_fixes"), await count("maintenance_records")]).toEqual([1, 1, 1, 1]);
+      expect((await garage("?archived=1")).sort()).toEqual([bare, used].sort());
+      expect([await count("garage_vehicles"), await count("diagnoses"), await count("confirmed_fixes"), await count("maintenance_records")]).toEqual([2, 1, 1, 1]);
       expect((await detail(app, used)).timeline).toHaveLength(3);
       // An archived vehicle takes no new diagnoses.
       expect((await diagnose(app, { vehicleId: used, symptoms: "Something new" })).body.saved).toBeNull();
@@ -573,6 +666,75 @@ export function garageSuite() {
       await pool.query(`DELETE FROM users WHERE id = 'ann'`);
       expect([await count("garage_vehicles"), await count("diagnoses"), await count("confirmed_fixes"), await count("maintenance_records")]).toEqual([1, 1, 0, 0]);
       expect((await one(`SELECT user_id FROM diagnoses`)).user_id).toBe("bob");
+    });
+
+    it("deletes an archived vehicle for good, with all its history, only for its owner and only when confirmed", async () => {
+      const app = await startApp();
+      const build = async (vehicleId: string) => {
+        const id = (await diagnose(app, { vehicleId })).body.saved.id as string;
+        await outcome(app, id, { outcome: "fixed", description: "Ignition coil" });
+        await outcome(app, id, { outcome: "reopen" }); // a repair that did not hold is deleted too
+        await outcome(app, id, { outcome: "fixed", description: "Spark plugs" });
+        await diagnose(app, { vehicleId, symptoms: "A second problem" });
+        await app.maintenance.POST(request("/api/maintenance", "POST", { vehicleId, date: "2026-09-20", serviceType: "Oil Change" }));
+        await app.maintenance.POST(request("/api/maintenance", "POST", { vehicleId, date: "2026-10-01", serviceType: "Inspection" }));
+        return id;
+      };
+      const camry = await addVehicle(app);
+      const camryDiagnosis = await build(camry);
+      const civic = await addVehicle(app, { year: "2020", make: "Honda", model: "Civic", engine: "" });
+      await build(civic);
+      signedIn = BOB;
+      const bobsCar = await addVehicle(app);
+      await build(bobsCar);
+      await app.vehicle.DELETE(request(`/api/garage/${bobsCar}`, "DELETE"), withId(bobsCar));
+      signedIn = ANN;
+
+      const destroy = async (vehicleId: string, body: unknown = { confirm: "DELETE" }) => {
+        const res = await app.permanentDelete.POST(request(`/api/garage/${vehicleId}/permanent-delete`, "POST", body), withId(vehicleId));
+        return { status: res.status, body: await res.json() };
+      };
+      const counts = async () => ({
+        vehicles: await count("garage_vehicles"),
+        diagnoses: await count("diagnoses"),
+        repairs: await count("confirmed_fixes"),
+        maintenance: await count("maintenance_records"),
+      });
+      const everything = { vehicles: 3, diagnoses: 6, repairs: 6, maintenance: 6 };
+      expect(await counts()).toEqual(everything);
+
+      // A vehicle still in the garage cannot be deleted for good: it must be archived first.
+      expect(await destroy(camry)).toMatchObject({ status: 409, body: { code: "not_archived" } });
+      expect(await counts()).toEqual(everything);
+      await app.vehicle.DELETE(request(`/api/garage/${camry}`, "DELETE"), withId(camry));
+
+      // Archived, but not confirmed: nothing happens.
+      for (const body of [{}, { confirm: "delete" }, { confirm: "yes" }, { confirm: true }, { permanent: true }]) {
+        expect(await destroy(camry, body), JSON.stringify(body)).toMatchObject({ status: 400, body: { code: "confirm_required" } });
+      }
+      expect(await counts()).toEqual(everything);
+
+      // Someone else's archived vehicle answers "not found", and stays.
+      expect((await destroy(bobsCar)).status).toBe(404);
+      // Signed out: refused.
+      signedIn = null;
+      expect((await destroy(camry)).status).toBe(401);
+      signedIn = ANN;
+      expect(await counts()).toEqual(everything);
+
+      // The owner, archived, confirmed: the vehicle goes, with its service records, diagnoses and every reported repair.
+      expect(await destroy(camry)).toEqual({ status: 200, body: { ok: true, deleted: { maintenance: 2, diagnoses: 2, repairs: 2 } } });
+      expect(await counts()).toEqual({ vehicles: 2, diagnoses: 4, repairs: 4, maintenance: 4 });
+      for (const table of ["diagnoses", "confirmed_fixes", "maintenance_records"]) expect(await count(`${table} WHERE vehicle_id = '${camry}'`)).toBe(0);
+      expect(await count(`garage_vehicles WHERE id = '${camry}'`)).toBe(0);
+      // Nothing of the other vehicle, or of the other person, was touched.
+      for (const vehicleId of [civic, bobsCar]) {
+        expect([await count(`diagnoses WHERE vehicle_id = '${vehicleId}'`), await count(`confirmed_fixes WHERE vehicle_id = '${vehicleId}'`), await count(`maintenance_records WHERE vehicle_id = '${vehicleId}'`)]).toEqual([2, 2, 2]);
+      }
+      // It is gone from every view, and asking again finds nothing.
+      expect((await app.diagnosis.GET(request(`/api/diagnoses/${camryDiagnosis}`), withId(camryDiagnosis))).status).toBe(404);
+      expect((await app.vehicle.GET(request(`/api/garage/${camry}`), withId(camry))).status).toBe(404);
+      expect((await destroy(camry)).status).toBe(404);
     });
 
     /* ───────────── importing what a device holds ───────────── */

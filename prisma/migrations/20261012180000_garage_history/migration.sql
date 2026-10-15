@@ -28,9 +28,16 @@
 --
 -- Delete behaviour, decided on purpose:
 --   - deleting an ACCOUNT removes its diagnoses and confirmed fixes with it;
---   - a VEHICLE that has diagnoses or confirmed fixes cannot be deleted from
---     under them (ON DELETE NO ACTION). The app archives such a vehicle instead;
---   - a confirmed fix goes with its diagnosis.
+--   - a VEHICLE that has diagnoses or reported repairs cannot be deleted from
+--     under them (ON DELETE NO ACTION). Removing a vehicle archives it. Only an
+--     ARCHIVED vehicle can be deleted for good, and then the app deletes its
+--     repairs, diagnoses and service records itself, in one transaction, before
+--     the vehicle: nothing cascades from a vehicle to its history by accident;
+--   - a reported repair goes with its diagnosis.
+--
+-- Reported repairs are a history, not a single value: a diagnosis can have
+-- several (attempt 1, 2, ...). Reopening a diagnosis marks its standing repair
+-- 'did_not_hold' and keeps the row.
 
 -- Fail rather than wait behind a busy table (see converge_and_expand).
 SET LOCAL lock_timeout = '15s';
@@ -101,6 +108,9 @@ CREATE TABLE "confirmed_fixes" (
     "user_id" TEXT NOT NULL,
     "vehicle_id" TEXT NOT NULL,
     "diagnosis_id" TEXT NOT NULL,
+    "attempt" INTEGER NOT NULL DEFAULT 1,
+    "outcome" TEXT NOT NULL DEFAULT 'fixed',
+    "returned_at" TIMESTAMPTZ,
     "description" TEXT NOT NULL,
     "matched_cause_rank" INTEGER,
     "matched_cause_title" TEXT,
@@ -113,6 +123,10 @@ CREATE TABLE "confirmed_fixes" (
 
     CONSTRAINT "confirmed_fixes_pkey" PRIMARY KEY ("id"),
     CONSTRAINT "confirmed_fixes_description_check" CHECK (BTRIM("description") <> ''),
+    CONSTRAINT "confirmed_fixes_outcome_check" CHECK ("outcome" IN ('fixed', 'did_not_hold')),
+    CONSTRAINT "confirmed_fixes_attempt_check" CHECK ("attempt" >= 1),
+    -- "The problem came back" always carries the time it was said, and only then.
+    CONSTRAINT "confirmed_fixes_returned_check" CHECK (("outcome" = 'did_not_hold') = ("returned_at" IS NOT NULL)),
     CONSTRAINT "confirmed_fixes_odometer_check"
       CHECK ("odometer_value" >= 0 AND ("odometer_unit" IS NULL OR "odometer_unit" IN ('km', 'mi')))
 );
@@ -131,8 +145,9 @@ CREATE UNIQUE INDEX "diagnoses_user_id_ticket_id_key" ON "diagnoses"("user_id", 
 -- An import from a device cannot create the same diagnosis twice.
 CREATE UNIQUE INDEX "diagnoses_user_id_import_key_key" ON "diagnoses"("user_id", "import_key");
 
--- One outcome per diagnosis.
-CREATE UNIQUE INDEX "confirmed_fixes_diagnosis_id_key" ON "confirmed_fixes"("diagnosis_id");
+-- One row per reported repair of a diagnosis: attempt 1, 2, ... A double
+-- submit cannot record the same attempt twice.
+CREATE UNIQUE INDEX "confirmed_fixes_diagnosis_id_attempt_key" ON "confirmed_fixes"("diagnosis_id", "attempt");
 
 CREATE INDEX "confirmed_fixes_vehicle_id_fixed_on_idx" ON "confirmed_fixes"("vehicle_id", "fixed_on");
 

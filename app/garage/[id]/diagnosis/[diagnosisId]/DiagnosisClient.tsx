@@ -64,7 +64,13 @@ export default function DiagnosisClient({ vehicleId, diagnosisId }: { vehicleId:
         <StatusBadge status={diagnosis.status} />
         <span className="text-xs text-slate-400">This is the diagnosis as it was saved. Opening it does not run a new one.</span>
       </div>
-      <OutcomePanel diagnosis={diagnosis} defaultUnit={unit} onChange={setDiagnosis} />
+      {/* A new key whenever the standing repair changes, so a repair reported after a reopen starts from an empty form. */}
+      <OutcomePanel
+        key={diagnosis.confirmedFix?.id ?? `none-${diagnosis.previousFixes?.length ?? 0}`}
+        diagnosis={diagnosis}
+        defaultUnit={unit}
+        onChange={setDiagnosis}
+      />
       <StoredDiagnosisView diagnosis={diagnosis} />
     </GaragePage>
   );

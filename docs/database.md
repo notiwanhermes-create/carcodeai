@@ -25,10 +25,10 @@ How the database is defined, changed, backed up and tested. Written in Phase 2D
 | --- | --- | --- | --- |
 | `users` | `User` | Accounts: email, password hash, Google identity, verification state | never automatically |
 | `email_verification_tokens` | `EmailVerificationToken` | Hashes of emailed sign-up links (24-hour life) | the account is deleted; a new link is issued; `db:prune` after 7 days |
-| `garage_vehicles` | `Vehicle` | A signed-in user's vehicles, each with its current mileage | the user removes a vehicle that has **no** history (one with history is archived, not deleted); the account is deleted |
-| `diagnoses` | `Diagnosis` | A signed-in user's saved diagnoses: what they entered, the answer as it was given, follow-up answers, and whether it is open, resolved or dismissed | the account is deleted |
-| `confirmed_fixes` | `ConfirmedFix` | What the user says actually fixed a diagnosis | the user reopens the diagnosis; the account is deleted |
-| `maintenance_records` | `MaintenanceRecord` | Service entries for a vehicle | the user deletes the entry; its vehicle or account is deleted |
+| `garage_vehicles` | `Vehicle` | A signed-in user's vehicles, each with its current mileage | the user deletes an **archived** vehicle permanently (removing a vehicle only archives it); the account is deleted |
+| `diagnoses` | `Diagnosis` | A signed-in user's saved diagnoses: what they entered, the answer as it was given, follow-up answers, and whether it is open, resolved or dismissed | its archived vehicle is deleted permanently; the account is deleted |
+| `confirmed_fixes` | `ConfirmedFix` | Every repair the user reported for a diagnosis, including ones they later said did not hold | its archived vehicle is deleted permanently; the account is deleted (never on a reopen) |
+| `maintenance_records` | `MaintenanceRecord` | Service entries for a vehicle | the user deletes the entry; its archived vehicle is deleted permanently; the account is deleted |
 | `rate_limits` | `RateLimit` | Short-lived counters (see below) | automatically, after `expires_at` |
 | `feedback` | `Feedback` | Messages from the feedback form (64-bit id) | never automatically |
 | `_prisma_migrations` | (Prisma's own) | Which migrations have been applied | never |
@@ -57,18 +57,30 @@ and is offered for import, with a preview, after they sign in.
 - **A confirmed repair is the user's report, kept apart from the AI's answer.**
   `confirmed_fixes.description` is free text. `matched_cause_rank` and
   `matched_cause_title` are filled in only when the user says the repair was
-  one of the causes that diagnosis listed; otherwise they stay empty. One
-  repair per diagnosis.
+  one of the causes that diagnosis listed; otherwise they stay empty.
+- **Repairs are a history.** A diagnosis can collect several repairs over time,
+  numbered by `attempt` (unique per diagnosis, so a double submit cannot store
+  one twice). The one that currently stands has `outcome = 'fixed'`. When the
+  user says the problem came back, the diagnosis reopens and that repair is
+  **kept**: its `outcome` becomes `did_not_hold` and `returned_at` records
+  when. Nothing else in the row changes, then or later, and it is never
+  deleted on a reopen. A repair reported after that is the next attempt.
 - **Opening a saved diagnosis reads these rows and nothing else.** No AI call.
 - **The timeline is not a table.** A vehicle's history is put together, newest
   first, from `diagnoses`, `confirmed_fixes` and `maintenance_records` each
   time it is shown. Nothing is copied.
-- **Removing a vehicle never removes history.** The foreign keys from
-  `diagnoses` and `confirmed_fixes` to the vehicle are `NO ACTION`: the database
-  itself refuses to delete a vehicle that has either. The app archives such a
-  vehicle (`archived_at`) and it can be restored. Only a vehicle with no service
-  records, diagnoses or repairs is deleted. Deleting the **account** still
-  removes everything that belongs to it.
+- **Removing a vehicle archives it.** It leaves the garage (`archived_at`),
+  nothing recorded for it is deleted, and it can be restored. This is true
+  whether or not it has history.
+- **Deleting a vehicle for good is a separate, explicit step** (`POST
+  /api/garage/<id>/permanent-delete` with `{ "confirm": "DELETE" }`). It works
+  only on an **archived** vehicle of the signed-in user. In one transaction it
+  deletes the vehicle's reported repairs, diagnoses and service records, then
+  the vehicle; if any step fails, nothing is deleted. No copy is kept by the
+  app. The foreign keys from `diagnoses` and `confirmed_fixes` to the vehicle
+  stay `NO ACTION`, so the database still refuses to delete a vehicle from
+  under its history by any other route. Deleting the **account** removes
+  everything that belongs to it.
 - **Current mileage** is `garage_vehicles.odometer_value` + `odometer_unit`
   (`km` or `mi`). A higher reading in the same unit, from the vehicle page, a
   diagnosis or a service record, raises it. A lower one, or one in the other
@@ -230,7 +242,9 @@ Adds what the garage needs to keep history on the server. **It only adds.**
 - **Creates:** tables `diagnoses` and `confirmed_fixes` with their indexes,
   foreign keys and check constraints (status is `open`, `resolved` or
   `dismissed`; source is `app` or `device_import`; a repair's description is
-  not blank; a mileage is 0 to 9,999,999 with unit `km`, `mi` or none).
+  not blank; a repair's outcome is `fixed` or `did_not_hold`, with `returned_at`
+  set exactly when it did not hold; attempts start at 1 and are unique per
+  diagnosis; a mileage is 0 to 9,999,999 with unit `km`, `mi` or none).
 - **Changes:** `garage_vehicles` gains five optional columns: `trim`,
   `odometer_value`, `odometer_unit`, `odometer_updated_at`, `archived_at`, and
   one check constraint on the mileage.
@@ -595,5 +609,7 @@ What they cover (`tests/integration/`):
   or a failed one is not; a follow-up updates the same record; a saved
   diagnosis reopens without an AI call; another user's vehicles, diagnoses and
   records answer "not found"; confirmed repairs and reopening; the timeline;
-  card facts; the mileage rules; delete versus archive; and importing a
+  card facts; the mileage rules; a reopened diagnosis keeping its earlier
+  repairs; removal archiving; permanent deletion only of an archived vehicle,
+  only by its owner, only with the confirmation, all in one transaction; and importing a
   device's data, including duplicates and a repeated import.

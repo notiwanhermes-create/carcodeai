@@ -2624,7 +2624,8 @@ export default function Home() {
                         v.stats && v.stats.openIssues > 0 ? `${tr("openIssuesLabel", lang)}: ${v.stats.openIssues}` : "",
                       ].filter(Boolean).join(" · ")
                     : "";
-                  const hasHistory = signedIn && !!v.stats && v.stats.diagnoses + v.stats.maintenanceRecords > 0;
+                  // Signed in, removing a vehicle archives it (nothing is deleted). A guest's vehicle lives on this device and is deleted.
+                  const archivesOnRemove = signedIn;
                   return (
                     <div key={v.id}>
                       <div className={cn("rounded-2xl border p-4 transition-all", isActive ? "border-blue-400/30 bg-blue-500/10" : t("border-white/10 bg-white/5 hover:border-white/20", "border-slate-200 bg-slate-50 hover:border-slate-300"))}>
@@ -2659,7 +2660,7 @@ export default function Home() {
                               disabled={garageSyncing}
                               onClick={() =>
                                 setConfirmDialog(
-                                  hasHistory
+                                  archivesOnRemove
                                     ? {
                                         // The account keeps a vehicle's history: it is archived, and can be restored.
                                         open: true,

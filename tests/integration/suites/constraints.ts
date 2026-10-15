@@ -135,18 +135,29 @@ export function constraintSuite() {
       await refuses(diagnosis("d4", { vehicle_id: "'no-car'" }), /diagnoses_vehicle_id_fkey/);
       await refuses(diagnosis("d4", { user_id: "'nobody'" }), /diagnoses_user_id_fkey/);
 
-      // A confirmed repair: one per diagnosis, never blank.
-      const fix = (id: string, description: string) => `INSERT INTO confirmed_fixes (id, user_id, vehicle_id, diagnosis_id, description, fixed_on) VALUES ('${id}', 'ann', 'ann-car', 'd1', '${description}', '2026-10-12')`;
+      // A reported repair: never blank, one row per attempt, and a known outcome.
+      const fix = (id: string, description: string, attempt = 1) =>
+        `INSERT INTO confirmed_fixes (id, user_id, vehicle_id, diagnosis_id, description, fixed_on, attempt) VALUES ('${id}', 'ann', 'ann-car', 'd1', '${description}', '2026-10-12', ${attempt})`;
       await refuses(fix("f0", "   "), /confirmed_fixes_description_check/);
       await pool.query(fix("f1", "Ignition coil"));
-      await refuses(fix("f2", "Spark plugs"), /confirmed_fixes_diagnosis_id_key/);
+      expect((await rows(`SELECT attempt, outcome, returned_at FROM confirmed_fixes WHERE id = 'f1'`))[0]).toEqual({ attempt: 1, outcome: "fixed", returned_at: null });
+      await refuses(fix("f2", "Spark plugs"), /confirmed_fixes_diagnosis_id_attempt_key/); // the same attempt twice
+      await refuses(fix("f2", "Spark plugs", 0), /confirmed_fixes_attempt_check/);
+      await refuses(`UPDATE confirmed_fixes SET outcome = 'maybe'`, /confirmed_fixes_outcome_check/);
+      // "It came back" always carries when it was said, and only then.
+      await refuses(`UPDATE confirmed_fixes SET outcome = 'did_not_hold'`, /confirmed_fixes_returned_check/);
+      await refuses(`UPDATE confirmed_fixes SET returned_at = NOW()`, /confirmed_fixes_returned_check/);
+      await pool.query(`UPDATE confirmed_fixes SET outcome = 'did_not_hold', returned_at = NOW()`);
+      // A later attempt sits beside the earlier one: a diagnosis keeps its whole repair history.
+      await pool.query(fix("f2", "Spark plugs", 2));
+      expect(await count("confirmed_fixes")).toBe(2);
       await refuses(`UPDATE confirmed_fixes SET odometer_value = -1`, /confirmed_fixes_odometer_check/);
       await refuses(`INSERT INTO confirmed_fixes (id, user_id, vehicle_id, diagnosis_id, description, fixed_on) VALUES ('f3', 'ann', 'ann-car', 'no-diagnosis', 'x', '2026-10-12')`, /confirmed_fixes_diagnosis_id_fkey/);
 
       // A vehicle cannot be deleted from under its history...
       await refuses(`DELETE FROM garage_vehicles WHERE id = 'ann-car'`, /diagnoses_vehicle_id_fkey|confirmed_fixes_vehicle_id_fkey/);
       expect(await count("garage_vehicles")).toBe(2);
-      // ...a confirmed repair goes with its diagnosis...
+      // ...reported repairs go with their diagnosis...
       await pool.query(`DELETE FROM diagnoses WHERE id = 'd1'`);
       expect(await count("confirmed_fixes")).toBe(0);
       // ...and deleting an account takes its diagnoses with it, and nobody else's.
@@ -180,7 +191,7 @@ export function constraintSuite() {
     it("has an index for every lookup the app makes", async () => {
       const indexes = Object.fromEntries((await rows(`SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'`)).map((i) => [i.indexname, i.indexdef as string]));
       expect(Object.keys(indexes).sort()).toEqual([
-        "confirmed_fixes_diagnosis_id_key", //          one outcome per diagnosis
+        "confirmed_fixes_diagnosis_id_attempt_key", //  one row per reported repair of a diagnosis
         "confirmed_fixes_pkey",
         "confirmed_fixes_user_id_created_at_idx",
         "confirmed_fixes_vehicle_id_fixed_on_idx", //   a vehicle's timeline
@@ -238,6 +249,9 @@ export function constraintSuite() {
         "confirmed_fixes.description": "text",
         "confirmed_fixes.fixed_on": "date",
         "confirmed_fixes.matched_cause_rank": "integer",
+        "confirmed_fixes.attempt": "integer",
+        "confirmed_fixes.outcome": "text",
+        "confirmed_fixes.returned_at": "timestamp with time zone",
         "maintenance_records.date": "text", //             exactly what the user typed
         "maintenance_records.service_date": "date",
         "maintenance_records.mileage": "text", //          exactly what the user typed

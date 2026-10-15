@@ -303,12 +303,12 @@ export function TimelineList({ vehicleId, items, limit }: { vehicleId: string; i
         const diagnosisHref = `/garage/${encodeURIComponent(vehicleId)}/diagnosis/${encodeURIComponent(item.kind === "fix" ? item.diagnosisId : item.id)}`;
         return (
           <li key={`${item.kind}-${item.id}`} data-timeline-kind={item.kind} className="flex gap-3">
-            <span className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", KIND_DOT[item.kind])} />
+            <span className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", item.kind === "fix" && item.outcome === "did_not_hold" ? "bg-slate-500" : KIND_DOT[item.kind])} />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
                 <span>{item.kind === "maintenance" && !/^\d{4}-\d{2}-\d{2}$/.test(item.dateText) ? item.dateText : formatDay(item.at)}</span>
                 <span className="text-slate-600">·</span>
-                <span>{KIND_LABEL[item.kind]}</span>
+                <span>{item.kind === "fix" && item.outcome === "did_not_hold" ? "Repair that did not hold" : KIND_LABEL[item.kind]}</span>
               </div>
               {item.kind === "diagnosis" && (
                 <Link href={diagnosisHref} className="mt-0.5 block text-sm text-slate-100 hover:text-blue-300">
@@ -320,8 +320,8 @@ export function TimelineList({ vehicleId, items, limit }: { vehicleId: string; i
                 </Link>
               )}
               {item.kind === "fix" && (
-                <Link href={diagnosisHref} className="mt-0.5 block text-sm text-slate-100 hover:text-blue-300">
-                  <span className="font-medium text-emerald-300">{item.description}</span>
+                <Link href={diagnosisHref} data-fix-outcome={item.outcome} className="mt-0.5 block text-sm text-slate-100 hover:text-blue-300">
+                  <span className={cn("font-medium", item.outcome === "did_not_hold" ? "text-slate-300" : "text-emerald-300")}>{item.description}</span>
                   {item.odometerValue != null && <span className="ml-2 text-xs text-slate-400">{formatOdometer(item.odometerValue, item.odometerUnit)}</span>}
                 </Link>
               )}

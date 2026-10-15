@@ -17,6 +17,7 @@ import { sameVehicle, type ImportVehicle } from "./garage-import";
 import {
   buildTimeline,
   isDiagnosisStatus,
+  isFixOutcome,
   issueTitle,
   splitCodes,
   type ConfirmedFixDto,
@@ -79,14 +80,14 @@ export async function findOwnedVehicle(userId: string, vehicleId: string, db: Db
   return db.vehicle.findFirst({ where: { id: vehicleId, userId }, select: VEHICLE_FIELDS });
 }
 
-const EMPTY_STATS: VehicleStats = { openIssues: 0, diagnoses: 0, lastDiagnosisAt: null, maintenanceRecords: 0, lastMaintenance: null };
+const EMPTY_STATS: VehicleStats = { openIssues: 0, diagnoses: 0, lastDiagnosisAt: null, maintenanceRecords: 0, lastMaintenance: null, repairs: 0 };
 
 /** Facts about each vehicle, counted from its records. Nothing here is estimated. */
 async function statsFor(userId: string, vehicleIds: string[]): Promise<Map<string, VehicleStats>> {
   const out = new Map<string, VehicleStats>(vehicleIds.map((id) => [id, { ...EMPTY_STATS }]));
   if (vehicleIds.length === 0) return out;
 
-  const [byStatus, records] = await Promise.all([
+  const [byStatus, records, repairs] = await Promise.all([
     prisma.diagnosis.groupBy({
       by: ["vehicleId", "status"],
       where: { userId, vehicleId: { in: vehicleIds } },
@@ -97,7 +98,13 @@ async function statsFor(userId: string, vehicleIds: string[]): Promise<Map<strin
       where: { userId, vehicleId: { in: vehicleIds } },
       select: { vehicleId: true, serviceType: true, date: true, serviceDate: true, createdAt: true },
     }),
+    prisma.confirmedFix.groupBy({ by: ["vehicleId"], where: { userId, vehicleId: { in: vehicleIds } }, _count: { _all: true } }),
   ]);
+
+  for (const row of repairs) {
+    const stats = out.get(row.vehicleId);
+    if (stats) stats.repairs = row._count._all;
+  }
 
   for (const row of byStatus) {
     const stats = out.get(row.vehicleId);
@@ -160,7 +167,8 @@ const SUMMARY_FIELDS = {
   codeInput: true,
   diagnosedAt: true,
   updatedAt: true,
-  confirmedFix: { select: { description: true, fixedOn: true } },
+  // Only the repair that currently stands. Earlier ones that did not hold are history.
+  confirmedFixes: { where: { outcome: "fixed" }, orderBy: { attempt: "desc" }, take: 1, select: { description: true, fixedOn: true } },
 } as const;
 
 type SummaryRow = Prisma.DiagnosisGetPayload<{ select: typeof SUMMARY_FIELDS }>;
@@ -174,7 +182,7 @@ function toSummary(d: SummaryRow): DiagnosisSummaryDto {
     codes: splitCodes(d.codeInput),
     diagnosedAt: d.diagnosedAt.toISOString(),
     updatedAt: d.updatedAt.toISOString(),
-    fix: d.confirmedFix ? { description: d.confirmedFix.description, fixedOn: day(d.confirmedFix.fixedOn) } : null,
+    fix: d.confirmedFixes[0] ? { description: d.confirmedFixes[0].description, fixedOn: day(d.confirmedFixes[0].fixedOn) } : null,
   };
 }
 
@@ -189,11 +197,26 @@ export async function listDiagnoses(userId: string, filter: { vehicleId?: string
   return rows.map(toSummary);
 }
 
-type FixRow = { id: string; description: string; matchedCauseRank: number | null; matchedCauseTitle: string | null; fixedOn: Date; odometerValue: number | null; odometerUnit: string | null; notes: string | null };
+type FixRow = {
+  id: string;
+  attempt: number;
+  outcome: string;
+  returnedAt: Date | null;
+  description: string;
+  matchedCauseRank: number | null;
+  matchedCauseTitle: string | null;
+  fixedOn: Date;
+  odometerValue: number | null;
+  odometerUnit: string | null;
+  notes: string | null;
+};
 
 function toFixDto(f: FixRow): ConfirmedFixDto {
   return {
     id: f.id,
+    attempt: f.attempt,
+    outcome: isFixOutcome(f.outcome) ? f.outcome : "fixed",
+    returnedAt: f.returnedAt ? f.returnedAt.toISOString() : null,
     description: f.description,
     matchedCauseRank: f.matchedCauseRank,
     matchedCauseTitle: f.matchedCauseTitle,
@@ -223,9 +246,12 @@ function asStoredResult(value: unknown): StoredResult {
  */
 export async function getDiagnosis(userId: string, diagnosisId: string): Promise<DiagnosisDetailDto | null> {
   if (!userId || !diagnosisId) return null;
-  const d = await prisma.diagnosis.findFirst({ where: { id: diagnosisId, userId }, include: { confirmedFix: true } });
+  const d = await prisma.diagnosis.findFirst({ where: { id: diagnosisId, userId }, include: { confirmedFixes: { orderBy: { attempt: "asc" } } } });
   if (!d) return null;
   const snapshot = (d.vehicleSnapshot ?? {}) as Partial<VehicleSnapshot>;
+  // The repair that stands now, and the ones before it that did not hold.
+  const standing = d.confirmedFixes.filter((f) => f.outcome !== "did_not_hold").at(-1) ?? null;
+  const previous = d.confirmedFixes.filter((f) => f.outcome === "did_not_hold");
   return {
     id: d.id,
     vehicleId: d.vehicleId,
@@ -234,7 +260,7 @@ export async function getDiagnosis(userId: string, diagnosisId: string): Promise
     codes: splitCodes(d.codeInput),
     diagnosedAt: d.diagnosedAt.toISOString(),
     updatedAt: d.updatedAt.toISOString(),
-    fix: d.confirmedFix ? { description: d.confirmedFix.description, fixedOn: day(d.confirmedFix.fixedOn) } : null,
+    fix: standing ? { description: standing.description, fixedOn: day(standing.fixedOn) } : null,
     source: d.source === "device_import" ? "device_import" : "app",
     language: d.language,
     vehicle: { year: snapshot.year || "", make: snapshot.make || "", model: snapshot.model || "", engine: snapshot.engine || "", trim: snapshot.trim || "" },
@@ -247,7 +273,8 @@ export async function getDiagnosis(userId: string, diagnosisId: string): Promise
     odometerValue: d.odometerValue,
     odometerUnit: unitOrNull(d.odometerUnit),
     statusChangedAt: d.statusChangedAt ? d.statusChangedAt.toISOString() : null,
-    confirmedFix: d.confirmedFix ? toFixDto(d.confirmedFix) : null,
+    confirmedFix: standing ? toFixDto(standing) : null,
+    previousFixes: previous.map(toFixDto),
   };
 }
 
@@ -360,11 +387,14 @@ function causeTitleByRank(result: StoredResult, rank: number): string | null {
  * Record what happened to a diagnosed problem.
  *
  *  fixed      → status "resolved", and the repair is stored as a ConfirmedFix.
- *               Saying "fixed" again edits that repair.
+ *               Saying "fixed" again while it stands edits that repair. After a
+ *               reopen it stores a NEW repair, as the next attempt.
  *  not_yet    → stays "open"; only the time of the answer is noted.
  *  dismissed  → status "dismissed" (the problem went away).
- *  reopen     → back to "open". A recorded repair is removed, because the user
- *               is saying it did not fix the problem after all.
+ *  reopen     → back to "open". The repair that stood is KEPT and marked
+ *               "did_not_hold", with the time the user said the problem came
+ *               back. It is never deleted, and from then on never edited: only
+ *               its outcome and that time are written, nothing the user reported.
  *
  * The diagnosis itself (what the AI said) is never changed by any of these.
  */
@@ -397,15 +427,28 @@ export async function recordOutcome(userId: string, diagnosisId: string, input: 
       odometerUnit: input.mileage?.unit ?? null,
       notes: input.notes.trim() || null,
     };
-    await prisma.$transaction(async (tx) => {
-      await tx.confirmedFix.upsert({
-        where: { diagnosisId: d.id },
-        create: { ...fix, userId, vehicleId: d.vehicleId, diagnosisId: d.id },
-        update: { ...fix, updatedAt: now },
+    const save = () =>
+      prisma.$transaction(async (tx) => {
+        // A repair that still stands is being corrected. Otherwise this is a new
+        // one: the first, or the next attempt after one that did not hold.
+        const standing = await tx.confirmedFix.findFirst({ where: { diagnosisId: d.id, userId, outcome: "fixed" }, select: { id: true } });
+        if (standing) {
+          await tx.confirmedFix.update({ where: { id: standing.id }, data: { ...fix, updatedAt: now } });
+        } else {
+          const last = await tx.confirmedFix.aggregate({ where: { diagnosisId: d.id }, _max: { attempt: true } });
+          await tx.confirmedFix.create({ data: { ...fix, userId, vehicleId: d.vehicleId, diagnosisId: d.id, attempt: (last._max.attempt ?? 0) + 1 } });
+        }
+        if (d.status !== "resolved") await tx.diagnosis.update({ where: { id: d.id }, data: { status: "resolved", statusChangedAt: now, updatedAt: now } });
+        await raiseOdometer(tx, d.vehicle, input.mileage);
       });
-      if (d.status !== "resolved") await tx.diagnosis.update({ where: { id: d.id }, data: { status: "resolved", statusChangedAt: now, updatedAt: now } });
-      await raiseOdometer(tx, d.vehicle, input.mileage);
-    });
+    try {
+      await save();
+    } catch (err) {
+      // Two submissions at once both tried to store the same attempt. The first
+      // one is on file; the second now corrects it instead of adding another.
+      if ((err as { code?: string } | null)?.code !== "P2002") throw err;
+      await save();
+    }
   } else if (input.outcome === "not_yet") {
     if (d.status !== "open") return { ok: false, status: 409, error: "This diagnosis is not open. Reopen it first." };
     await prisma.diagnosis.update({ where: { id: d.id }, data: { reviewedAt: now } });
@@ -414,7 +457,8 @@ export async function recordOutcome(userId: string, diagnosisId: string, input: 
     if (d.status !== "dismissed") await prisma.diagnosis.update({ where: { id: d.id }, data: { status: "dismissed", statusChangedAt: now, updatedAt: now } });
   } else {
     await prisma.$transaction([
-      prisma.confirmedFix.deleteMany({ where: { diagnosisId: d.id, userId } }),
+      // Kept, not deleted: what the user reported stays exactly as they wrote it.
+      prisma.confirmedFix.updateMany({ where: { diagnosisId: d.id, userId, outcome: "fixed" }, data: { outcome: "did_not_hold", returnedAt: now } }),
       prisma.diagnosis.update({ where: { id: d.id }, data: { status: "open", statusChangedAt: now, updatedAt: now } }),
     ]);
   }
@@ -471,7 +515,7 @@ export async function vehicleDetail(userId: string, vehicleId: string): Promise<
     prisma.diagnosis.findMany({ where: { userId, vehicleId }, orderBy: { diagnosedAt: "desc" }, take: 200, select: SUMMARY_FIELDS }),
     prisma.confirmedFix.findMany({
       where: { userId, vehicleId },
-      select: { id: true, diagnosisId: true, fixedOn: true, createdAt: true, description: true, odometerValue: true, odometerUnit: true },
+      select: { id: true, diagnosisId: true, fixedOn: true, createdAt: true, description: true, outcome: true, odometerValue: true, odometerUnit: true },
     }),
     prisma.maintenanceRecord.findMany({ where: { userId, vehicleId }, orderBy: { createdAt: "desc" }, take: 500, select: MAINTENANCE_FIELDS }),
     statsFor(userId, [vehicleId]),
@@ -483,6 +527,45 @@ export async function vehicleDetail(userId: string, vehicleId: string): Promise<
     timeline: buildTimeline({ diagnoses, fixes, maintenance }),
     maintenance: maintenance.map(toMaintenanceDto),
   };
+}
+
+/* ───────────────────────── deleting a vehicle for good ───────────────────────── */
+
+export type PermanentDeleteResult =
+  | { outcome: "deleted"; maintenance: number; diagnoses: number; repairs: number }
+  /** No such vehicle in this account. */
+  | { outcome: "not_found" }
+  /** The vehicle is still in the garage. Only an archived vehicle can be deleted for good. */
+  | { outcome: "not_archived" };
+
+/**
+ * Delete an ARCHIVED vehicle and everything recorded for it, for good.
+ *
+ * This is the only place a vehicle is ever deleted. Removing a vehicle from the
+ * garage archives it; this is the separate, explicit second step, and the
+ * caller must already have the user's confirmation.
+ *
+ * One transaction: the repairs, diagnoses and service records go first, then
+ * the vehicle, and if any step fails nothing is deleted. Every statement is
+ * scoped to the signed-in user, and the vehicle is deleted only if it is still
+ * archived at that moment. No copy is kept.
+ */
+export async function deleteVehiclePermanently(userId: string, vehicleId: string): Promise<PermanentDeleteResult> {
+  if (!userId || !vehicleId) return { outcome: "not_found" };
+  return prisma.$transaction(async (tx) => {
+    const vehicle = await tx.vehicle.findFirst({ where: { id: vehicleId, userId }, select: { id: true, archivedAt: true } });
+    if (!vehicle) return { outcome: "not_found" } as const;
+    if (!vehicle.archivedAt) return { outcome: "not_archived" } as const;
+
+    const repairs = await tx.confirmedFix.deleteMany({ where: { vehicleId, userId } });
+    const diagnoses = await tx.diagnosis.deleteMany({ where: { vehicleId, userId } });
+    const maintenance = await tx.maintenanceRecord.deleteMany({ where: { vehicleId, userId } });
+    const removed = await tx.vehicle.deleteMany({ where: { id: vehicleId, userId, archivedAt: { not: null } } });
+    // Restored in the meantime: undo everything above rather than leave a vehicle without its history.
+    if (removed.count !== 1) throw new Error("The vehicle is no longer archived.");
+
+    return { outcome: "deleted", maintenance: maintenance.count, diagnoses: diagnoses.count, repairs: repairs.count } as const;
+  });
 }
 
 /* ───────────────────────── service records ───────────────────────── */

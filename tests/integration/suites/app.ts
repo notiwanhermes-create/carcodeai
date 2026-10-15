@@ -222,9 +222,13 @@ export function appSuite() {
       const listed = await (await app.garage.GET()).json();
       expect(listed.vehicles.map((v: { id: string }) => v.id).sort()).toEqual([vehicle.id, second.vehicle.id].sort());
 
+      // Removing a vehicle archives it (Phase 2E): it leaves the list, and is still on file.
       expect((await app.garageItem.DELETE(request(`/api/garage/${vehicle.id}`, "DELETE"), withId(vehicle.id))).status).toBe(200);
       expect((await (await app.garage.GET()).json()).vehicles.map((v: { id: string }) => v.id)).toEqual([second.vehicle.id]);
-      expect((await app.garageItem.DELETE(request(`/api/garage/${vehicle.id}`, "DELETE"), withId(vehicle.id))).status).toBe(404);
+      expect(await count(`garage_vehicles WHERE id = '${vehicle.id}' AND archived_at IS NOT NULL`)).toBe(1);
+      // Removing it again changes nothing; a vehicle that does not exist is not found.
+      expect(await (await app.garageItem.DELETE(request(`/api/garage/${vehicle.id}`, "DELETE"), withId(vehicle.id))).json()).toEqual({ ok: true, archived: true });
+      expect((await app.garageItem.DELETE(request("/api/garage/no-such-vehicle", "DELETE"), withId("no-such-vehicle"))).status).toBe(404);
     });
 
     it("never shows, changes or deletes another person's vehicle", async () => {

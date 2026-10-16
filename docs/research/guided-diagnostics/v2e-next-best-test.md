@@ -46,13 +46,15 @@ this order:
      competes and is never treated as no.
 3. **Cannot change the remaining causes** (no result rules out or supports
    one, or one cause is left) → excluded.
-4. **A result would conclude a cause already ruled out** → excluded
-   (single-fault conservative).
-5. **Capability shortfall** → **blocked**, with what is missing. This is not
+4. **Capability shortfall** → **blocked**, with what is missing. This is not
    evidence about a cause.
-6. **Required conditions not established** → **blocked**, with the
+5. **Required conditions not established** → **blocked**, with the
    conditions.
-7. **Otherwise** → eligible and ranked.
+6. **Otherwise** → eligible and ranked.
+
+A test is **not** hidden because one of its possible results might
+conflict with earlier evidence. That is only hypothetical; if the result is
+actually observed, the session ends inconclusive (below).
 
 The person chooses with `{ kind: "select_test", test }`. Only a ranked
 candidate is accepted; anything else is refused with the reason. The
@@ -139,6 +141,37 @@ bounded list, in priority order:
 The plan never includes unrelated tests, never restarts the workflow and
 never sets a verdict. Verification still comes only from after-repair
 evidence, under the V2D rules.
+
+## Conflicting evidence ends inconclusive
+
+Under the single-primary-fault assumption, the engine never throws on
+contradictory evidence. A recorded result conflicts when it would:
+
+- support a cause earlier evidence ruled out;
+- rule out a cause earlier evidence supported;
+- reach a conclusion about a ruled-out cause.
+
+When that happens:
+
+1. The conflicting result is kept in the evidence, but none of its effect is
+   applied. The earlier cause state stays exactly as it was: no cause wins,
+   the latest evidence does not override, and no second fault is assumed.
+2. A `conflict` evidence record names the new evidence, each cause, its
+   earlier state, what the new result would have done, and the earlier
+   evidence (by seq) behind that state. Its explanation reads: "The evidence
+   cannot be reconciled under this workflow's single-primary-fault
+   assumption."
+3. The session ends `completed` with `endResult: "inconclusive"` and no
+   conclusion.
+
+Replay and resume reproduce it, and an edited conflict record is refused.
+Invalid workflows are still validation errors.
+
+## One recommendation API
+
+`nextBestTests` is the only public recommendation API. `separatingSteps` is
+no longer exported. It remains internal and deprecated, imported directly
+from the engine only by the V1–V2D regression tests that check reachability.
 
 ## Synthetic fixture (version 6)
 

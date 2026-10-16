@@ -7,10 +7,12 @@
  * TEST ONLY / NOT OEM DATA.
  */
 import { describe, expect, it } from "vitest";
+import * as publicApi from "../app/lib/diagnostic-workflow";
 import {
   nextBestTests,
   recheckPlan,
   replaySession,
+  resumeSession,
   startSession,
   submitStep,
   validateWorkflow,
@@ -186,9 +188,11 @@ describe("V2E: eligibility comes before ranking", () => {
     expect(submitStep(W, s, pick("misfire_counters"), undefined, SPECS)).toMatchObject({ ok: false, error: expect.stringMatching(/already_done/) });
   });
 
-  it("does not offer a test that could conclude a cause the evidence already ruled out", () => {
+  it("keeps an otherwise valid test even though one of its possible results could conflict with earlier evidence", () => {
+    // After "several", the injector is ruled out; "imbalance" would support it. That possibility alone does not hide the test.
     const s = atRegion(WORKSHOP, { vehicle: { ...CAR, engine: "synthetic-i4-a" } }, [pick("misfire_counters"), seen("misfire_counters", "several")]);
-    expect(region(s).excluded).toContainEqual({ step: "injector_balance", reason: "could_conclude_a_ruled_out_cause" });
+    expect(order(region(s))).toContain("injector_balance");
+    expect(JSON.stringify(region(s).excluded)).not.toMatch(/injector_balance/);
   });
 });
 
@@ -380,5 +384,106 @@ describe("V2E: determinism and the synthetic fixture", () => {
     expect(validateWorkflow(W)).toEqual({ ok: true });
     expect(W.version).toBe(6);
     expect(run(facts(WORKSHOP, { dtcs: ["P0301"] }), [yes("confirm_symptom"), no("flashing_light")]).currentNodeId).toBe("single_prereq");
+  });
+});
+
+/* ───────────────────────── conflicting evidence ends inconclusive (V2E correction) ───────────────────────── */
+
+describe("V2E correction: evidence that cannot be reconciled ends the session inconclusive, never an error", () => {
+  /** SYNTHETIC: q1 then q2, each able to rule out or support cause "a". */
+  const pair: WorkflowDefinition = {
+    id: "test.conflict",
+    version: 1,
+    title: "Conflict",
+    provenance: "SYNTHETIC: test only",
+    faultModel: "single_primary_fault",
+    causes: [{ id: "a", title: "A" }, { id: "b", title: "B" }, { id: "c", title: "C" }],
+    nodes: [
+      { id: "s", type: "start", title: "Start", next: "q1" },
+      { id: "q1", type: "question", answer: "yes_no", title: "Q1", outcomes: [{ when: "yes", to: "q2", rulesOut: ["a"] }, { when: "no", to: "q2", supports: ["a"] }] },
+      { id: "q2", type: "question", answer: "yes_no", title: "Q2", outcomes: [{ when: "yes", to: "ca", supports: ["a"], rulesOut: ["c"] }, { when: "no", to: "cb", rulesOut: ["a"] }] },
+      { id: "ca", type: "conclusion", title: "A", cause: "a", recommendation: "Fix A.", next: "e" },
+      { id: "cb", type: "conclusion", title: "B", cause: "b", recommendation: "Fix B.", next: "e" },
+      { id: "e", type: "end", title: "End", result: "concluded" },
+    ],
+  };
+  const play = (a1: StepInput, a2: StepInput) => run({ capabilities: WORKSHOP }, [a1, a2], pair);
+  const conflictOf = (s: DiagnosticSession) => s.evidence.find((e) => e.kind === "conflict")!;
+
+  it("a cause ruled out earlier and supported later: inconclusive, not an exception", () => {
+    const s = play(yes("q1"), yes("q2"));
+    expect(s).toMatchObject({ status: "completed", endResult: "inconclusive", currentNodeId: null, conclusionNodeId: null });
+    expect(conflictOf(s).conflict).toEqual({
+      evidenceSeq: 2,
+      nodeId: "q2",
+      causes: [{ cause: "a", earlierState: "ruled_out", newEvidenceWould: "support", earlierEvidence: [1] }],
+      assumption: "single_primary_fault",
+      explanation: "The evidence cannot be reconciled under this workflow's single-primary-fault assumption.",
+    });
+  });
+
+  it("a cause supported earlier and ruled out later: inconclusive", () => {
+    const s = play(no("q1"), no("q2"));
+    expect(s).toMatchObject({ endResult: "inconclusive", conclusionNodeId: null });
+    expect(conflictOf(s).conflict?.causes).toEqual([{ cause: "a", earlierState: "supported", newEvidenceWould: "rule_out", earlierEvidence: [1] }]);
+  });
+
+  it("keeps the evidence on both sides and lets no cause win (the conflicting result's effect is not applied)", () => {
+    const s = play(yes("q1"), yes("q2"));
+    expect(s.evidence.map((e) => [e.seq, e.nodeId, e.kind, e.value])).toEqual([
+      [1, "q1", "answer", "yes"],
+      [2, "q2", "answer", "yes"],
+      [3, "q2", "conflict", "conflict:a"],
+    ]);
+    // Exactly the state before the conflicting result: "c" is NOT ruled out by it, "a" is NOT revived.
+    expect(s.remainingCauses).toEqual(["b", "c"]);
+    expect(s.supportedCauses).toEqual([]);
+    expect(submitStep(pair, s, yes("q2"))).toEqual({ ok: false, error: "session_complete" });
+    // Reconcilable answers still conclude normally.
+    expect(play(yes("q1"), no("q2"))).toMatchObject({ conclusionNodeId: "cb", endResult: "concluded" });
+    expect(play(no("q1"), yes("q2"))).toMatchObject({ conclusionNodeId: "ca", supportedCauses: ["a"] });
+  });
+
+  it("replays and resumes to the same conflict", () => {
+    const live = play(no("q1"), no("q2"));
+    expect(JSON.stringify(play(no("q1"), no("q2")))).toBe(JSON.stringify(live));
+    const resumed = resumeSession(pair, JSON.parse(JSON.stringify(live)));
+    expect(resumed.ok && resumed.session.evidence.at(-1)).toMatchObject({ kind: "conflict" });
+    const edited = JSON.parse(JSON.stringify(live));
+    edited.evidence.at(-1).conflict.causes[0].earlierState = "ruled_out";
+    expect(resumeSession(pair, edited)).toMatchObject({ ok: false });
+  });
+
+  it("behaves the same for a contradictory result inside a V2E region", () => {
+    const s = atRegion(WORKSHOP, { vehicle: { ...CAR, engine: "synthetic-i4-a" } }, [
+      pick("misfire_counters"),
+      seen("misfire_counters", "several"),
+      pick("injector_balance"),
+      seen("injector_balance", "imbalance"),
+    ]);
+    const counters = s.evidence.find((e) => e.nodeId === "misfire_counters" && e.kind === "observation")!;
+    const balance = s.evidence.find((e) => e.nodeId === "injector_balance" && e.kind === "observation")!;
+    expect(s).toMatchObject({ status: "completed", endResult: "inconclusive", conclusionNodeId: null });
+    expect(conflictOf(s).conflict).toMatchObject({
+      evidenceSeq: balance.seq,
+      nodeId: "injector_balance",
+      causes: [{ cause: "injector", earlierState: "ruled_out", newEvidenceWould: "support", earlierEvidence: [counters.seq] }],
+    });
+    // Its other declared effects (ruling out vacuum leak and fuel supply) were not applied either.
+    expect(s.remainingCauses).toEqual(["wiring_or_control", "vacuum_leak", "fuel_supply"]);
+    expect(nextBestTests(W, s)).toMatchObject({ status: "follow_workflow", reason: "session_complete" });
+  });
+
+  it("keeps genuinely invalid workflows as validation errors", () => {
+    const broken = { ...pair, nodes: pair.nodes.map((n) => (n.id === "ca" ? { ...n, cause: "zzz" } : n)) as WorkflowNode[] };
+    expect(validateWorkflow(broken)).toMatchObject({ ok: false, problems: [expect.objectContaining({ code: "unknown_cause" })] });
+    expect(startSession(broken, { capabilities: WORKSHOP })).toMatchObject({ ok: false, error: expect.stringMatching(/^invalid_workflow/) });
+  });
+});
+
+describe("V2E correction: one canonical recommendation API", () => {
+  it("exports nextBestTests and no longer exports the old whole-workflow ranker", () => {
+    expect(typeof publicApi.nextBestTests).toBe("function");
+    expect("separatingSteps" in publicApi).toBe(false);
   });
 });

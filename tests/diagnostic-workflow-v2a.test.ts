@@ -10,7 +10,6 @@ import { afterScan, withCodes, type TypedCodes } from "./helpers/workflow-scans"
 import {
   replaySession,
   resumeSession,
-  separatingSteps,
   sessionOutcome,
   startSession,
   submitStep,
@@ -26,6 +25,8 @@ import {
   type WorkflowNode,
 } from "../app/lib/diagnostic-workflow";
 import { SYNTHETIC_MISFIRE_WORKFLOW as W } from "../app/lib/diagnostic-workflow/examples/synthetic-misfire";
+// Retired from the public API (nextBestTests replaced it); imported from the engine only to keep these regression checks.
+import { separatingSteps } from "../app/lib/diagnostic-workflow/engine";
 import { SYNTHETIC_SPECIFICATIONS } from "../app/lib/diagnostic-workflow/examples/synthetic-specifications";
 import { createInMemorySpecificationProvider } from "../app/lib/diagnostic-workflow/examples/in-memory-specification-provider";
 
@@ -288,7 +289,7 @@ describe("V2A: the single-primary-fault assumption", () => {
     expect(run(facts(), []).faultModel).toBe("single_primary_fault");
   });
 
-  it("refuses to conclude a cause the evidence already ruled out", () => {
+  it("does not conclude a cause the evidence already ruled out: it ends inconclusive, recording the conflict (V2E correction)", () => {
     const w: WorkflowDefinition = {
       id: "test.contradiction",
       version: 1,
@@ -304,7 +305,9 @@ describe("V2A: the single-primary-fault assumption", () => {
       ],
     };
     const s = ok(startSession(w, facts()));
-    expect(submitStep(w, s, yes("q"))).toEqual({ ok: false, error: expect.stringMatching(/^contradiction/) });
+    const conflicted = ok(submitStep(w, s, yes("q")));
+    expect(conflicted).toMatchObject({ status: "completed", endResult: "inconclusive", conclusionNodeId: null, remainingCauses: ["b"] });
+    expect(conflicted.evidence.at(-1)).toMatchObject({ kind: "conflict", nodeId: "c", conflict: { causes: [{ cause: "a", earlierState: "ruled_out", newEvidenceWould: "conclude", earlierEvidence: [1] }] } });
     expect(ok(submitStep(w, s, no("q"))).conclusionNodeId).toBe("c");
   });
 });

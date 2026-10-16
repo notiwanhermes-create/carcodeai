@@ -59,18 +59,7 @@ function resultsOf(node: WorkflowNode): Array<{ result: string; to: NodeId } & C
   }
 }
 
-/**
- * Whether some result of the test leads straight to a conclusion about a
- * cause the evidence has already ruled out. Under the single-primary-fault
- * assumption that result would contradict the evidence, so the test is not
- * offered (conservative), rather than risk a dead end.
- */
-function couldContradict(node: WorkflowNode, byId: ReadonlyMap<NodeId, WorkflowNode>, remaining: readonly CauseId[]): boolean {
-  return resultsOf(node).some((r) => {
-    const target = byId.get(r.to);
-    return target?.type === "conclusion" && !!target.cause && !remaining.includes(target.cause);
-  });
-}
+
 
 /** What a test can do to the remaining causes. Single primary fault: ruling out removes a cause; supporting marks one. */
 export function separation(node: WorkflowNode, remaining: readonly CauseId[]) {
@@ -119,7 +108,7 @@ export type RegionAnalysis = {
   /** Useful candidates that depend on context this session does not have (never ranked, never treated as "no"). */
   potential: Array<{ step: NodeId; title: string; missingContext: string[]; separates: CauseId[] }>;
   /** Not offered: already done, definitely not applicable here, or unable to change the remaining causes. */
-  excluded: Array<{ step: NodeId; reason: "already_done" | "not_applicable" | "cannot_change_remaining_causes" | "could_conclude_a_ruled_out_cause" }>;
+  excluded: Array<{ step: NodeId; reason: "already_done" | "not_applicable" | "cannot_change_remaining_causes" }>;
 };
 
 /** Steps the session already has evidence for (done, skipped, unable or inconclusive). Each candidate runs at most once. */
@@ -195,7 +184,8 @@ export function analyzeRegion(byId: ReadonlyMap<NodeId, WorkflowNode>, selection
       }
     }
     if (!useful) return out.excluded.push({ step: node.id, reason: "cannot_change_remaining_causes" });
-    if (couldContradict(node, byId, remaining)) return out.excluded.push({ step: node.id, reason: "could_conclude_a_ruled_out_cause" });
+    // A result that MIGHT conflict with earlier evidence is not a reason to hide a valid test: if it is observed,
+    // the engine ends the session inconclusive with the conflict recorded.
     const able = capabilityShortfall(node.requires, session.facts.capabilities);
     if (!able.ok) return out.blocked.push({ step: node.id, title: node.title, reason: "capability", missing: able.missing, separates: sep.causes });
     const unmet = (node.needsConditions ?? []).filter((c) => !session.establishedConditions.includes(c));

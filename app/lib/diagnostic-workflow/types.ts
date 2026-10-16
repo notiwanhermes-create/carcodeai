@@ -742,6 +742,29 @@ export type StepInput = (
   | { nodeId: NodeId; kind: "unable"; reason: "no_tool" | "not_comfortable" | "not_possible" }
 ) & { source?: InputSource };
 
+/**
+ * Evidence that cannot be reconciled under the single-primary-fault
+ * assumption: a result that would support a cause earlier evidence ruled
+ * out, rule out a cause earlier evidence supported, or reach a conclusion
+ * about a ruled-out cause. Both sides are kept; neither wins.
+ */
+export type EvidenceConflict = {
+  /** The new evidence that conflicted (recorded, its effect NOT applied). */
+  evidenceSeq: number;
+  nodeId: NodeId;
+  causes: Array<{
+    cause: CauseId;
+    /** What earlier evidence had established about the cause. */
+    earlierState: "ruled_out" | "supported";
+    /** What the new evidence would have done to it. */
+    newEvidenceWould: "support" | "rule_out" | "conclude";
+    /** The earlier evidence (by seq) behind that state. */
+    earlierEvidence: number[];
+  }>;
+  assumption: "single_primary_fault";
+  explanation: string;
+};
+
 /** Before the repair (finding the fault) or after it (checking the repair worked). */
 export type EvidencePhase = "before_repair" | "after_repair";
 
@@ -771,6 +794,7 @@ export type Evidence = {
     | "snapshot"
     | "snapshot_check"
     | "test_selection"
+    | "conflict"
     | "symptom"
     | "specification"
     | "prerequisite"
@@ -819,6 +843,8 @@ export type Evidence = {
   snapshot?: SnapshotRecord;
   /** For a snapshot check: which snapshot and parameter were read, and the value. */
   snapshotRef?: { snapshot: string; parameter: string; value?: number | string; unit?: Unit };
+  /** For a conflict: what could not be reconciled, and with what (the session then ends inconclusive). */
+  conflict?: EvidenceConflict;
   /** For a test selection: the test the engine recommended at that moment (the choice is in `value`). */
   recommendedTest?: NodeId;
   /** For an actuator test or service function: its generic id. */

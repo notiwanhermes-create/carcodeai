@@ -24,10 +24,12 @@ import {
   SKILL_ORDER,
   type DiagnosticCapabilityContext,
   type CauseEffect,
+  type CauseId,
   type Condition,
   type ConditionId,
   type DiagnosticSession,
   type DiagnosticSpecification,
+  type EvidenceConflict,
   type EngineOptions,
   type Evidence,
   type EvidenceSource,
@@ -413,8 +415,76 @@ function freezeSession(session: DiagnosticSession): DiagnosticSession {
 type NewEvidence = Omit<Evidence, "seq" | "phase">;
 
 /** A new session with one more piece of evidence and its effect on the candidate causes and conditions. */
-function record(session: DiagnosticSession, entry: NewEvidence, effect: CauseEffect = {}): DiagnosticSession {
+/** The cause effect an evidence record's result declares in the workflow (for explaining a conflict). */
+function declaredEffect(byId: ReadonlyMap<NodeId, WorkflowNode>, e: Evidence): CauseEffect | undefined {
+  const node = byId.get(e.nodeId);
+  if (!node) return undefined;
+  if (e.kind === "branch" && node.type === "branch") {
+    const m = /^rule:(\d+)$/.exec(e.value);
+    return m ? node.rules[Number(m[1]) - 1] : undefined;
+  }
+  if ((e.kind === "measurement" || e.kind === "snapshot_check") && (node.type === "measurement" || node.type === "snapshot_check")) {
+    const j = e.judgement;
+    return j?.evaluated ? node.outcomes.find((o) => o.id === j.range) : undefined;
+  }
+  if (["answer", "observation", "check", "actuator_test", "service_function"].includes(e.kind) && "outcomes" in node) {
+    return (node.outcomes as Array<{ when: unknown } & CauseEffect>).find((o) => o.when === e.value);
+  }
+  return undefined;
+}
+
+const CONFLICT_EXPLANATION = "The evidence cannot be reconciled under this workflow's single-primary-fault assumption.";
+
+/**
+ * End the session as inconclusive because of conflicting evidence. The
+ * conflicting evidence is already in the log; its effect is not applied, the
+ * earlier cause state is kept as it was, and a conflict record says what
+ * clashed with what. No cause wins, nothing is overwritten, no second fault
+ * is assumed.
+ */
+function endInConflict(
+  session: DiagnosticSession,
+  nodeId: NodeId,
+  evidenceSeq: number,
+  items: Array<{ cause: CauseId; earlierState: "ruled_out" | "supported"; newEvidenceWould: "support" | "rule_out" | "conclude" }>,
+  byId: ReadonlyMap<NodeId, WorkflowNode> | undefined,
+  at?: string,
+): DiagnosticSession {
+  const causes = items.map((item) => ({
+    ...item,
+    earlierEvidence: byId
+      ? session.evidence
+          .filter((e) => e.seq < evidenceSeq || (item.newEvidenceWould === "conclude" && e.seq <= evidenceSeq))
+          .filter((e) => {
+            const eff = declaredEffect(byId, e);
+            return item.earlierState === "ruled_out" ? eff?.rulesOut?.includes(item.cause) : eff?.supports?.includes(item.cause);
+          })
+          .map((e) => e.seq)
+      : [],
+  }));
+  const conflict: EvidenceConflict = { evidenceSeq, nodeId, causes, assumption: "single_primary_fault", explanation: CONFLICT_EXPLANATION };
+  const entry = frozen({
+    nodeId,
+    kind: "conflict",
+    value: `conflict:${causes.map((c) => c.cause).join(",")}`,
+    conflict,
+    source: "engine",
+    to: nodeId,
+    ...(at ? { at } : {}),
+    phase: session.phase,
+    seq: session.evidence.length + 1,
+  }) as Evidence;
+  return { ...session, evidence: [...session.evidence, entry], status: "completed", currentNodeId: null, endResult: "inconclusive" };
+}
+
+function record(session: DiagnosticSession, entry: NewEvidence, effect: CauseEffect = {}, byId?: ReadonlyMap<NodeId, WorkflowNode>): DiagnosticSession {
   const evidence = frozen({ ...entry, phase: session.phase, seq: session.evidence.length + 1 }) as Evidence;
+  // Single primary fault: a result that would support a ruled-out cause, or rule out a supported one, cannot be reconciled.
+  const conflicts = [
+    ...(effect.supports ?? []).filter((c) => !session.remainingCauses.includes(c)).map((cause) => ({ cause, earlierState: "ruled_out" as const, newEvidenceWould: "support" as const })),
+    ...(effect.rulesOut ?? []).filter((c) => session.supportedCauses.includes(c)).map((cause) => ({ cause, earlierState: "supported" as const, newEvidenceWould: "rule_out" as const })),
+  ];
+  if (conflicts.length) return endInConflict({ ...session, evidence: [...session.evidence, evidence] }, entry.nodeId, evidence.seq, conflicts, byId, entry.at);
   const ruledOut = new Set(effect.rulesOut ?? []);
   const remainingCauses = session.remainingCauses.filter((id) => !ruledOut.has(id));
   const supportedCauses = [...session.supportedCauses];
@@ -463,6 +533,8 @@ function advance(p: Prepared, from: DiagnosticSession, nodeId: NodeId, at: strin
   let id = nodeId;
   const stamp = at ? { at } : {};
   for (let step = 0; step < MAX_AUTOMATIC_STEPS; step++) {
+    // Ended (for example by conflicting evidence): nothing further is evaluated.
+    if (session.status === "completed") return { ok: true, session: freezeSession(session) };
     const node = p.byId.get(id);
     if (!node) return fail(`broken_transition: ${id}`);
 
@@ -513,7 +585,7 @@ function advance(p: Prepared, from: DiagnosticSession, nodeId: NodeId, at: strin
         }
         const rule = "index" in route ? node.rules[route.index] : null;
         const to = rule ? rule.to : node.otherwise;
-        session = record(session, { nodeId: node.id, kind: "branch", value: rule ? `rule:${(route as { index: number }).index + 1}` : "otherwise", source: "engine", to, ...stamp }, rule ?? {});
+        session = record(session, { nodeId: node.id, kind: "branch", value: rule ? `rule:${(route as { index: number }).index + 1}` : "otherwise", source: "engine", to, ...stamp }, rule ?? {}, p.byId);
         id = to;
         continue;
       }
@@ -558,13 +630,16 @@ function advance(p: Prepared, from: DiagnosticSession, nodeId: NodeId, at: strin
         }
         const to = judged.outcome?.to ?? node.otherwise;
         const judgement = { evaluated: true as const, range: judged.range, ...(judged.relation ? { relation: judged.relation } : {}), ...(judged.specification ? { specification: judged.specification } : {}) };
-        session = record(session, { ...base, value: `${read.value} ${read.unit}`, snapshotRef: ref, measured: { value: judged.value, unit: node.measurement.unit }, judgement, to }, judged.outcome ?? {});
+        session = record(session, { ...base, value: `${read.value} ${read.unit}`, snapshotRef: ref, measured: { value: judged.value, unit: node.measurement.unit }, judgement, to }, judged.outcome ?? {}, p.byId);
         id = to;
         continue;
       }
       case "conclusion":
-        // Single primary fault: concluding a cause the evidence already ruled out is a contradiction in the workflow, not a result.
-        if (node.cause && !session.remainingCauses.includes(node.cause)) return fail(`contradiction: "${node.id}" concludes "${node.cause}", which the evidence ruled out`);
+        // Single primary fault: reaching a conclusion about a ruled-out cause cannot be reconciled. An explicit inconclusive end, not an error.
+        if (node.cause && !session.remainingCauses.includes(node.cause)) {
+          session = endInConflict(session, node.id, session.evidence.length, [{ cause: node.cause, earlierState: "ruled_out", newEvidenceWould: "conclude" }], p.byId, at);
+          continue;
+        }
         session = { ...session, conclusionNodeId: node.id };
         id = node.next;
         continue;
@@ -815,14 +890,14 @@ export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSess
         const outcome = node.outcomes.find((o) => o.when === input.answer);
         const to = outcome?.to ?? node.otherwise;
         if (!to) return fail("no_route");
-        return go(record(logged, { ...base, kind: "answer", value: input.answer, to }, outcome ?? {}), to);
+        return go(record(logged, { ...base, kind: "answer", value: input.answer, to }, outcome ?? {}, p.byId), to);
       }
       if (input.kind !== "choice") return fail("wrong_input_kind");
       if (!node.options.some((o) => o.id === input.choice)) return fail("unknown_option");
       const outcome = node.outcomes.find((o) => o.when === input.choice);
       const to = outcome?.to ?? node.otherwise;
       if (!to) return fail("no_route");
-      return go(record(logged, { ...base, kind: "answer", value: input.choice, to }, outcome ?? {}), to);
+      return go(record(logged, { ...base, kind: "answer", value: input.choice, to }, outcome ?? {}, p.byId), to);
     }
     case "observation": {
       if (input.kind !== "observation") return fail("wrong_input_kind");
@@ -830,7 +905,7 @@ export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSess
       const outcome = node.outcomes.find((o) => o.when === input.choice);
       const to = outcome?.to ?? node.otherwise;
       if (!to) return fail("no_route");
-      return go(record(logged, { ...base, kind: "observation", value: input.choice, to }, outcome ?? {}), to);
+      return go(record(logged, { ...base, kind: "observation", value: input.choice, to }, outcome ?? {}, p.byId), to);
     }
     case "measurement": {
       if (input.kind !== "measurement") return fail("wrong_input_kind");
@@ -850,7 +925,7 @@ export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSess
       }
       const to = judged.outcome?.to ?? node.otherwise;
       const judgement = { evaluated: true as const, range: judged.range, ...(judged.relation ? { relation: judged.relation } : {}), ...(judged.specification ? { specification: judged.specification } : {}) };
-      return go(record(logged, { ...base, kind: "measurement", value: `${input.value} ${input.unit}`, measured, judgement, to }, judged.outcome ?? {}), to);
+      return go(record(logged, { ...base, kind: "measurement", value: `${input.value} ${input.unit}`, measured, judgement, to }, judged.outcome ?? {}, p.byId), to);
     }
     case "test_selection": {
       // Only an eligible, useful test of this region may be chosen; the recommendation is recorded with the choice.
@@ -869,7 +944,7 @@ export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSess
       if (input.kind !== "actuator_result") return fail("wrong_input_kind");
       if (!node.results.some((r) => r.id === input.result)) return fail("unknown_result");
       const outcome = node.outcomes.find((o) => o.when === input.result)!;
-      return go(record(logged, { ...base, kind: "actuator_test", actuator: node.actuator, performedBy: "external_tool", value: input.result, to: outcome.to }, outcome), outcome.to);
+      return go(record(logged, { ...base, kind: "actuator_test", actuator: node.actuator, performedBy: "external_tool", value: input.result, to: outcome.to }, outcome, p.byId), outcome.to);
     }
     case "service_function": {
       // MODELLING ONLY: an external tool ran the function and reported its status. Nothing is executed here.
@@ -882,12 +957,12 @@ export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSess
       }
       if (input.result !== "completed" && input.result !== "failed") return fail("wrong_input_kind");
       const outcome = node.outcomes.find((o) => o.when === input.result)!;
-      return go(record(logged, { ...common, to: outcome.to }, outcome), outcome.to);
+      return go(record(logged, { ...common, to: outcome.to }, outcome, p.byId), outcome.to);
     }
     case "check": {
       if (input.kind !== "check" || (input.result !== "pass" && input.result !== "fail")) return fail("wrong_input_kind");
       const outcome = node.outcomes.find((o) => o.when === input.result)!;
-      return go(record(logged, { ...base, kind: "check", value: input.result, to: outcome.to }, outcome), outcome.to);
+      return go(record(logged, { ...base, kind: "check", value: input.result, to: outcome.to }, outcome, p.byId), outcome.to);
     }
     case "action": {
       if (input.kind !== "done") return fail("wrong_input_kind");
@@ -946,7 +1021,7 @@ export function sessionOutcome(session: Pick<DiagnosticSession, "status" | "curr
     supportedCauses: [...session.supportedCauses],
     // Structured code and snapshot evidence is compared in full, so an edited code, status or snapshot is caught.
     evidence: session.evidence.map((e) => {
-      const detail = e.dtc ?? e.scanInfo ?? e.snapshot ?? e.snapshotRef;
+      const detail = e.dtc ?? e.scanInfo ?? e.snapshot ?? e.snapshotRef ?? e.conflict;
       return detail ? ([e.seq, e.nodeId, e.kind, e.value, e.to, JSON.stringify(detail)] as const) : ([e.seq, e.nodeId, e.kind, e.value, e.to] as const);
     }),
   };
@@ -1034,9 +1109,11 @@ export function recheckPlan(workflow: WorkflowDefinition, session: DiagnosticSes
 }
 
 /**
- * Superseded by nextBestTests for recommendations. Kept for comparison: it
- * lists every separating step still reachable, across the whole workflow, and
- * must not be used to reorder a workflow.
+ * @internal @deprecated Retired from the public API: nextBestTests is the one
+ * canonical recommendation API. Kept only so the V1-V2D regression tests can
+ * keep checking reachability behaviour. It lists every separating step still
+ * reachable across the whole workflow and must never be used to recommend or
+ * reorder tests.
  */
 export function separatingSteps(workflow: WorkflowDefinition, session: DiagnosticSession) {
   const p = prepare(workflow);

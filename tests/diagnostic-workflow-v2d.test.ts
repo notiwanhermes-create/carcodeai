@@ -12,7 +12,6 @@ import {
   normalizeCode,
   replaySession,
   resumeSession,
-  separatingSteps,
   sessionOutcome,
   startSession,
   stepReachability,
@@ -29,6 +28,8 @@ import {
   type WorkflowNode,
 } from "../app/lib/diagnostic-workflow";
 import { SYNTHETIC_MISFIRE_WORKFLOW as W } from "../app/lib/diagnostic-workflow/examples/synthetic-misfire";
+// Retired from the public API (nextBestTests replaced it); imported from the engine only to keep these regression checks.
+import { separatingSteps } from "../app/lib/diagnostic-workflow/engine";
 import { SYNTHETIC_SPECIFICATIONS } from "../app/lib/diagnostic-workflow/examples/synthetic-specifications";
 import { createInMemorySpecificationProvider } from "../app/lib/diagnostic-workflow/examples/in-memory-specification-provider";
 

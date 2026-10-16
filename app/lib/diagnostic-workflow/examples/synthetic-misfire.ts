@@ -33,14 +33,21 @@
  * (modelling only, run by an external tool) is offered only with
  * bidirectional scan access. Without it, the workflow goes straight on to
  * the pressure test: being unable is never evidence about a cause.
+ * Version 5 (V2D): codes are structured scan evidence matched declaratively
+ * (no text matching). When the misfire is not happening now, a CONFIRMED
+ * misfire code leads to an explicit check of its freeze-frame coolant
+ * temperature against a SYNTHETIC verified specification; a pending-only code
+ * does not. Repair verification needs a complete post-repair scan for
+ * "codes gone". No code status changes a cause on its own.
  */
 import type { WorkflowDefinition } from "../types";
 
 const CYLINDER_MISFIRE_CODES = ["P0301", "P0302", "P0303", "P0304", "P0305", "P0306", "P0307", "P0308"];
+const ALL_MISFIRE_CODES = ["P0300", ...CYLINDER_MISFIRE_CODES];
 
 export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
   id: "synthetic.engine-misfire",
-  version: 4,
+  version: 5,
   title: "Engine misfire (synthetic example)",
   provenance: "SYNTHETIC: written for CarCode's engine tests from general troubleshooting practice. Not BMW data, not ISTA data, not any manufacturer's data.",
   faultModel: "single_primary_fault",
@@ -66,7 +73,7 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
       prompt: "Is the engine running rough, shaking or stumbling right now?",
       outcomes: [
         { when: "yes", to: "flashing_light" },
-        { when: "no", to: "concl_intermittent" },
+        { when: "no", to: "intermittent_codes" },
       ],
     },
     {
@@ -87,8 +94,8 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
       type: "branch",
       title: "Single or multiple cylinders (from codes)",
       rules: [
-        { if: { dtcAny: CYLINDER_MISFIRE_CODES }, to: "single_prereq", rulesOut: ["fuel_supply"] },
-        { if: { dtcAny: ["P0300"] }, to: "multi_vacuum" },
+        { if: { dtc: { code: CYLINDER_MISFIRE_CODES } }, to: "single_prereq", rulesOut: ["fuel_supply"] },
+        { if: { dtc: { code: "P0300" } }, to: "multi_vacuum" },
       ],
       otherwise: "ask_pattern",
     },
@@ -260,6 +267,34 @@ export const SYNTHETIC_MISFIRE_WORKFLOW: WorkflowDefinition = {
     { id: "concl_professional", type: "conclusion", title: "Needs a professional", recommendation: "This next step needs a workshop. Take the vehicle in and share what was found so far.", next: "end_referred" },
     { id: "concl_stop_driving", type: "conclusion", title: "Severe misfire", recommendation: "Avoid driving: a flashing light means a severe misfire that can damage the exhaust catalyst. Have it checked.", next: "end_referred" },
     { id: "concl_read_codes", type: "conclusion", title: "Read the codes first", recommendation: "Have the trouble codes read: they usually show which cylinder misfires.", next: "end_referred" },
+    // Not happening now: only a CONFIRMED misfire code (reported status, not a verdict) leads to its freeze frame.
+    {
+      id: "intermittent_codes",
+      type: "branch",
+      title: "A confirmed misfire code with a freeze frame?",
+      rules: [{ if: { dtc: { code: ALL_MISFIRE_CODES, status: "confirmed" } }, to: "misfire_snapshot" }],
+      otherwise: "concl_intermittent",
+    },
+    {
+      // SYNTHETIC / TEST ONLY. Reads the coolant temperature recorded with the misfire code, and judges it
+      // only against a VERIFIED synthetic specification. No cause effects: it only shapes the advice.
+      id: "misfire_snapshot",
+      type: "snapshot_check",
+      title: "Engine temperature when the misfire was recorded",
+      from: { dtc: { code: ALL_MISFIRE_CODES } },
+      parameter: "coolant_temperature",
+      measurement: { quantity: "Coolant temperature in the freeze frame", unit: "degC", plausible: { min: -40, max: 150 } },
+      specification: "synthetic.engine_warm_coolant_temp",
+      outcomes: [
+        { id: "cold", when: { relativeToSpec: "below" }, to: "concl_intermittent_cold" },
+        { id: "warm", when: { relativeToSpec: "within" }, to: "concl_intermittent_warm" },
+      ],
+      otherwise: "concl_intermittent",
+      ifUnavailable: "concl_intermittent",
+      ifInconclusive: "concl_intermittent",
+    },
+    { id: "concl_intermittent_cold", type: "conclusion", title: "Recorded with a cold engine", recommendation: "The misfire was recorded with a cold engine: note whether it happens on cold starts and have it checked.", next: "end_not_reproducible" },
+    { id: "concl_intermittent_warm", type: "conclusion", title: "Recorded with a warm engine", recommendation: "The misfire was recorded with a warm engine: note the load and speed when it happens and have it checked.", next: "end_not_reproducible" },
     { id: "concl_intermittent", type: "conclusion", title: "Not happening now", recommendation: "Note when it happens (cold, warm, load, speed) and have the codes read.", next: "end_not_reproducible" },
     { id: "concl_not_fixed", type: "conclusion", title: "Repair did not fix it", recommendation: "Keep the record of what was tried and have a professional continue from here.", next: "end_referred" },
     { id: "concl_verify_inconclusive", type: "conclusion", title: "Repair not confirmed yet", recommendation: "It is too early to tell whether the repair worked. Drive again in the conditions where the misfire happened, then check again.", next: "end_inconclusive" },

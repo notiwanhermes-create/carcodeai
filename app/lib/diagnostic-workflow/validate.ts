@@ -13,6 +13,7 @@
  * Problems are reported all at once, each with a stable code.
  */
 import {
+  DTC_STATUS_FLAGS,
   FACILITIES,
   FAULT_MODELS,
   INSTRUMENTS,
@@ -21,6 +22,7 @@ import {
   SKILL_ORDER,
   SPEC_RELATIONS,
   type Condition,
+  type DtcMatcher,
   type ConditionId,
   type MeasurementNode,
   type NodeId,
@@ -30,6 +32,7 @@ import {
 } from "./types";
 import { isUnit } from "./units";
 import { applicabilityProblems } from "./context";
+import { workflowCodeKey } from "./dtc";
 
 export type WorkflowProblem = { code: string; nodeId?: NodeId; message: string };
 export type ValidationResult = { ok: true } | { ok: false; problems: WorkflowProblem[] };
@@ -52,6 +55,9 @@ export function successors(node: WorkflowNode): NodeId[] {
       break;
     case "measurement":
       out.push(...node.outcomes.map((o) => o.to), node.otherwise);
+      break;
+    case "snapshot_check":
+      out.push(...node.outcomes.map((o) => o.to), node.otherwise, node.ifUnavailable);
       break;
     case "check":
     case "actuator_test":
@@ -100,6 +106,32 @@ function conditionNames(c: Condition): ConditionId[] {
   if ("all" in c) return c.all.flatMap(conditionNames);
   if ("any" in c) return c.any.flatMap(conditionNames);
   if ("not" in c) return conditionNames(c.not);
+  return [];
+}
+
+/** Problems with a declarative code question. */
+function matcherProblems(m: DtcMatcher | undefined): string[] {
+  if (!m || typeof m !== "object") return ["a code condition needs a matcher"];
+  const out: string[] = [];
+  if (m.code === undefined && m.module === undefined) out.push("a code condition needs a code or a module");
+  if (m.code !== undefined) {
+    const list = Array.isArray(m.code) ? m.code : [m.code];
+    if (list.length === 0 || list.some((c) => typeof c !== "string" || !workflowCodeKey(c))) out.push("a code condition names an invalid code");
+  }
+  if (m.status !== undefined && !(DTC_STATUS_FLAGS as readonly string[]).includes(m.status)) out.push(`unknown status "${m.status}"`);
+  if (m.module !== undefined && (typeof m.module !== "string" || !/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(m.module.trim().toLowerCase()))) out.push("a module must be a generic id");
+  const extra = Object.keys(m).filter((k) => !["code", "status", "module"].includes(k));
+  if (extra.length) out.push(`unsupported matcher fields: ${extra.join(", ")}`);
+  return out;
+}
+
+/** Every code matcher inside a condition. */
+function conditionMatchers(c: Condition): DtcMatcher[] {
+  if ("dtc" in c) return [c.dtc];
+  if ("noDtc" in c) return [c.noDtc];
+  if ("all" in c) return c.all.flatMap(conditionMatchers);
+  if ("any" in c) return c.any.flatMap(conditionMatchers);
+  if ("not" in c) return conditionMatchers(c.not);
   return [];
 }
 
@@ -204,7 +236,7 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
       const covered = new Set(node.outcomes.map((o) => o.when));
       if (!covered.has("pass") || !covered.has("fail")) add("incomplete_outcomes", `"${node.id}" does not say where both "pass" and "fail" lead.`, node.id);
     }
-    if (node.type === "measurement") {
+    if (node.type === "measurement" || node.type === "snapshot_check") {
       if (!isUnit(node.measurement?.unit)) add("unknown_unit", `"${node.id}" measures in a unit the engine does not know.`, node.id);
       if (node.outcomes.length === 0) add("incomplete_outcomes", `"${node.id}" has no ranges.`, node.id);
       if (node.specification !== undefined) {
@@ -216,7 +248,9 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
         } else if (new Set(relations).size !== relations.length) {
           add("invalid_range", `"${node.id}": each of below, within and above may appear only once.`, node.id);
         }
-        if (!node.ifUnsupported) add("no_unsupported_route", `"${node.id}" uses a specification but has no route for when it cannot be resolved.`, node.id);
+        if (node.type === "measurement" && !node.ifUnsupported) add("no_unsupported_route", `"${node.id}" uses a specification but has no route for when it cannot be resolved.`, node.id);
+        // A snapshot check routes an unresolvable specification through ifUnavailable; an untrusted one through ifInconclusive.
+        if (node.type === "snapshot_check" && !node.ifInconclusive) add("no_inconclusive_route", `"${node.id}" uses a specification but has no route for an untrusted one.`, node.id);
       } else {
         for (const o of node.outcomes) {
           if ("relativeToSpec" in o.when) {
@@ -229,8 +263,18 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
       }
     }
 
-    if (node.type === "measurement") {
-      for (const problem of measurementProblems(node)) add("invalid_plausible_range", `"${node.id}": ${problem}.`, node.id);
+    if (node.type === "snapshot_check") {
+      if (typeof node.parameter !== "string" || !/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(node.parameter)) add("invalid_parameter", `"${node.id}" needs a generic snapshot parameter id.`, node.id);
+      if (!node.ifUnavailable) add("no_unavailable_route", `"${node.id}" must say where to go when the snapshot value cannot be read or interpreted.`, node.id);
+      if (node.from !== "any") for (const problem of matcherProblems(node.from?.dtc)) add("invalid_dtc_matcher", `"${node.id}": ${problem}.`, node.id);
+      if (node.requires) add("malformed", `"${node.id}" reads supplied data; it needs no capabilities.`, node.id);
+    }
+    if (node.type === "branch") {
+      for (const rule of node.rules) for (const m of conditionMatchers(rule.if)) for (const problem of matcherProblems(m)) add("invalid_dtc_matcher", `"${node.id}": ${problem}.`, node.id);
+    }
+
+    if (node.type === "measurement" || node.type === "snapshot_check") {
+      for (const problem of measurementProblems(node as MeasurementNode)) add("invalid_plausible_range", `"${node.id}": ${problem}.`, node.id);
       const ids = node.outcomes.map((o) => o.id);
       if (ids.some((id) => typeof id !== "string" || !id.trim()) || new Set(ids).size !== ids.length || ids.includes("otherwise")) {
         add("invalid_range_id", `"${node.id}": every range needs its own id (and not "otherwise").`, node.id);
@@ -247,7 +291,7 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
       for (const c of criteria) {
         if (!c?.id || seen.has(c.id)) add("invalid_criterion", `"${node.id}": every criterion needs its own id.`, node.id);
         seen.add(c?.id);
-        if (c?.kind === "codes_absent" && c.codes !== "reported" && !(Array.isArray(c.codes) && c.codes.length > 0)) {
+        if (c?.kind === "codes_absent" && c.codes !== "reported" && !(Array.isArray(c.codes) && c.codes.length > 0 && c.codes.every((x) => typeof x === "string" && !!workflowCodeKey(x)))) {
           add("invalid_criterion", `"${node.id}": criterion "${c.id}" names no codes.`, node.id);
         }
         if (c?.kind === "retest") {

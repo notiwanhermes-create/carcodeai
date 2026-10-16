@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { afterScan, withCodes, type TypedCodes } from "./helpers/workflow-scans";
 import {
   convert,
   currentStep,
@@ -38,7 +39,7 @@ const SYNTHETIC_VEHICLE = { fuel: "gasoline" as const, cylinders: 4 };
 const DIY: DiagnosticCapabilityContext = { skill: "diy", scanAccess: "codes", instruments: ["hand_tools"], facilities: [] };
 const OWNER: DiagnosticCapabilityContext = { skill: "owner", scanAccess: "none", instruments: [], facilities: [] };
 
-const facts = (over: Partial<SessionStartFacts> = {}): SessionStartFacts => ({ capabilities: PRO, vehicle: SYNTHETIC_VEHICLE, ...over });
+const facts = (over: Partial<SessionStartFacts> & TypedCodes = {}): SessionStartFacts => withCodes({ capabilities: PRO, vehicle: SYNTHETIC_VEHICLE, ...over });
 
 function started(f: SessionStartFacts = facts(), at = "2026-10-15T10:00:00Z"): DiagnosticSession {
   const r = startSession(W, f, at, SPECS);
@@ -59,7 +60,7 @@ function run(f: SessionStartFacts, inputs: StepInput[]): DiagnosticSession {
 
 const yes = (nodeId: string): StepInput => ({ nodeId, kind: "yes_no", answer: "yes" });
 const no = (nodeId: string): StepInput => ({ nodeId, kind: "yes_no", answer: "no" });
-const pathOf = (s: DiagnosticSession) => s.evidence.filter((e) => e.kind !== "code" && e.kind !== "symptom" && e.kind !== "specification").map((e) => e.nodeId);
+const pathOf = (s: DiagnosticSession) => s.evidence.filter((e) => !["scan", "code", "snapshot", "symptom", "specification"].includes(e.kind)).map((e) => e.nodeId);
 
 /** A small valid workflow to break in different ways. */
 function tiny(): WorkflowDefinition {
@@ -182,8 +183,9 @@ describe("running a workflow", () => {
     expect(s.currentNodeId).toBe("confirm_symptom");
     expect(currentStep(W, s)?.title).toBe("Confirm the symptom");
     expect(s.evidence.map((e) => [e.seq, e.kind, e.value])).toEqual([
-      [1, "code", "P0303"],
-      [2, "symptom", "rough_idle"],
+      [1, "scan", "start"],
+      [2, "code", "P0303"],
+      [3, "symptom", "rough_idle"],
     ]);
     expect(s.remainingCauses).toEqual(W.causes.map((c) => c.id));
   });
@@ -311,10 +313,11 @@ describe("evidence, replay and resume", () => {
     s = step(s, yes("confirm_symptom"), "2026-10-15T10:01:00Z");
     s = step(s, no("flashing_light"), "2026-10-15T10:02:00Z");
     expect(s.evidence.map((e) => [e.seq, e.nodeId, e.kind, e.value, e.at])).toEqual([
-      [1, "start", "code", "P0304", "2026-10-15T10:00:00Z"],
-      [2, "confirm_symptom", "answer", "yes", "2026-10-15T10:01:00Z"],
-      [3, "flashing_light", "answer", "no", "2026-10-15T10:02:00Z"],
-      [4, "pattern", "branch", "rule:1", "2026-10-15T10:02:00Z"],
+      [1, "start", "scan", "start", "2026-10-15T10:00:00Z"],
+      [2, "start", "code", "P0304", "2026-10-15T10:00:00Z"],
+      [3, "confirm_symptom", "answer", "yes", "2026-10-15T10:01:00Z"],
+      [4, "flashing_light", "answer", "no", "2026-10-15T10:02:00Z"],
+      [5, "pattern", "branch", "rule:1", "2026-10-15T10:02:00Z"],
     ]);
     expect(s.inputs).toEqual([{ ...yes("confirm_symptom"), at: "2026-10-15T10:01:00Z" }, { ...no("flashing_light"), at: "2026-10-15T10:02:00Z" }]);
   });
@@ -379,7 +382,7 @@ describe("completion and repair verification", () => {
   });
 
   it("ends as resolved when the repair is verified", () => {
-    const done = step(toCoil(), { nodeId: "verify_repair", kind: "verification", results: [{ criterion: "smooth", result: "met" }, { criterion: "codes_gone", result: "met" }] });
+    const done = step(toCoil(), { nodeId: "verify_repair", kind: "verification", results: [{ criterion: "smooth", result: "met" }, { criterion: "codes_gone", scan: afterScan() }] });
     expect(done).toMatchObject({ status: "completed", currentNodeId: null, endResult: "resolved", repairVerified: true, conclusionNodeId: "concl_coil" });
     // A completed session takes no more input.
     expect(submitStep(W, done, yes("confirm_symptom"))).toEqual({ ok: false, error: "session_complete" });
@@ -387,7 +390,7 @@ describe("completion and repair verification", () => {
   });
 
   it("does not claim success when the repair did not fix it", () => {
-    const failed = step(toCoil(), { nodeId: "verify_repair", kind: "verification", results: [{ criterion: "smooth", result: "not_met" }, { criterion: "codes_gone", result: "met" }] });
+    const failed = step(toCoil(), { nodeId: "verify_repair", kind: "verification", results: [{ criterion: "smooth", result: "not_met" }, { criterion: "codes_gone", scan: afterScan() }] });
     expect(failed).toMatchObject({ status: "completed", endResult: "referred", repairVerified: false, conclusionNodeId: "concl_not_fixed" });
     // The earlier conclusion stays in the evidence: what was tried is never lost.
     expect(failed.evidence.map((e) => e.nodeId)).toContain("coil_swap");

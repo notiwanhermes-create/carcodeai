@@ -6,6 +6,7 @@
  * below are made up for tests and are not values for any vehicle.
  */
 import { describe, expect, it } from "vitest";
+import { afterScan, withCodes, type TypedCodes } from "./helpers/workflow-scans";
 import {
   replaySession,
   resumeSession,
@@ -20,6 +21,7 @@ import {
   type DiagnosticSession,
   type SessionStartFacts,
   type StepInput,
+  type VerificationEntry,
   type WorkflowDefinition,
   type WorkflowNode,
 } from "../app/lib/diagnostic-workflow";
@@ -37,7 +39,7 @@ const specsWith = (id: string, replacement: DiagnosticSpecification | null): Eng
 const PRO: DiagnosticCapabilityContext = { skill: "professional", scanAccess: "live_data", instruments: ["hand_tools", "compression_tester", "pressure_gauge"], facilities: [] };
 /** A synthetic vehicle the synthetic misfire workflow applies to. Not a real vehicle. */
 const SYNTHETIC_VEHICLE = { fuel: "gasoline" as const, cylinders: 4 };
-const facts = (over: Partial<SessionStartFacts> = {}): SessionStartFacts => ({ capabilities: PRO, vehicle: SYNTHETIC_VEHICLE, ...over });
+const facts = (over: Partial<SessionStartFacts> & TypedCodes = {}): SessionStartFacts => withCodes({ capabilities: PRO, vehicle: SYNTHETIC_VEHICLE, ...over });
 
 function ok(r: ReturnType<typeof startSession>): DiagnosticSession {
   if (!r.ok) throw new Error(r.error);
@@ -64,9 +66,9 @@ const atFuelVerify = () =>
 /* ───────────────────────── checking a V2A workflow ───────────────────────── */
 
 describe("V2A: checking a workflow", () => {
-  it("accepts the synthetic misfire workflow (version 4 since V2C)", () => {
+  it("accepts the synthetic misfire workflow (version 5 since V2D)", () => {
     expect(validateWorkflow(W)).toEqual({ ok: true });
-    expect(W.version).toBe(4);
+    expect(W.version).toBe(5);
   });
 
   it("requires the single-primary-fault assumption to be stated", () => {
@@ -152,10 +154,12 @@ describe("V2A: evidence phase and source", () => {
     const s = atCoilVerify();
     expect(s.phase).toBe("after_repair");
     expect(s.evidence.every((e) => e.phase === "before_repair")).toBe(true);
-    const done = ok(submitStep(W, s, { nodeId: "verify_repair", kind: "verification", results: [{ criterion: "smooth", result: "met" }, { criterion: "codes_gone", result: "met" }] }));
+    const done = ok(submitStep(W, s, { nodeId: "verify_repair", kind: "verification", results: [{ criterion: "smooth", result: "met" }, { criterion: "codes_gone", scan: afterScan() }] }));
     const after = done.evidence.filter((e) => e.phase === "after_repair");
     expect(after.map((e) => [e.kind, e.criterion ?? null])).toEqual([
       ["verification_criterion", "smooth"],
+      // V2D: the post-repair scan is its own after-repair evidence, recorded before the criterion it decides.
+      ["scan", null],
       ["verification_criterion", "codes_gone"],
       ["verification", null],
     ]);
@@ -165,6 +169,7 @@ describe("V2A: evidence phase and source", () => {
     const s = run(facts({ dtcs: ["P0300"], dtcSource: "scan_tool" }), [...MULTI, { nodeId: "multi_vacuum", kind: "observation", choice: "nothing_found" }, { nodeId: "fuel_pressure", kind: "measurement", value: 200, unit: "kPa" }]);
     const bySource = s.evidence.map((e) => [e.nodeId, e.kind, e.source]);
     expect(bySource).toEqual([
+      ["start", "scan", "scan_tool"],
       ["start", "code", "scan_tool"],
       ["confirm_symptom", "answer", "person"],
       ["flashing_light", "answer", "person"],
@@ -460,11 +465,11 @@ describe("V2A: separating tests are only steps the session can still reach", () 
 /* ───────────────────────── repair verification ───────────────────────── */
 
 describe("V2A: repair verification", () => {
-  const verifyCoil = (results: Array<{ criterion: string; result: "met" | "not_met" | "inconclusive" }>) =>
+  const verifyCoil = (results: VerificationEntry[]) =>
     submitStep(W, atCoilVerify(), { nodeId: "verify_repair", kind: "verification", results });
 
   it("is verified only when every criterion is met", () => {
-    const s = ok(verifyCoil([{ criterion: "smooth", result: "met" }, { criterion: "codes_gone", result: "met" }]));
+    const s = ok(verifyCoil([{ criterion: "smooth", result: "met" }, { criterion: "codes_gone", scan: afterScan() }]));
     expect(s).toMatchObject({ status: "completed", endResult: "resolved", verification: "verified", repairVerified: true, conclusionNodeId: "concl_coil" });
   });
 
@@ -482,7 +487,7 @@ describe("V2A: repair verification", () => {
     expect(verifyCoil([{ criterion: "smooth", result: "met" }])).toEqual({ ok: false, error: expect.stringMatching(/^invalid_verification/) });
     expect(verifyCoil([{ criterion: "smooth", result: "met" }, { criterion: "smooth", result: "met" }])).toEqual({ ok: false, error: expect.stringMatching(/^invalid_verification/) });
     expect(verifyCoil([{ criterion: "smooth", result: "met" }, { criterion: "other", result: "met" }])).toEqual({ ok: false, error: expect.stringMatching(/^invalid_verification/) });
-    expect(submitStep(W, atCoilVerify(), { nodeId: "verify_repair", kind: "verification", results: [{ criterion: "smooth", observed: "pass" }, { criterion: "codes_gone", result: "met" }] })).toEqual({
+    expect(submitStep(W, atCoilVerify(), { nodeId: "verify_repair", kind: "verification", results: [{ criterion: "smooth", observed: "pass" }, { criterion: "codes_gone", scan: afterScan() }] })).toEqual({
       ok: false,
       error: expect.stringMatching(/^invalid_verification/),
     });

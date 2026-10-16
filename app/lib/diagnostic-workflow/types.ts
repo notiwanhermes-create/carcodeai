@@ -28,6 +28,12 @@
  * The engine never talks to a vehicle. See
  * docs/research/guided-diagnostics/v2c-context-capabilities.md.
  *
+ * V2D replaces bare trouble-code strings with structured scan evidence
+ * (raw and canonical code, format, REPORTED status flags, module origin,
+ * completeness) and adds immutable freeze-frame snapshots, interpreted only
+ * by an explicit snapshot_check step. See
+ * docs/research/guided-diagnostics/v2d-dtc-freeze-frame.md.
+ *
  * Original CarCode design, written from general troubleshooting practice.
  */
 import type { CheckLevel } from "../diagnosis-schema";
@@ -79,6 +85,109 @@ export type DiagnosticCapabilityContext = {
 
 /** Why a step cannot be done with the person's capabilities. */
 export type CapabilityShortfall = "level" | "scan_access" | "instruments" | "facilities";
+
+/* ───────────────────────── trouble codes and snapshots (V2D) ───────────────────────── */
+
+/**
+ * How a code is written.
+ * - obd: the standard five-character P/B/C/U form (e.g. P0301). Upper-cased; nothing else changes.
+ * - opaque: a manufacturer-specific identifier, kept exactly as given (trimmed).
+ * - unclassified: not declared and not in the OBD form; kept exactly as given (trimmed).
+ * No meanings or descriptions are attached to any code.
+ */
+export const DTC_FORMATS = ["obd", "opaque", "unclassified"] as const;
+export type DtcFormat = (typeof DTC_FORMATS)[number];
+export type ObdSystem = "powertrain" | "body" | "chassis" | "network";
+
+/**
+ * A status a diagnostic SOURCE reported for a code. Reported data, never the
+ * engine's interpretation, and never on its own proof that a part is bad,
+ * that the fault is happening now, or that a cause is confirmed. Not every
+ * source supports every flag: "active" (present now) may only be used by a
+ * source that declares it reports it.
+ */
+export const DTC_STATUS_FLAGS = ["pending", "confirmed", "permanent", "history", "active"] as const;
+export type DtcStatusFlag = (typeof DTC_STATUS_FLAGS)[number];
+
+/**
+ * Whether a scan holds everything its source claims to provide.
+ * - complete: every code the source covers is listed, so a code not listed is not present (within its coverage).
+ * - partial / unknown: a code not listed may still be present. No absence can be concluded.
+ */
+export const COMPLETENESS = ["complete", "partial", "unknown"] as const;
+export type Completeness = (typeof COMPLETENESS)[number];
+
+/** Where evidence came from inside the vehicle, when the source says. Provenance only: no addressing, no topology. */
+export type ModuleOrigin = { id: string; name?: string };
+
+/** One code as the source reported it (input). */
+export type DtcObservationInput = {
+  code: string;
+  /** Declared by the source. Omitted: the OBD form is recognized, anything else is unclassified. */
+  format?: "obd" | "opaque";
+  /** Reported status flags. Omitted means unknown. Never empty. */
+  status?: DtcStatusFlag[];
+  module?: ModuleOrigin;
+  /** The id of a snapshot in the same scan that was captured with this code. */
+  snapshot?: string;
+};
+
+/** One freeze-frame / snapshot parameter. A missing value means the source did not provide it. */
+export type SnapshotParameter = { id: string; value?: number | string; unit?: Unit };
+
+/** Values captured at or around a fault event. Not a live measurement. */
+export type SnapshotInput = {
+  id: string;
+  parameters: SnapshotParameter[];
+  /** Capture time and/or order, as supplied by the source. */
+  captured?: { at?: string; order?: number };
+  completeness?: Completeness;
+};
+
+/** A set of codes (and snapshots) from one read, as supplied. Pinned in the session as given. */
+export type DiagnosticScanInput = {
+  /** Unique within the session. */
+  id: string;
+  /** "scan_tool" for a tool read, "person" for codes typed in. */
+  source: "scan_tool" | "person";
+  completeness: Completeness;
+  /** The modules a complete scan covers. Omitted: the whole vehicle, as far as the source claims. */
+  coverage?: { modules: string[] };
+  /** The status flags this source is able to report. Omitted: not stated, so a missing flag proves nothing. */
+  reportsStatus?: DtcStatusFlag[];
+  codes: DtcObservationInput[];
+  snapshots?: SnapshotInput[];
+};
+
+/** A code as recorded in the evidence. */
+export type DtcObservation = {
+  raw: string;
+  /** The canonical form: upper case for OBD codes, the trimmed raw text otherwise. */
+  code: string;
+  format: DtcFormat;
+  system?: ObdSystem;
+  status: DtcStatusFlag[] | "unknown";
+  module?: ModuleOrigin;
+  snapshot?: string;
+  scan: string;
+};
+
+/** A scan as recorded in the evidence (its codes and snapshots are recorded separately). */
+export type ScanRecord = { id: string; completeness: Completeness; coverage?: { modules: string[] }; reportsStatus?: DtcStatusFlag[]; codeCount: number };
+
+/** A snapshot as recorded in the evidence. */
+export type SnapshotRecord = {
+  id: string;
+  scan: string;
+  /** The canonical code it was captured with, when one code references it. Absent: standalone. */
+  forCode?: string;
+  captured?: { at?: string; order?: number };
+  completeness: Completeness;
+  parameters: SnapshotParameter[];
+};
+
+/** Declarative code question: at least a code or a module. A list of codes means "any of". */
+export type DtcMatcher = { code?: string | string[]; status?: DtcStatusFlag; module?: string };
 
 /* ───────────────────────── the fault model ───────────────────────── */
 
@@ -332,7 +441,10 @@ export type ConclusionNode = NodeBase & {
  * One thing that must hold after the repair. Each is answered separately and
  * recorded as its own after-repair evidence.
  * - symptom_absent: the original symptom is gone, in the conditions where it happened.
- * - codes_absent: the codes do not come back ("reported" means the codes the session started with).
+ * - codes_absent: the codes do not come back ("reported" means every code reported before the repair).
+ *   Met only from a COMPLETE post-repair scan that does not list them. A code still pending, confirmed or
+ *   active is not met; one reported only as permanent or history, or with unknown status, is inconclusive
+ *   (reported data, not proof of failure); a partial or unknown scan is inconclusive.
  * - retest: an earlier step is repeated and its result must be one of `passWhen`
  *   (check: "pass"/"fail"; observation: option ids; measurement: range ids).
  *   The new result is linked to the before-repair result of the same step.
@@ -385,6 +497,29 @@ export type ServiceFunctionNode = NodeBase & {
   outcomes: Outcome<"completed" | "failed">[];
 };
 
+/**
+ * Interpret ONE snapshot parameter, explicitly. Automatic (no input): it
+ * reads the parameter from the before-repair snapshot captured with the first
+ * matching code (`from: { dtc }`) or the first snapshot (`from: "any"`), and
+ * judges it like a measurement: against a fixed generic range, or against a
+ * pinned specification (verified only, conditions confirmed). Anything it
+ * cannot interpret (no snapshot or parameter, a text value, another kind of
+ * unit, an implausible value, an unresolvable specification) takes
+ * `ifUnavailable`; an untrusted specification or unconfirmed condition takes
+ * `ifInconclusive`. Importing a snapshot alone never does any of this.
+ */
+export type SnapshotCheckNode = NodeBase & {
+  type: "snapshot_check";
+  from: { dtc: DtcMatcher } | "any";
+  /** Generic parameter id, e.g. "coolant_temperature". */
+  parameter: string;
+  measurement: MeasurementDefinition;
+  specification?: SpecificationId;
+  outcomes: MeasurementOutcome[];
+  otherwise: NodeId;
+  ifUnavailable: NodeId;
+};
+
 /** The end of a workflow. `result` says how it ended. */
 export type EndNode = NodeBase & { type: "end"; result: "resolved" | "concluded" | "referred" | "not_reproducible" | "inconclusive" };
 
@@ -401,18 +536,35 @@ export type WorkflowNode =
   | RepairVerificationNode
   | ActuatorTestNode
   | ServiceFunctionNode
+  | SnapshotCheckNode
   | EndNode;
 
 export type NodeType = WorkflowNode["type"];
 
 /** Step types that may declare `ifInconclusive` (repair verification must). */
-export const INCONCLUSIVE_TYPES: ReadonlySet<NodeType> = new Set<NodeType>(["check", "observation", "measurement", "repair_verification", "actuator_test", "service_function"]);
+export const INCONCLUSIVE_TYPES: ReadonlySet<NodeType> = new Set<NodeType>([
+  "check",
+  "observation",
+  "measurement",
+  "repair_verification",
+  "actuator_test",
+  "service_function",
+  "snapshot_check",
+]);
 
 /* ───────────────────────── conditions (for automatic branches) ───────────────────────── */
 
+/**
+ * Conditions are evaluated three ways (yes / no / unknown) and a branch rule
+ * fires only on a definite yes. Code conditions look at before-repair scan
+ * evidence: presence is yes; absence is no only when a complete scan covers
+ * the question, otherwise unknown.
+ */
 export type Condition =
-  /** Any of these trouble codes was reported at the start. Upper case, exact. */
-  | { dtcAny: string[] }
+  /** A matching code was reported (with the given status, from the given module, when stated). */
+  | { dtc: DtcMatcher }
+  /** No matching code: a definite no needs a complete scan that covers it. */
+  | { noDtc: DtcMatcher }
   /** One of these symptoms was reported at the start. */
   | { symptomAny: string[] }
   /** A vehicle fact equals a value. */
@@ -490,10 +642,8 @@ export type ApplicabilityResult =
 
 export type SessionStartFacts = {
   vehicle?: VehicleContext;
-  /** Trouble codes as read, upper case. */
-  dtcs?: string[];
-  /** How the codes were obtained. Defaults to "person" (typed in). */
-  dtcSource?: "person" | "scan_tool";
+  /** Code scans available at the start (before the repair), pinned as given. */
+  scans?: DiagnosticScanInput[];
   /** Symptom ids the workflow understands (for example "rough_idle"). */
   symptoms?: string[];
   capabilities: DiagnosticCapabilityContext;
@@ -508,8 +658,10 @@ export type InconclusiveReason = (typeof INCONCLUSIVE_REASONS)[number];
 
 /** The answer to one verification criterion. */
 export type VerificationEntry =
-  /** symptom_absent / codes_absent: did it hold? */
+  /** symptom_absent: did it hold? codes_absent without a scan: only not_met or inconclusive. */
   | { criterion: string; result: "met" | "not_met" | "inconclusive" }
+  /** codes_absent: the post-repair scan, recorded as after-repair evidence and judged by the engine. */
+  | { criterion: string; scan: DiagnosticScanInput }
   /** retest of a check or observation: the new result ("pass", "fail" or an option id). */
   | { criterion: string; observed: string }
   /** retest of a measurement: the new reading. */
@@ -559,7 +711,10 @@ export type Evidence = {
    * source "scan_tool").
    */
   kind:
+    | "scan"
     | "code"
+    | "snapshot"
+    | "snapshot_check"
     | "symptom"
     | "specification"
     | "prerequisite"
@@ -600,6 +755,14 @@ export type Evidence = {
   refuted?: ConditionId[];
   /** For a specification resolution: the specification id. */
   specification?: SpecificationId;
+  /** For a scan: its completeness, coverage and the flags its source reports. */
+  scanInfo?: ScanRecord;
+  /** For a code: the structured observation (raw, canonical, format, reported status, module, snapshot). */
+  dtc?: DtcObservation;
+  /** For a snapshot: the frozen snapshot. */
+  snapshot?: SnapshotRecord;
+  /** For a snapshot check: which snapshot and parameter were read, and the value. */
+  snapshotRef?: { snapshot: string; parameter: string; value?: number | string; unit?: Unit };
   /** For an actuator test or service function: its generic id. */
   actuator?: string;
   serviceFunction?: string;

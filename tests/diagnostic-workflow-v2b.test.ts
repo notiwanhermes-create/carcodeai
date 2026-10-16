@@ -6,6 +6,7 @@
  * here is SYNTHETIC / TEST ONLY: not data for any vehicle or manufacturer.
  */
 import { describe, expect, it } from "vitest";
+import { withCodes, type TypedCodes } from "./helpers/workflow-scans";
 import {
   replaySession,
   resolveSpecification,
@@ -32,7 +33,7 @@ import { createInMemorySpecificationProvider as provider } from "../app/lib/diag
 const PRO: DiagnosticCapabilityContext = { skill: "professional", scanAccess: "live_data", instruments: ["hand_tools", "compression_tester", "pressure_gauge"], facilities: [] };
 /** A synthetic vehicle the synthetic misfire workflow applies to. Not a real vehicle. */
 const SYNTHETIC_VEHICLE = { fuel: "gasoline" as const, cylinders: 4 };
-const facts = (over: Partial<SessionStartFacts> = {}): SessionStartFacts => ({ capabilities: PRO, vehicle: SYNTHETIC_VEHICLE, ...over });
+const facts = (over: Partial<SessionStartFacts> & TypedCodes = {}): SessionStartFacts => withCodes({ capabilities: PRO, vehicle: SYNTHETIC_VEHICLE, ...over });
 const FUEL = SYNTHETIC_SPECIFICATIONS.find((r) => r.id === "synthetic.fuel_supply_pressure_idle")!;
 const COMPRESSION = SYNTHETIC_SPECIFICATIONS.find((r) => r.id === "synthetic.cylinder_compression_min")!;
 const SYNTHETIC: EngineOptions = { specifications: provider(SYNTHETIC_SPECIFICATIONS) };

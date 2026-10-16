@@ -4,6 +4,7 @@
  */
 export * from "./types";
 export { convert, isUnit } from "./units";
+export { codesAbsentVerdict, matchDtc, normalizeCode, normalizeScan, workflowCodeKey, type NormalizedCode, type NormalizedScan, type Tri } from "./dtc";
 export { applicabilityProblems, capabilityProblem, capabilityShortfall, checkApplicability, normalizeText, normalizeVehicleContext } from "./context";
 export { validateWorkflow, successors, type ValidationResult, type WorkflowProblem } from "./validate";
 export {

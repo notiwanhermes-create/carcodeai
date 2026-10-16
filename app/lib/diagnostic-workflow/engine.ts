@@ -37,6 +37,7 @@ import {
   type NodeId,
   type NumericRange,
   type RepairVerificationNode,
+  type SnapshotCheckNode,
   type SessionStartFacts,
   type SpecRelation,
   type SpecTrust,
@@ -53,6 +54,7 @@ import { convert, isUnit } from "./units";
 import { successors, validateWorkflow } from "./validate";
 import { describeResolution, pinnedSpecificationProvider, resolveSpecification } from "./specifications";
 import { capabilityProblem, capabilityShortfall, checkApplicability, normalizeText, normalizeVehicleContext } from "./context";
+import { codeEvidence, codesAbsentVerdict, matchDtc, normalizeScan, workflowCodeKey, type NormalizedScan, type Tri } from "./dtc";
 
 /** A guard on top of the no-loops check: no run may take more automatic steps than this. */
 export const MAX_AUTOMATIC_STEPS = 500;
@@ -118,7 +120,10 @@ type Usable =
  * Whether a step can use its pinned specification at all, with the values
  * converted into the step's unit. Only the same kind of quantity converts.
  */
-function usable(node: MeasurementNode, r: SpecificationResolution | undefined): Usable {
+/** Steps that judge a value like a measurement: a live reading, or one snapshot parameter. */
+type JudgedNode = MeasurementNode | SnapshotCheckNode;
+
+function usable(node: JudgedNode, r: SpecificationResolution | undefined): Usable {
   if (!r || r.status === "unavailable") return { ok: false, reason: "spec_unavailable" };
   if (r.status === "not_found") return { ok: false, reason: "spec_not_found" };
   if (r.status === "ambiguous") return { ok: false, reason: "spec_ambiguous" };
@@ -151,7 +156,7 @@ type Judged =
  * the specification is verified and every condition it requires is
  * established; otherwise it is recorded but left unjudged, with the reason.
  */
-function judge(node: MeasurementNode, raw: number, unit: Unit, session: DiagnosticSession): Judged {
+function judge(node: JudgedNode, raw: number, unit: Unit, session: DiagnosticSession): Judged {
   if (!isUnit(unit) || typeof raw !== "number" || !Number.isFinite(raw)) return { ok: false, error: "invalid_measurement" };
   const value = convert(raw, unit, node.measurement.unit);
   if (value === null) return { ok: false, error: `wrong_unit: this step measures in ${node.measurement.unit}` };
@@ -192,8 +197,17 @@ function judge(node: MeasurementNode, raw: number, unit: Unit, session: Diagnost
 /** Whether the person's declared capabilities cover a step (skill, scan access, instruments, facilities). */
 const canDo = (node: WorkflowNode, capabilities: DiagnosticCapabilityContext) => capabilityShortfall(node.requires, capabilities);
 
-function holds(condition: Condition, session: DiagnosticSession): boolean {
-  if ("dtcAny" in condition) return (session.facts.dtcs ?? []).some((code) => condition.dtcAny.includes(code));
+/**
+ * A condition: true, false or null (cannot tell). A branch rule fires only on
+ * true. Code conditions are honest about absence (see matchDtc); the rest are
+ * plain facts about the session.
+ */
+function holds(condition: Condition, session: DiagnosticSession): Tri {
+  if ("dtc" in condition) return matchDtc(session.evidence, condition.dtc);
+  if ("noDtc" in condition) {
+    const present = matchDtc(session.evidence, condition.noDtc);
+    return present === null ? null : !present;
+  }
   if ("symptomAny" in condition) return (session.facts.symptoms ?? []).some((s) => condition.symptomAny.includes(s));
   if ("vehicle" in condition) {
     // The pinned context is normalized (lower case text), so compare against the normalized value.
@@ -202,12 +216,78 @@ function holds(condition: Condition, session: DiagnosticSession): boolean {
   }
   if ("established" in condition) return session.establishedConditions.includes(condition.established);
   if ("answered" in condition) {
-    const last = [...session.evidence].reverse().find((e) => e.nodeId === condition.answered && e.kind !== "code" && e.kind !== "symptom");
+    const last = [...session.evidence].reverse().find((e) => e.nodeId === condition.answered && !NOT_ANSWERS.has(e.kind));
     return last?.value === condition.is;
   }
-  if ("all" in condition) return condition.all.every((c) => holds(c, session));
-  if ("any" in condition) return condition.any.some((c) => holds(c, session));
-  return !holds(condition.not, session);
+  if ("all" in condition) {
+    const parts = condition.all.map((c) => holds(c, session));
+    return parts.includes(false) ? false : parts.includes(null) ? null : true;
+  }
+  if ("any" in condition) {
+    const parts = condition.any.map((c) => holds(c, session));
+    return parts.includes(true) ? true : parts.includes(null) ? null : false;
+  }
+  const inner = holds(condition.not, session);
+  return inner === null ? null : !inner;
+}
+
+/** Evidence kinds that are not an answer to a step. */
+const NOT_ANSWERS = new Set<Evidence["kind"]>(["scan", "code", "snapshot", "symptom", "specification"]);
+
+/** Record one normalized scan: the scan, then its codes, then its snapshots, all in the current phase. */
+function recordScan(session: DiagnosticSession, nodeId: NodeId, scan: NormalizedScan, to: NodeId, at?: string): DiagnosticSession {
+  const stamp = at ? { at } : {};
+  let next = record(session, { nodeId, kind: "scan", value: scan.record.id, scanInfo: scan.record, source: scan.source, to, ...stamp });
+  for (const dtc of scan.codes) next = record(next, { nodeId, kind: "code", value: dtc.code, dtc, source: scan.source, to, ...stamp });
+  for (const snapshot of scan.snapshots) next = record(next, { nodeId, kind: "snapshot", value: snapshot.id, snapshot, source: scan.source, to, ...stamp });
+  return next;
+}
+
+/** Scan and snapshot ids already in the session. */
+function usedIds(session: DiagnosticSession) {
+  return {
+    scans: new Set(session.evidence.filter((e) => e.kind === "scan").map((e) => e.value)),
+    snapshots: new Set(session.evidence.filter((e) => e.kind === "snapshot").map((e) => e.value)),
+  };
+}
+
+type SnapshotRead = { ok: true; snapshot: string; parameter: string; value: number; unit: Unit } | { ok: false; reason: string; snapshot?: string; value?: number | string; unit?: Unit };
+
+/** The parameter a snapshot_check reads, from the before-repair snapshots only. Never guessed. */
+function readSnapshot(session: DiagnosticSession, node: SnapshotCheckNode): SnapshotRead {
+  const snaps = session.evidence.filter((e) => e.kind === "snapshot" && e.phase === "before_repair" && e.snapshot).map((e) => e.snapshot!);
+  let snapshotId: string | undefined;
+  if (node.from === "any") snapshotId = snaps[0]?.id;
+  else {
+    // The snapshot captured with the first matching code (in recorded order) that has one.
+    const matcher = node.from.dtc;
+    snapshotId = codeEvidence(session.evidence, "before_repair").codes.find((c) => c.dtc.snapshot && codeFits(matcher, c.dtc))?.dtc.snapshot;
+  }
+  const snap = snaps.find((x) => x.id === snapshotId);
+  if (!snap) return { ok: false, reason: "no_snapshot" };
+  const param = snap.parameters.find((x) => x.id === node.parameter);
+  if (!param) return { ok: false, reason: "parameter_missing", snapshot: snap.id };
+  if (param.value === undefined) return { ok: false, reason: "parameter_not_available", snapshot: snap.id };
+  if (typeof param.value !== "number") return { ok: false, reason: "not_numeric", snapshot: snap.id, value: param.value };
+  if (!param.unit) return { ok: false, reason: "no_unit", snapshot: snap.id, value: param.value };
+  return { ok: true, snapshot: snap.id, parameter: param.id, value: param.value, unit: param.unit };
+}
+
+type DtcMatcherLike = { code?: string | string[]; status?: string; module?: string };
+
+/** Whether one recorded code fits a matcher (code list, module, and reported status when asked). */
+function codeFits(m: DtcMatcherLike, d: NonNullable<Evidence["dtc"]>): boolean {
+  if (m.code !== undefined) {
+    const targets = Array.isArray(m.code) ? m.code : [m.code];
+    const hit = targets.some((t) => {
+      const key = workflowCodeKey(t);
+      return !!key && (key.format === "obd" ? d.format === "obd" : d.format !== "obd") && d.code === key.code;
+    });
+    if (!hit) return false;
+  }
+  if (m.module !== undefined && d.module?.id !== normalizeText(m.module)) return false;
+  if (m.status !== undefined && (d.status === "unknown" || !d.status.includes(m.status as never))) return false;
+  return true;
 }
 
 /** Who may have produced the input for a step of this type, and the default when the caller does not say. */
@@ -272,7 +352,7 @@ function record(session: DiagnosticSession, entry: NewEvidence, effect: CauseEff
  * The session with `node`'s specification pinned: resolved once through the
  * provider and recorded as evidence. Already pinned means no new lookup.
  */
-function pinSpecification(session: DiagnosticSession, node: MeasurementNode, options: EngineOptions, at?: string): DiagnosticSession {
+function pinSpecification(session: DiagnosticSession, node: JudgedNode, options: EngineOptions, at?: string): DiagnosticSession {
   const id = node.specification!;
   if (Object.prototype.hasOwnProperty.call(session.specifications, id)) return session;
   // The provider receives the session's PINNED vehicle context, never the currently selected vehicle.
@@ -326,10 +406,46 @@ function advance(p: Prepared, from: DiagnosticSession, nodeId: NodeId, at: strin
         id = node.next;
         continue;
       case "branch": {
-        const index = node.rules.findIndex((rule) => holds(rule.if, session));
+        const index = node.rules.findIndex((rule) => holds(rule.if, session) === true);
         const rule = index >= 0 ? node.rules[index] : null;
         const to = rule ? rule.to : node.otherwise;
         session = record(session, { nodeId: node.id, kind: "branch", value: rule ? `rule:${index + 1}` : "otherwise", source: "engine", to, ...stamp }, rule ?? {});
+        id = to;
+        continue;
+      }
+      case "snapshot_check": {
+        // Explicit interpretation of one snapshot parameter. Never a live measurement, never automatic for every snapshot.
+        if (node.specification) session = pinSpecification(session, node, options, at);
+        const read = readSnapshot(session, node);
+        const base = { nodeId: node.id, kind: "snapshot_check" as const, source: "engine" as const, ...stamp };
+        const unavailable = (reason: string, ref?: NewEvidence["snapshotRef"]) => {
+          session = record(session, { ...base, value: `unavailable: ${reason}`, ...(ref ? { snapshotRef: ref } : {}), to: node.ifUnavailable });
+          id = node.ifUnavailable;
+        };
+        if (!read.ok) {
+          unavailable(read.reason, read.snapshot ? { snapshot: read.snapshot, parameter: node.parameter, ...(read.value !== undefined ? { value: read.value } : {}) } : undefined);
+          continue;
+        }
+        const ref = { snapshot: read.snapshot, parameter: read.parameter, value: read.value, unit: read.unit };
+        const judged = judge(node, read.value, read.unit, session);
+        if (!judged.ok) {
+          unavailable(judged.error.startsWith("wrong_unit") ? "incompatible_unit" : judged.error.startsWith("implausible") ? "implausible_value" : "invalid_value", ref);
+          continue;
+        }
+        if (judged.status === "unusable") {
+          unavailable(judged.reason, ref);
+          continue;
+        }
+        if (judged.status === "unjudged") {
+          // An untrusted specification or an unconfirmed condition: shown, never used to judge.
+          const to = node.ifInconclusive!;
+          session = record(session, { ...base, value: `${read.value} ${read.unit}`, snapshotRef: ref, measured: { value: judged.value, unit: node.measurement.unit }, judgement: { evaluated: false, reason: judged.reason, specification: judged.specification }, to });
+          id = to;
+          continue;
+        }
+        const to = judged.outcome?.to ?? node.otherwise;
+        const judgement = { evaluated: true as const, range: judged.range, ...(judged.relation ? { relation: judged.relation } : {}), ...(judged.specification ? { specification: judged.specification } : {}) };
+        session = record(session, { ...base, value: `${read.value} ${read.unit}`, snapshotRef: ref, measured: { value: judged.value, unit: node.measurement.unit }, judgement, to }, judged.outcome ?? {});
         id = to;
         continue;
       }
@@ -381,10 +497,42 @@ function verify(
     let extra: Partial<NewEvidence> = {};
     let entrySource: InputSource = source ?? "person";
 
-    if ("result" in entry && entry.result === "inconclusive") {
+    if (criterion.kind === "codes_absent") {
+      // "reported" means every code reported before the repair.
+      const targets =
+        criterion.codes === "reported"
+          ? codeEvidence(session.evidence, "before_repair")
+              .codes.map((c) => ({ format: c.dtc.format === "obd" ? ("obd" as const) : ("other" as const), code: c.dtc.code, ...(c.dtc.module ? { module: c.dtc.module.id } : {}) }))
+              .filter((t, i, all) => all.findIndex((x) => x.format === t.format && x.code === t.code && x.module === t.module) === i)
+          : criterion.codes.map((c) => workflowCodeKey(c)!);
+      if ("scan" in entry) {
+        const scan = normalizeScan(entry.scan, usedIds(next));
+        if (!scan.ok) return { ok: false, error: `invalid_verification: "${criterion.id}": ${scan.error}` };
+        // The post-repair scan is its own after-repair evidence; earlier scans are never replaced.
+        next = recordScan(next, node.id, scan.value, node.id, at);
+        entrySource = scan.value.source;
+        if (targets.length === 0) {
+          result = "met";
+          value = "met (no codes were reported before the repair)";
+        } else {
+          const verdict = codesAbsentVerdict(targets, scan.value);
+          result = verdict.result;
+          value = `${verdict.result} (${verdict.detail})`;
+        }
+      } else if ("result" in entry && (entry.result === "not_met" || entry.result === "inconclusive")) {
+        // A person can report the codes came back, or that they could not check; only a scan can show they are gone.
+        result = entry.result;
+        value = entry.result;
+      } else if ("result" in entry && entry.result === "met" && targets.length === 0) {
+        result = "met";
+        value = "met (no codes were reported before the repair)";
+      } else {
+        return { ok: false, error: `invalid_verification: "${criterion.id}" needs a post-repair scan to be met (or not_met / inconclusive)` };
+      }
+    } else if ("result" in entry && entry.result === "inconclusive") {
       result = "inconclusive";
       value = "inconclusive";
-    } else if (criterion.kind === "symptom_absent" || criterion.kind === "codes_absent") {
+    } else if (criterion.kind === "symptom_absent") {
       if (!("result" in entry) || (entry.result !== "met" && entry.result !== "not_met")) return { ok: false, error: `invalid_verification: "${criterion.id}" needs met, not_met or inconclusive` };
       result = entry.result;
       value = result;
@@ -445,14 +593,25 @@ export function startSession(workflow: WorkflowDefinition, facts: SessionStartFa
   const applies = checkApplicability(workflow.applicability, vehicle.vehicle);
   if (applies.status === "not_applicable") return fail(`not_applicable: the vehicle does not match ${applies.mismatched.join(", ")}`);
   if (applies.status === "insufficient_context") return fail(`insufficient_context: the vehicle's ${applies.missing.join(", ")} must be known`);
-  if (facts.dtcSource !== undefined && facts.dtcSource !== "person" && facts.dtcSource !== "scan_tool") return fail("invalid_facts: dtcSource must be person or scan_tool");
+  if ("dtcs" in (facts as object) || "dtcSource" in (facts as object)) return fail("invalid_facts: trouble codes are supplied as structured scans (facts.scans)");
+  if (facts.scans !== undefined && !Array.isArray(facts.scans)) return fail("invalid_facts: scans must be a list");
+  const ids = { scans: new Set<string>(), snapshots: new Set<string>() };
+  const scans: NormalizedScan[] = [];
+  for (const raw of facts.scans ?? []) {
+    const scan = normalizeScan(raw, ids);
+    if (!scan.ok) return fail(`invalid_facts: ${scan.error}`);
+    ids.scans.add(scan.value.record.id);
+    for (const snap of scan.value.snapshots) ids.snapshots.add(snap.id);
+    scans.push(scan.value);
+  }
   if ("specs" in (facts as object)) return fail("invalid_facts: specifications come from a SpecificationProvider, not the session facts");
   const normalized: SessionStartFacts = {
     ...facts,
     // Pinned: this normalized, frozen copy is the vehicle for the whole session, its replays and resumes.
     ...(facts.vehicle !== undefined ? { vehicle: vehicle.vehicle } : {}),
     capabilities: Object.freeze({ ...facts.capabilities, instruments: [...facts.capabilities.instruments], facilities: [...facts.capabilities.facilities] }),
-    dtcs: (facts.dtcs ?? []).map((c) => c.trim().toUpperCase()).filter(Boolean),
+    // Pinned exactly as supplied (deep-frozen copy): a later scan or a change at the source never reaches this session.
+    ...(facts.scans !== undefined ? { scans: frozen(facts.scans) } : {}),
     symptoms: [...(facts.symptoms ?? [])],
   };
   let session: DiagnosticSession = {
@@ -478,7 +637,7 @@ export function startSession(workflow: WorkflowDefinition, facts: SessionStartFa
   };
   const start = p.start as Extract<WorkflowNode, { type: "start" }>;
   const stamp = at ? { at } : {};
-  for (const code of normalized.dtcs ?? []) session = record(session, { nodeId: start.id, kind: "code", value: code, source: normalized.dtcSource ?? "person", to: start.next, ...stamp });
+  for (const scan of scans) session = recordScan(session, start.id, scan, start.next, at);
   for (const symptom of normalized.symptoms ?? []) session = record(session, { nodeId: start.id, kind: "symptom", value: symptom, source: "person", to: start.next, ...stamp });
   return advance(p, session, start.next, at, options);
 }
@@ -660,7 +819,11 @@ export function sessionOutcome(session: Pick<DiagnosticSession, "status" | "curr
     endResult: session.endResult,
     remainingCauses: [...session.remainingCauses],
     supportedCauses: [...session.supportedCauses],
-    evidence: session.evidence.map((e) => [e.seq, e.nodeId, e.kind, e.value, e.to] as const),
+    // Structured code and snapshot evidence is compared in full, so an edited code, status or snapshot is caught.
+    evidence: session.evidence.map((e) => {
+      const detail = e.dtc ?? e.scanInfo ?? e.snapshot ?? e.snapshotRef;
+      return detail ? ([e.seq, e.nodeId, e.kind, e.value, e.to, JSON.stringify(detail)] as const) : ([e.seq, e.nodeId, e.kind, e.value, e.to] as const);
+    }),
   };
 }
 
@@ -681,7 +844,7 @@ export function resumeSession(workflow: WorkflowDefinition, saved: unknown): Ste
   if (!s || typeof s !== "object" || !s.facts || !Array.isArray(s.inputs) || !Array.isArray(s.evidence)) return fail("invalid_session");
   if (s.workflowId !== workflow.id || s.workflowVersion !== workflow.version) return fail("wrong_workflow");
   if (!Array.isArray(s.remainingCauses) || !Array.isArray(s.supportedCauses)) return fail("invalid_session");
-  const startedAt = typeof s.startedAt === "string" ? s.startedAt : s.evidence.find((e) => e?.kind === "code" || e?.kind === "symptom")?.at;
+  const startedAt = typeof s.startedAt === "string" ? s.startedAt : s.evidence.find((e) => e?.kind === "scan" || e?.kind === "symptom")?.at;
   // History is replayed against the specifications the session pinned, never the provider's current data,
   // so a later change in that data cannot rewrite a recorded judgement. (specificationDrift reports such changes.)
   const pinned = s.specifications && typeof s.specifications === "object" ? s.specifications : {};

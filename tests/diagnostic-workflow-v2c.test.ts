@@ -7,6 +7,7 @@
  * TEST ONLY / NOT OEM DATA.
  */
 import { describe, expect, it } from "vitest";
+import { withCodes, type TypedCodes } from "./helpers/workflow-scans";
 import {
   capabilityShortfall,
   checkApplicability,
@@ -36,7 +37,8 @@ import { CAPABILITY_PRESETS, capabilityPreset } from "../app/lib/diagnostic-work
 /** SYNTHETIC / TEST ONLY: not a real vehicle. */
 const CAR: VehicleContext = { year: 2015, make: "  Synthetic   Motors ", model: "Test Car", engine: "SYN-I4-A", fuel: "gasoline", cylinders: 4 };
 const SPECS: EngineOptions = { specifications: createInMemorySpecificationProvider(SYNTHETIC_SPECIFICATIONS) };
-const facts = (capabilities: DiagnosticCapabilityContext = capabilityPreset("workshop"), over: Partial<SessionStartFacts> = {}): SessionStartFacts => ({ capabilities, vehicle: CAR, ...over });
+const facts = (capabilities: DiagnosticCapabilityContext = capabilityPreset("workshop"), over: Partial<SessionStartFacts> & TypedCodes = {}): SessionStartFacts =>
+  withCodes({ capabilities, vehicle: CAR, ...over });
 
 function ok(r: ReturnType<typeof startSession>): DiagnosticSession {
   if (!r.ok) throw new Error(r.error);

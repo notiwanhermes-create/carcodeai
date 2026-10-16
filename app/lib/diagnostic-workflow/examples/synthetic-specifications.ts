@@ -32,4 +32,13 @@ export const SYNTHETIC_SPECIFICATIONS: readonly DiagnosticSpecification[] = [
     trust: "verified",
     note: "SYNTHETIC / TEST ONLY",
   },
+  {
+    id: "synthetic.engine_warm_coolant_temp",
+    revision: "SYNTHETIC-TEST-ONLY-r1",
+    unit: "degC",
+    expected: { min: 70 },
+    source: SYNTHETIC_SOURCE,
+    trust: "verified",
+    note: "SYNTHETIC / TEST ONLY",
+  },
 ];

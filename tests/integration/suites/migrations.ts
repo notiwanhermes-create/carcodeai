@@ -119,7 +119,7 @@ export function migrationSuite() {
       expect(run.output).toContain("empty database: all migrations will be applied");
       expect(run.status, run.output).toBe(0);
 
-      // A new database holds the app's six tables and nothing from older versions.
+      // A new database holds the app's tables and nothing from older versions.
       expect(await db.tableNames(pool)).toEqual(APP_TABLES);
       expect(await db.leftovers(pool)).toEqual({ tables: {}, columns: {}, indexes: [] });
       const applied = await rows(`SELECT migration_name, finished_at IS NOT NULL AS done FROM _prisma_migrations ORDER BY started_at`);
@@ -127,6 +127,7 @@ export function migrationSuite() {
         { migration_name: db.BASELINE, done: true },
         { migration_name: db.CONVERGE, done: true },
         { migration_name: db.GARAGE_HISTORY, done: true },
+        { migration_name: db.GUIDED_SESSIONS, done: true },
       ]);
 
       const drift = db.schemaMatchesPrisma();
@@ -157,6 +158,7 @@ export function migrationSuite() {
         db.BASELINE,
         db.CONVERGE,
         db.GARAGE_HISTORY,
+        db.GUIDED_SESSIONS,
       ]);
       expect(await appShapeNow()).toEqual(db.appShape(expectedShape));
       expect(await db.leftovers(pool)).toEqual(leftBehind);
@@ -298,8 +300,8 @@ export function migrationSuite() {
       // existing value the migration may change is an empty is_active flag, which becomes "no".
       const after = await everyRow();
       // Every table that was there still is; the only new ones are the app's own new, empty tables.
-      expect(Object.keys(after).sort()).toEqual([...Object.keys(before), "confirmed_fixes", "diagnoses"].sort());
-      expect([after.diagnoses, after.confirmed_fixes]).toEqual([[], []]);
+      expect(Object.keys(after).sort()).toEqual([...Object.keys(before), ...db.NEW_TABLES].sort());
+      expect(db.NEW_TABLES.map((t) => after[t])).toEqual(db.NEW_TABLES.map(() => []));
       for (const table of Object.keys(before)) {
         expect(after[table], table).toHaveLength(before[table].length);
         for (const [i, was] of (before[table] as Array<Record<string, unknown>>).entries()) {
@@ -363,7 +365,7 @@ export function migrationSuite() {
       await db.upgradeExistingDatabase(pool);
 
       // No table went away, and no table lost a row. (The only new tables are the app's own new ones.)
-      expect(await db.tableNames(pool)).toEqual([...tablesBefore, "confirmed_fixes", "diagnoses"].sort());
+      expect(await db.tableNames(pool)).toEqual([...tablesBefore, ...db.NEW_TABLES].sort());
       expect(Object.fromEntries(await Promise.all(tablesBefore.map(async (t) => [t, await count(t)] as const)))).toEqual(countsBefore);
       expect(countsBefore).toMatchObject({ sessions: 2, oem_fault_codes: 5, feedback_auto_reply_log: 1, feedback: 4, rate_limits: 2, email_verification_tokens: 1 });
 

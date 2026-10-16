@@ -1007,6 +1007,17 @@ export function replaySession(
 }
 
 /**
+ * JSON text with every object's keys in sorted order, so that comparing two
+ * values never depends on the order their keys were written in (a session
+ * read back from storage may come with its keys sorted or reordered).
+ */
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v) =>
+    v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, (v as Record<string, unknown>)[k]])) : v,
+  );
+}
+
+/**
  * What a session's inputs led to: the evidence trail and where the session
  * stands. Two sessions with the same outcome reached the same results, however
  * their saved form is laid out. Used by resumeSession.
@@ -1022,7 +1033,7 @@ export function sessionOutcome(session: Pick<DiagnosticSession, "status" | "curr
     // Structured code and snapshot evidence is compared in full, so an edited code, status or snapshot is caught.
     evidence: session.evidence.map((e) => {
       const detail = e.dtc ?? e.scanInfo ?? e.snapshot ?? e.snapshotRef ?? e.conflict;
-      return detail ? ([e.seq, e.nodeId, e.kind, e.value, e.to, JSON.stringify(detail)] as const) : ([e.seq, e.nodeId, e.kind, e.value, e.to] as const);
+      return detail ? ([e.seq, e.nodeId, e.kind, e.value, e.to, stableJson(detail)] as const) : ([e.seq, e.nodeId, e.kind, e.value, e.to] as const);
     }),
   };
 }
@@ -1050,7 +1061,7 @@ export function resumeSession(workflow: WorkflowDefinition, saved: unknown): Ste
   const pinned = s.specifications && typeof s.specifications === "object" ? s.specifications : {};
   const rebuilt = replaySession(workflow, s.facts, s.inputs, startedAt, { specifications: pinnedSpecificationProvider(pinned) });
   if (!rebuilt.ok) return fail(`invalid_session: ${rebuilt.error}`);
-  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  const same = (a: unknown, b: unknown) => stableJson(a) === stableJson(b);
   const savedOutcome = sessionOutcome({
     status: s.status!,
     currentNodeId: s.currentNodeId ?? null,

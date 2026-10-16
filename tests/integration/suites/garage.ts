@@ -529,7 +529,7 @@ export function garageSuite() {
       expect(JSON.stringify(camryPage)).not.toMatch(/Tire Rotation|Squeal when braking/);
 
       // The timeline is a view: there is no table behind it, and building it stored nothing.
-      expect(await db.tableNames(pool)).toEqual(["confirmed_fixes", "diagnoses", "email_verification_tokens", "feedback", "garage_vehicles", "maintenance_records", "rate_limits", "users"]);
+      expect(await db.tableNames(pool)).toEqual(db.APP_TABLES);
       expect([await count("diagnoses"), await count("confirmed_fixes"), await count("maintenance_records")]).toEqual([2, 1, 3]);
     });
 

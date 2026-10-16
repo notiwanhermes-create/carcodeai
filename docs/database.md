@@ -29,6 +29,8 @@ How the database is defined, changed, backed up and tested. Written in Phase 2D
 | `diagnoses` | `Diagnosis` | A signed-in user's saved diagnoses: what they entered, the answer as it was given, follow-up answers, and whether it is open, resolved or dismissed | its archived vehicle is deleted permanently; the account is deleted |
 | `confirmed_fixes` | `ConfirmedFix` | Every repair the user reported for a diagnosis, including ones they later said did not hold | its archived vehicle is deleted permanently; the account is deleted (never on a reopen) |
 | `maintenance_records` | `MaintenanceRecord` | Service entries for a vehicle | the user deletes the entry; its archived vehicle is deleted permanently; the account is deleted |
+| `guided_diagnostic_sessions` | `GuidedDiagnosticSession` | **Research (Guided Diagnostics V2G), not used by the app yet.** A persisted guided-diagnostic session: lookup columns plus the engine's session as a sealed payload | its archived vehicle is deleted permanently (cascade); the account is deleted |
+| `guided_diagnostic_session_revisions` | `GuidedDiagnosticSessionRevision` | **Research (V2G), not used by the app yet.** One metadata row per revision of a session (append-only) | its session is deleted |
 | `rate_limits` | `RateLimit` | Short-lived counters (see below) | automatically, after `expires_at` |
 | `feedback` | `Feedback` | Messages from the feedback form (64-bit id) | never automatically |
 | `_prisma_migrations` | (Prisma's own) | Which migrations have been applied | never |
@@ -259,10 +261,31 @@ Adds what the garage needs to keep history on the server. **It only adds.**
   version neither reads nor writes the new tables. One difference to know
   about is under "Rollback check".
 
+### 4. `20261016120000_guided_diagnostic_sessions` (Guided Diagnostics V2G, research)
+
+On the research branch only; **not applied anywhere yet**. Nothing in the app
+reads or writes these tables. See
+`docs/research/guided-diagnostics/v2g-persistence.md`.
+
+- **Creates:** tables `guided_diagnostic_sessions` and
+  `guided_diagnostic_session_revisions`, their indexes, foreign keys and check
+  constraints (lifecycle `active` or `completed`, with `completed_at` set
+  exactly when completed; revisions from 1; transition `start` or `input`;
+  input origin `direct` or `ai_parser`, with a text hash exactly for
+  `ai_parser`).
+- **Changes:** nothing that exists. **Backfills:** none. **Drops:** nothing.
+  **Data-loss risk:** none.
+- **Locks:** only while the foreign keys to `users` and `garage_vehicles` are
+  added (milliseconds).
+- **Delete behaviour:** a session goes with its account, and with its vehicle
+  when an archived vehicle is deleted permanently (`ON DELETE CASCADE`), so the
+  existing permanent delete keeps working unchanged.
+
 ### Order
 
 `baseline` (recorded) → `converge_and_expand` → `garage_history` → new app code
-goes live → (later, separately) clean-up.
+goes live → (later, separately) clean-up. `guided_diagnostic_sessions` comes
+after `garage_history` and needs no app change.
 
 The previous version of the app keeps working against the migrated database, so
 it does not matter that the old code is still serving for a minute or two after

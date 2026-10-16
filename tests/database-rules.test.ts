@@ -46,6 +46,8 @@ const migrationDir = (name: string) => `prisma/migrations/${name}/migration.sql`
 const BASELINE = "20260101000000_baseline";
 const CONVERGE = "20261011010000_converge_and_expand";
 const GARAGE_HISTORY = "20261012180000_garage_history";
+/** Guided Diagnostics V2G (research): two new, empty tables. Nothing in the app uses them yet. */
+const GUIDED_SESSIONS = "20261016120000_guided_diagnostic_sessions";
 /** SQL with `--` comments removed. */
 const sql = (name: string) => read(migrationDir(name)).replace(/--.*$/gm, "");
 
@@ -148,13 +150,13 @@ describe("migrations", () => {
     const names = fs.readdirSync(path.join(ROOT, "prisma/migrations"), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
     // Exactly these. The clean-up of what older versions left behind is a
     // separate, later release.
-    expect(names).toEqual([BASELINE, CONVERGE, GARAGE_HISTORY]);
+    expect(names).toEqual([BASELINE, CONVERGE, GARAGE_HISTORY, GUIDED_SESSIONS]);
     expect(read("prisma/migrations/migration_lock.toml")).toMatch(/provider = "postgresql"/);
     for (const name of names) expect(read(migrationDir(name)).length, name).toBeGreaterThan(200);
   });
 
   it("say what they create, change and drop", () => {
-    for (const name of [CONVERGE, GARAGE_HISTORY]) {
+    for (const name of [CONVERGE, GARAGE_HISTORY, GUIDED_SESSIONS]) {
       const header = read(migrationDir(name)).split("\n").filter((l) => l.startsWith("--")).join("\n");
       for (const heading of [/Creates/, /Changes/, /Backfills/, /Drops/, /Data loss/, /Locks/, /Deploy order/]) expect(header, name).toMatch(heading);
     }
@@ -162,7 +164,7 @@ describe("migrations", () => {
   });
 
   it("remove nothing: no table, column, index, constraint or row", () => {
-    for (const name of [BASELINE, CONVERGE, GARAGE_HISTORY]) {
+    for (const name of [BASELINE, CONVERGE, GARAGE_HISTORY, GUIDED_SESSIONS]) {
       const text = sql(name);
       // The only thing ever dropped is a temporary helper function the migration itself created.
       const drops = [...text.matchAll(/\bDROP\s+[^;]+;/gi)].map((m) => m[0].replace(/\s+/g, " "));
@@ -201,10 +203,16 @@ describe("migrations", () => {
     const garage = [...sql(GARAGE_HISTORY).matchAll(/UPDATE\s+"(\w+)"(?:\s+AS\s+\w+)?\s+SET\s+"(\w+)"/gi)].map((m) => `${m[1]}.${m[2]}`);
     expect(garage).toEqual(["garage_vehicles.odometer_value"]);
     expect(sql(GARAGE_HISTORY)).toMatch(/AND v\."odometer_value" IS NULL;/);
+
+    // V2G changes no existing table at all: it only creates two new ones.
+    expect(sql(GUIDED_SESSIONS)).not.toMatch(/^\s*(UPDATE|INSERT|DELETE)\b/im);
+    const altered = [...sql(GUIDED_SESSIONS).matchAll(/ALTER\s+TABLE\s+"(\w+)"\s+(\w+\s+\w+)/gi)].map((m) => `${m[1]} ${m[2]}`);
+    expect([...new Set(altered)].sort()).toEqual(["guided_diagnostic_session_revisions ADD CONSTRAINT", "guided_diagnostic_sessions ADD CONSTRAINT"]);
+    expect([...sql(GUIDED_SESSIONS).matchAll(/CREATE TABLE "(\w+)"/g)].map((m) => m[1])).toEqual(["guided_diagnostic_sessions", "guided_diagnostic_session_revisions"]);
   });
 
   it("stop rather than wait behind a busy table, and build nothing concurrently", () => {
-    for (const name of [CONVERGE, GARAGE_HISTORY]) {
+    for (const name of [CONVERGE, GARAGE_HISTORY, GUIDED_SESSIONS]) {
       expect(sql(name), name).toMatch(/SET LOCAL lock_timeout = '15s';/);
       // The file must stay one transaction, so a failure leaves nothing half-done.
       expect(sql(name), name).not.toMatch(/\bCONCURRENTLY\b|^\s*(BEGIN|COMMIT|ROLLBACK)\s*;/im);
@@ -225,6 +233,8 @@ describe("the schema file", () => {
       MaintenanceRecord: "maintenance_records",
       Diagnosis: "diagnoses",
       ConfirmedFix: "confirmed_fixes",
+      GuidedDiagnosticSession: "guided_diagnostic_sessions",
+      GuidedDiagnosticSessionRevision: "guided_diagnostic_session_revisions",
       RateLimit: "rate_limits",
       Feedback: "feedback",
     });

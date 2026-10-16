@@ -71,6 +71,9 @@ export function constraintSuite() {
         { conname: "diagnoses_vehicle_id_fkey", on_delete: "a", on_update: "c" },
         { conname: "email_verification_tokens_user_id_fkey", on_delete: "c", on_update: "c" },
         { conname: "garage_vehicles_user_id_fkey", on_delete: "c", on_update: "a" },
+        { conname: "guided_diagnostic_session_revisions_session_id_fkey", on_delete: "c", on_update: "c" }, // V2G: history goes with its session
+        { conname: "guided_diagnostic_sessions_user_id_fkey", on_delete: "c", on_update: "c" },
+        { conname: "guided_diagnostic_sessions_vehicle_id_fkey", on_delete: "c", on_update: "c" }, //   V2G: deleting a vehicle for good (only once archived) takes its sessions with it
         { conname: "maintenance_records_user_id_fkey", on_delete: "c", on_update: "a" },
         { conname: "maintenance_records_vehicle_id_fkey", on_delete: "c", on_update: "a" },
       ]);
@@ -207,6 +210,11 @@ export function constraintSuite() {
         "feedback_pkey",
         "garage_vehicles_pkey",
         "garage_vehicles_user_id_created_at_idx", //    a user's garage, newest first
+        "guided_diagnostic_session_revisions_pkey", //  V2G: one row per revision of a session
+        "guided_diagnostic_sessions_pkey",
+        "guided_diagnostic_sessions_user_id_create_key_key", //       V2G: a retried start finds its session
+        "guided_diagnostic_sessions_user_id_lifecycle_updated_at_idx", // V2G: a user's active sessions
+        "guided_diagnostic_sessions_vehicle_id_created_at_idx", //    V2G: one vehicle's sessions
         "maintenance_records_pkey",
         "maintenance_records_user_id_created_at_idx", // a user's service history
         "maintenance_records_vehicle_id_created_at_idx", // one vehicle's service history

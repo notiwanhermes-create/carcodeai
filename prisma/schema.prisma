@@ -27,6 +27,15 @@
 //   confirmed_fixes_outcome_check            CHECK (outcome is 'fixed' or 'did_not_hold')
 //   confirmed_fixes_attempt_check            CHECK (attempt >= 1)
 //   confirmed_fixes_returned_check           CHECK (returned_at is set exactly when outcome is 'did_not_hold')
+//   guided_diagnostic_sessions_lifecycle_check      CHECK (lifecycle is 'active' or 'completed')
+//   guided_diagnostic_sessions_revision_check       CHECK (revision >= 1)
+//   guided_diagnostic_sessions_versions_check       CHECK (persistence_version >= 1 and session_format_version >= 1)
+//   guided_diagnostic_sessions_completed_check      CHECK (completed_at is set exactly when lifecycle is 'completed')
+//   guided_diagnostic_session_revisions_revision_check    CHECK (revision >= 1 and input_count >= 0)
+//   guided_diagnostic_session_revisions_transition_check  CHECK (transition is 'start' or 'input')
+//   guided_diagnostic_session_revisions_lifecycle_check   CHECK (lifecycle is 'active' or 'completed')
+//   guided_diagnostic_session_revisions_origin_check      CHECK (input_origin is 'direct' or 'ai_parser')
+//   guided_diagnostic_session_revisions_ai_ref_check      CHECK (ai_text_ref is set exactly when input_origin is 'ai_parser')
 
 generator client {
   provider = "prisma-client"
@@ -63,6 +72,8 @@ model User {
   diagnoses          Diagnosis[]
   confirmedFixes     ConfirmedFix[]
   verificationTokens EmailVerificationToken[]
+  /// Guided Diagnostics research (V2G). Nothing in the app reads or writes these yet.
+  guidedDiagnosticSessions GuidedDiagnosticSession[]
 
   @@map("users")
 }
@@ -118,6 +129,8 @@ model Vehicle {
   maintenanceRecords MaintenanceRecord[]
   diagnoses          Diagnosis[]
   confirmedFixes     ConfirmedFix[]
+  /// Guided Diagnostics research (V2G). Nothing in the app reads or writes these yet.
+  guidedDiagnosticSessions GuidedDiagnosticSession[]
 
   @@index([userId, createdAt])
   @@map("garage_vehicles")
@@ -274,6 +287,98 @@ model ConfirmedFix {
   @@index([vehicleId, fixedOn])
   @@index([userId, createdAt])
   @@map("confirmed_fixes")
+}
+
+/// A persisted guided-diagnostic session (Guided Diagnostics V2G, research).
+///
+/// NOTHING IN THE APP READS OR WRITES THIS YET. Written only through
+/// app/lib/diagnostic-workflow-persistence, which validates every row it reads:
+/// the database is never the diagnostic authority. A stored session is used
+/// only after the deterministic engine has replayed its inputs and arrived at
+/// exactly the stored state.
+///
+/// The columns are for ownership, lookup, lifecycle and concurrency. The
+/// session itself (pinned vehicle, pinned specifications, scans, evidence,
+/// causes, conflict and verification) is `payload`, sealed by `payload_digest`.
+/// The pinned vehicle in the payload is history: later edits to the garage
+/// vehicle never rewrite it.
+///
+/// A COMPLETED session is history and is never updated. Every change to an
+/// active one goes through compare-and-set on `revision` (no last-write-wins)
+/// and appends one GuidedDiagnosticSessionRevision.
+model GuidedDiagnosticSession {
+  id        String @id @default(cuid())
+  userId    String @map("user_id")
+  vehicleId String @map("vehicle_id")
+
+  /// The exact workflow (id and version) and a fingerprint of its content.
+  workflowId           String @map("workflow_id")
+  workflowVersion      Int    @map("workflow_version")
+  workflowFingerprint  String @map("workflow_fingerprint")
+  /// Layout of this row (envelope) and of the stored session. Newer ones are refused, never guessed at.
+  persistenceVersion   Int    @map("persistence_version")
+  sessionFormatVersion Int    @map("session_format_version")
+
+  /// 1 when started, plus one per accepted input. Updates name the revision they were based on.
+  revision    Int
+  /// "active" or "completed". Not the diagnostic outcome, which is in the payload.
+  lifecycle   String  @default("active")
+  /// The step waiting for input (null once completed). A copy for lookups; the payload decides.
+  currentStep String? @map("current_step")
+
+  /// The engine's session, in canonical plain-data form.
+  payload            Json
+  /// "sha256" or "hmac-sha256", and the digest over identity, versions, revision and payload.
+  integrityAlgorithm String  @map("integrity_algorithm")
+  payloadDigest      String  @map("payload_digest")
+  /// The caller's key for an idempotent start: a retried start finds the session it already made.
+  createKey          String? @map("create_key")
+
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz()
+  completedAt DateTime? @map("completed_at") @db.Timestamptz()
+
+  /// Deleting an account deletes its sessions.
+  user      User                              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Deleting a vehicle FOR GOOD (only possible once it is archived) deletes its
+  /// sessions, as it deletes the rest of its history. Archiving deletes nothing.
+  /// See docs/research/guided-diagnostics/v2g-persistence.md, "Vehicle relation".
+  vehicle   Vehicle                           @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  revisions GuidedDiagnosticSessionRevision[]
+
+  @@unique([userId, createKey])
+  @@index([userId, lifecycle, updatedAt])
+  @@index([vehicleId, createdAt])
+  @@map("guided_diagnostic_sessions")
+}
+
+/// One entry of a guided-diagnostic session's append-only history (V2G).
+/// Never updated or deleted on its own. Metadata only: the session at any
+/// revision is the replay of its first `inputCount` inputs. Rejected AI
+/// proposals are never recorded, and AI-parsed text is referenced by hash only.
+model GuidedDiagnosticSessionRevision {
+  sessionId     String   @map("session_id")
+  revision      Int
+  /// "start" or "input".
+  transition    String
+  inputCount    Int      @map("input_count")
+  /// The step the accepted input answered (null for the start).
+  stepId        String?  @map("step_id")
+  lifecycle     String
+  currentStep   String?  @map("current_step")
+  endResult     String?  @map("end_result")
+  payloadDigest String   @map("payload_digest")
+  /// "direct" or "ai_parser". The stored session is identical either way.
+  inputOrigin   String   @default("direct") @map("input_origin")
+  /// For an accepted AI-parsed input only: a hash of the user's text, never the text.
+  aiTextRef     String?  @map("ai_text_ref")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz()
+
+  /// History goes with its session.
+  session GuidedDiagnosticSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@id([sessionId, revision])
+  @@map("guided_diagnostic_session_revisions")
 }
 
 /// Short-lived counters: request rate limits, daily allowances, and the number

@@ -550,6 +550,8 @@ export const INCONCLUSIVE_TYPES: ReadonlySet<NodeType> = new Set<NodeType>([
   "actuator_test",
   "service_function",
   "snapshot_check",
+  // A branch whose rules ask about vehicle facts routes "cannot evaluate" (a fact unknown) here.
+  "branch",
 ]);
 
 /* ───────────────────────── conditions (for automatic branches) ───────────────────────── */
@@ -567,7 +569,11 @@ export type Condition =
   | { noDtc: DtcMatcher }
   /** One of these symptoms was reported at the start. */
   | { symptomAny: string[] }
-  /** A vehicle fact equals a value. */
+  /**
+   * A vehicle fact equals a value: yes when the pinned fact matches, no when it
+   * is known and differs, UNKNOWN when it is missing. A branch that asks one
+   * must declare `ifInconclusive` for the unknown case.
+   */
   | { vehicle: keyof VehicleContext; equals: string | number }
   /** An earlier step was answered this way. */
   | { answered: NodeId; is: string }

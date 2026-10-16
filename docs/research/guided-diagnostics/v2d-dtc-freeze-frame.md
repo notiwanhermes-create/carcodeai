@@ -67,6 +67,38 @@ evidence", never "absent". A matching code from an unstated module blocks a
 definite "absent from that module". `dtcAny` and every text-prefix match are
 gone.
 
+### Vehicle-fact conditions (correction)
+
+`{ vehicle, equals }` is three-valued too. It is yes when the pinned fact
+matches, no when the pinned fact is known and differs, and unknown when the
+fact is missing. A blank value is normalized away at session start, so it is
+missing too.
+
+A branch takes the first rule that is definitely yes. If it reaches a rule
+that is unknown because of a vehicle fact, it stops there and takes its
+`ifInconclusive` route, recorded as `unknown:<facts>`:
+
+- going on to a later rule, or to `otherwise`, would treat unknown as no;
+- the validator requires that route on any branch with a vehicle condition.
+
+Scan-evidence rules are unchanged: a rule left unknown by an incomplete scan
+is passed over, and absence is never concluded.
+
+Applicability at session start is separate and unchanged. It can refuse to
+start when required context is missing. Conditions inside a running workflow
+never turn a missing fact into no.
+
+`stepReachability(workflow, session)` labels every step ahead:
+
+- reachable: a route this session can take leads there;
+- potential: reachable only if missing context (a vehicle fact, or scan
+  evidence) were known;
+- unreachable.
+
+Only branches on fixed facts prune. `separatingSteps` leaves out unreachable
+steps and keeps potential ones, labelled `reachability: "potential"`. Its
+ranking is unchanged.
+
 ## Snapshot vs live measurement
 
 A snapshot (`kind: "snapshot"`) holds values captured with a fault. It has an
@@ -134,7 +166,8 @@ the recorded inputs, so replay rebuilds the same evidence.
 V2D never infers any of these:
 
 - that a status means a bad part, an active fault or a confirmed cause;
-- that a code is absent from an incomplete scan;
+- that a code is absent from an incomplete scan, or that a missing vehicle
+fact means no;
 - that a repair worked because a code was not supplied, or failed because a
   permanent code remains;
 - a pass or fail from any snapshot value it was not explicitly asked to judge.

@@ -16,4 +16,4 @@ export {
   specificationDrift,
   specificationProblem,
 } from "./specifications";
-export { MAX_AUTOMATIC_STEPS, currentStep, isTrustedSpec, replaySession, resumeSession, separatingSteps, sessionOutcome, startSession, submitStep } from "./engine";
+export { MAX_AUTOMATIC_STEPS, currentStep, stepReachability, type Reachability, isTrustedSpec, replaySession, resumeSession, separatingSteps, sessionOutcome, startSession, submitStep } from "./engine";

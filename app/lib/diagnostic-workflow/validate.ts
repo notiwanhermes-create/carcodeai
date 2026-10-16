@@ -125,6 +125,15 @@ function matcherProblems(m: DtcMatcher | undefined): string[] {
   return out;
 }
 
+/** Whether a condition asks about a vehicle fact anywhere inside it. */
+function usesVehicle(c: Condition): boolean {
+  if ("vehicle" in c) return true;
+  if ("all" in c) return c.all.some(usesVehicle);
+  if ("any" in c) return c.any.some(usesVehicle);
+  if ("not" in c) return usesVehicle(c.not);
+  return false;
+}
+
 /** Every code matcher inside a condition. */
 function conditionMatchers(c: Condition): DtcMatcher[] {
   if ("dtc" in c) return [c.dtc];
@@ -271,6 +280,10 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
     }
     if (node.type === "branch") {
       for (const rule of node.rules) for (const m of conditionMatchers(rule.if)) for (const problem of matcherProblems(m)) add("invalid_dtc_matcher", `"${node.id}": ${problem}.`, node.id);
+      // A vehicle fact can be unknown; unknown must have its own route, never the positive or the "no" one.
+      if (node.rules.some((r) => usesVehicle(r.if)) && !node.ifInconclusive) {
+        add("no_inconclusive_route", `"${node.id}" asks about vehicle facts but has no route for when one is unknown.`, node.id);
+      }
     }
 
     if (node.type === "measurement" || node.type === "snapshot_check") {

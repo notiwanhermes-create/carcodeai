@@ -210,9 +210,12 @@ function holds(condition: Condition, session: DiagnosticSession): Tri {
   }
   if ("symptomAny" in condition) return (session.facts.symptoms ?? []).some((s) => condition.symptomAny.includes(s));
   if ("vehicle" in condition) {
+    // Three-valued: a fact the pinned context does not hold (missing, or blank before normalization) is unknown, never "no".
+    const actual = session.facts.vehicle?.[condition.vehicle];
+    if (actual === undefined) return null;
     // The pinned context is normalized (lower case text), so compare against the normalized value.
     const expected = typeof condition.equals === "string" ? normalizeText(condition.equals) : condition.equals;
-    return session.facts.vehicle?.[condition.vehicle] === expected;
+    return actual === expected;
   }
   if ("established" in condition) return session.establishedConditions.includes(condition.established);
   if ("answered" in condition) {
@@ -229,6 +232,134 @@ function holds(condition: Condition, session: DiagnosticSession): Tri {
   }
   const inner = holds(condition.not, session);
   return inner === null ? null : !inner;
+}
+
+/** The vehicle facts a condition asks about that the pinned context does not hold. */
+function unknownVehicleFacts(condition: Condition, session: DiagnosticSession): string[] {
+  if ("vehicle" in condition) return session.facts.vehicle?.[condition.vehicle] === undefined ? [condition.vehicle] : [];
+  if ("all" in condition) return condition.all.flatMap((c) => unknownVehicleFacts(c, session));
+  if ("any" in condition) return condition.any.flatMap((c) => unknownVehicleFacts(c, session));
+  if ("not" in condition) return unknownVehicleFacts(condition.not, session);
+  return [];
+}
+
+/**
+ * Which way an automatic branch goes. The first rule that is definitely true
+ * wins. A rule that cannot be evaluated because a vehicle fact is unknown
+ * stops the search: going on to a later rule, or to `otherwise`, would treat
+ * "unknown" as "no". The branch then takes its inconclusive route. (A rule
+ * left unknown by incomplete scan evidence is passed over, as before: its
+ * absence is never concluded.)
+ */
+function chooseRoute(node: Extract<WorkflowNode, { type: "branch" }>, session: DiagnosticSession): { index: number } | { otherwise: true } | { unknown: string[] } {
+  for (let i = 0; i < node.rules.length; i++) {
+    const result = holds(node.rules[i].if, session);
+    if (result === true) return { index: i };
+    if (result === null) {
+      const missing = unknownVehicleFacts(node.rules[i].if, session);
+      if (missing.length) return { unknown: [...new Set(missing)] };
+    }
+  }
+  return { otherwise: true };
+}
+
+/* ───────────────────────── reachability ───────────────────────── */
+
+export type Reachability = "reachable" | "potential" | "unreachable";
+
+/**
+ * A condition judged now, without future answers: true / false, "open" (it
+ * depends on answers not given yet), or unknown because of missing context
+ * (a vehicle fact, or scan evidence too incomplete to show absence). The
+ * pinned vehicle and start scans do not change during a session, so missing
+ * context stays missing until a new session supplies it.
+ */
+type StaticValue = true | false | "open" | "unknown_dtc" | "unknown_vehicle";
+
+function staticValue(c: Condition, session: DiagnosticSession): StaticValue {
+  if ("answered" in c || "established" in c) return "open";
+  if ("vehicle" in c) {
+    const v = holds(c, session);
+    return v === null ? "unknown_vehicle" : v;
+  }
+  if ("dtc" in c || "noDtc" in c || "symptomAny" in c) {
+    const v = holds(c, session);
+    return v === null ? "unknown_dtc" : v;
+  }
+  if ("not" in c) {
+    const v = staticValue(c.not, session);
+    return v === true ? false : v === false ? true : v;
+  }
+  const parts = ("all" in c ? c.all : c.any).map((x) => staticValue(x, session));
+  const decisive = "all" in c ? false : true;
+  if (parts.includes(decisive)) return decisive;
+  for (const v of ["unknown_vehicle", "unknown_dtc", "open"] as const) if (parts.includes(v)) return v;
+  return !decisive;
+}
+
+/** Each way out of a branch, and whether this session can take it. */
+function branchEdges(node: Extract<WorkflowNode, { type: "branch" }>, session: DiagnosticSession): Array<{ to: NodeId; status: Reachability }> {
+  const out: Array<{ to: NodeId; status: Reachability }> = [];
+  let blocked = false; // an earlier rule is definitely true
+  let pending = false; // an earlier rule stops on a missing vehicle fact
+  for (const rule of node.rules) {
+    if (blocked) {
+      out.push({ to: rule.to, status: "unreachable" });
+      continue;
+    }
+    const v = staticValue(rule.if, session);
+    if (v === true) {
+      out.push({ to: rule.to, status: pending ? "potential" : "reachable" });
+      blocked = true;
+    } else if (v === false) out.push({ to: rule.to, status: "unreachable" });
+    else if (v === "open") out.push({ to: rule.to, status: pending ? "potential" : "reachable" });
+    else {
+      // Missing context: this rule cannot fire in this session, but would be possible with that context.
+      out.push({ to: rule.to, status: "potential" });
+      if (v === "unknown_vehicle") pending = true;
+    }
+  }
+  out.push({ to: node.otherwise, status: blocked ? "unreachable" : pending ? "potential" : "reachable" });
+  if (node.ifInconclusive) out.push({ to: node.ifInconclusive, status: pending ? "reachable" : "unreachable" });
+  return out;
+}
+
+const RANK: Record<Reachability, number> = { unreachable: 0, potential: 1, reachable: 2 };
+
+/**
+ * From where the session stands, whether each step can still be reached:
+ * "reachable" (some route this session can take leads there), "potential"
+ * (only if missing context, such as an unknown vehicle fact or an incomplete
+ * scan, were known) or "unreachable" (no route leads there). Only branches on
+ * fixed facts prune; answers not given yet keep every route open.
+ */
+export function stepReachability(workflow: WorkflowDefinition, session: DiagnosticSession): Map<NodeId, Reachability> {
+  const p = prepare(workflow);
+  const out = new Map<NodeId, Reachability>();
+  if ("error" in p || session.currentNodeId === null) return out;
+  for (const node of p.workflow.nodes) out.set(node.id, "unreachable");
+  // Workflows have no loops, so a depth-first post-order gives a topological order.
+  const order: NodeId[] = [];
+  const seen = new Set<NodeId>();
+  const visit = (id: NodeId): void => {
+    if (seen.has(id) || !p.byId.has(id)) return;
+    seen.add(id);
+    for (const next of successors(p.byId.get(id)!)) visit(next);
+    order.push(id);
+  };
+  visit(session.currentNodeId);
+  out.set(session.currentNodeId, "reachable");
+  for (const id of order.reverse()) {
+    const here = out.get(id)!;
+    if (here === "unreachable") continue;
+    const node = p.byId.get(id)!;
+    const edges = node.type === "branch" ? branchEdges(node, session) : successors(node).map((to) => ({ to, status: "reachable" as Reachability }));
+    for (const edge of edges) {
+      const via: Reachability = RANK[edge.status] < RANK[here] ? edge.status : here;
+      if (RANK[via] > RANK[out.get(edge.to)!]) out.set(edge.to, via);
+    }
+  }
+  return out;
 }
 
 /** Evidence kinds that are not an answer to a step. */
@@ -406,10 +537,17 @@ function advance(p: Prepared, from: DiagnosticSession, nodeId: NodeId, at: strin
         id = node.next;
         continue;
       case "branch": {
-        const index = node.rules.findIndex((rule) => holds(rule.if, session) === true);
-        const rule = index >= 0 ? node.rules[index] : null;
+        const route = chooseRoute(node, session);
+        if ("unknown" in route) {
+          // Cannot evaluate: a vehicle fact is unknown. Neither the positive nor the "no" route; no effect on causes.
+          if (!node.ifInconclusive) return fail(`cannot_evaluate: "${node.id}" needs ${route.unknown.join(", ")} and has no inconclusive route`);
+          session = record(session, { nodeId: node.id, kind: "branch", value: `unknown:${route.unknown.join(",")}`, source: "engine", to: node.ifInconclusive, ...stamp });
+          id = node.ifInconclusive;
+          continue;
+        }
+        const rule = "index" in route ? node.rules[route.index] : null;
         const to = rule ? rule.to : node.otherwise;
-        session = record(session, { nodeId: node.id, kind: "branch", value: rule ? `rule:${index + 1}` : "otherwise", source: "engine", to, ...stamp }, rule ?? {});
+        session = record(session, { nodeId: node.id, kind: "branch", value: rule ? `rule:${(route as { index: number }).index + 1}` : "otherwise", source: "engine", to, ...stamp }, rule ?? {});
         id = to;
         continue;
       }
@@ -881,23 +1019,19 @@ export function resumeSession(workflow: WorkflowDefinition, saved: unknown): Ste
 export function separatingSteps(workflow: WorkflowDefinition, session: DiagnosticSession) {
   const p = prepare(workflow);
   if ("error" in p || session.status !== "in_progress" || session.currentNodeId === null) return [];
-  const ahead = new Set<NodeId>();
-  const stack = [session.currentNodeId];
-  while (stack.length) {
-    const id = stack.pop()!;
-    if (ahead.has(id) || !p.byId.has(id)) continue;
-    ahead.add(id);
-    stack.push(...successors(p.byId.get(id)!));
-  }
+  // Steps definitely unreachable are left out; steps reachable only with missing context are kept, and say so.
+  const reach = stepReachability(workflow, session);
   const remaining = new Set(session.remainingCauses);
-  const out: Array<{ nodeId: NodeId; title: string; canDo: boolean; level: string; tools: string[]; rulesOutUpTo: number }> = [];
+  const out: Array<{ nodeId: NodeId; title: string; reachability: "reachable" | "potential"; canDo: boolean; level: string; tools: string[]; rulesOutUpTo: number }> = [];
   for (const node of p.workflow.nodes) {
-    if (!ahead.has(node.id) || !("outcomes" in node)) continue;
+    const reachability = reach.get(node.id) ?? "unreachable";
+    if (reachability === "unreachable" || !("outcomes" in node)) continue;
     const best = Math.max(0, ...(node.outcomes as CauseEffect[]).map((o) => (o.rulesOut ?? []).filter((id) => remaining.has(id)).length));
     if (best === 0 || best >= remaining.size) continue;
     out.push({
       nodeId: node.id,
       title: node.title,
+      reachability,
       canDo: canDo(node, session.facts.capabilities).ok,
       level: node.requires?.level ?? "owner",
       // Everything the step needs beyond skill: scan access, instruments and facilities.

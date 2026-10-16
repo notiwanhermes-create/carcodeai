@@ -12,8 +12,10 @@ import {
   normalizeCode,
   replaySession,
   resumeSession,
+  separatingSteps,
   sessionOutcome,
   startSession,
+  stepReachability,
   submitStep,
   validateWorkflow,
   type DiagnosticCapabilityContext,
@@ -387,5 +389,113 @@ describe("V2D: the synthetic misfire fixture (version 5)", () => {
     // A partial scan listing nothing: the pattern is unknown, so the workflow asks rather than guessing.
     const s = run(facts([scan([], { completeness: "partial" })]), [yes("confirm_symptom"), no("flashing_light")]);
     expect(s.currentNodeId).toBe("ask_pattern");
+  });
+});
+
+/* ───────────────────────── vehicle-fact conditions are three-valued ───────────────────────── */
+
+describe("V2D correction: vehicle-fact conditions are yes / no / unknown", () => {
+  type Rule = Extract<WorkflowNode, { type: "branch" }>["rules"][number];
+  /**
+   * SYNTHETIC: a question first (so the branch is still ahead), then a branch on vehicle facts.
+   * Rule 1 leads to a diesel-only test, otherwise to a petrol test; "cannot evaluate" goes to `unknownTo`.
+   */
+  const vehicleWorkflow = (rules: Array<Rule["if"]>, unknownTo: "ask_fuel" | "e_ref" = "ask_fuel"): WorkflowDefinition => ({
+    id: "test.vehicle-conditions",
+    version: 1,
+    title: "Vehicle conditions",
+    provenance: "SYNTHETIC: test only",
+    faultModel: "single_primary_fault",
+    causes: [{ id: "a", title: "A" }, { id: "b", title: "B" }, { id: "c", title: "C" }],
+    nodes: [
+      { id: "s", type: "start", title: "Start", next: "q" },
+      { id: "q", type: "question", answer: "yes_no", title: "Ready?", outcomes: [{ when: "yes", to: "b" }, { when: "no", to: "b" }] },
+      { id: "b", type: "branch", title: "By vehicle", rules: rules.map((c, i) => ({ if: c, to: i === 0 ? "diesel_test" : "petrol_test" })), otherwise: "petrol_test", ifInconclusive: unknownTo },
+      ...(unknownTo === "ask_fuel"
+        ? [{ id: "ask_fuel", type: "question" as const, answer: "yes_no" as const, title: "Is it a diesel?", outcomes: [{ when: "yes" as const, to: "diesel_test" }, { when: "no" as const, to: "petrol_test" }] }]
+        : [{ id: "e_ref", type: "end" as const, title: "Needs the fuel type", result: "referred" as const }]),
+      { id: "diesel_test", type: "check", title: "Diesel-only test", outcomes: [{ when: "pass", to: "e", rulesOut: ["a"] }, { when: "fail", to: "e", rulesOut: ["b"] }] },
+      { id: "petrol_test", type: "check", title: "Petrol test", outcomes: [{ when: "pass", to: "e", rulesOut: ["b"] }, { when: "fail", to: "e", rulesOut: ["c"] }] },
+      { id: "e", type: "end", title: "End", result: "concluded" },
+    ],
+  });
+  const DIESEL: Rule["if"] = { vehicle: "fuel", equals: "Diesel" };
+  const at = (w: WorkflowDefinition, vehicle: SessionStartFacts["vehicle"]) => run({ capabilities: PRO, ...(vehicle ? { vehicle } : {}) }, [], w);
+  const afterQ = (w: WorkflowDefinition, vehicle: SessionStartFacts["vehicle"]) => run({ capabilities: PRO, ...(vehicle ? { vehicle } : {}) }, [yes("q")], w);
+  const branch = (s: DiagnosticSession) => s.evidence.find((e) => e.kind === "branch")!;
+
+  it("a known matching fact is yes: the positive route", () => {
+    const s = afterQ(vehicleWorkflow([DIESEL]), { fuel: "diesel" });
+    expect(branch(s)).toMatchObject({ value: "rule:1", to: "diesel_test" });
+  });
+
+  it("a known different fact is no: the workflow's explicit 'no' route", () => {
+    const s = afterQ(vehicleWorkflow([DIESEL]), { fuel: "gasoline" });
+    expect(branch(s)).toMatchObject({ value: "otherwise", to: "petrol_test" });
+  });
+
+  it("a missing fact is unknown: neither the positive nor the 'no' route, and no effect on causes", () => {
+    for (const vehicle of [undefined, {}, { cylinders: 4 }]) {
+      const s = afterQ(vehicleWorkflow([DIESEL]), vehicle);
+      expect(branch(s)).toMatchObject({ value: "unknown:fuel", source: "engine", to: "ask_fuel" });
+      expect(s.currentNodeId).toBe("ask_fuel");
+      expect(s.remainingCauses).toEqual(["a", "b", "c"]);
+    }
+  });
+
+  it("a blank fact is normalized away at the start, so it is unknown too", () => {
+    const w = vehicleWorkflow([{ vehicle: "make", equals: "Synthetic Motors" }]);
+    const s = afterQ(w, { make: "   ", fuel: "diesel" });
+    expect(s.facts.vehicle).toEqual({ fuel: "diesel" });
+    expect(branch(s)).toMatchObject({ value: "unknown:make", to: "ask_fuel" });
+    expect(branch(afterQ(w, { make: "synthetic motors" }))).toMatchObject({ value: "rule:1" });
+  });
+
+  it("an unknown earlier rule is not skipped in favour of a later one (that would treat unknown as no)", () => {
+    const s = afterQ(vehicleWorkflow([DIESEL, { vehicle: "cylinders", equals: 4 }]), { cylinders: 4 });
+    expect(branch(s)).toMatchObject({ value: "unknown:fuel", to: "ask_fuel" });
+    // Once the earlier fact is known to be "no", the later rule decides.
+    expect(branch(afterQ(vehicleWorkflow([DIESEL, { vehicle: "cylinders", equals: 4 }]), { fuel: "gasoline", cylinders: 4 }))).toMatchObject({ value: "rule:2" });
+  });
+
+  it("combines three ways: not(unknown) is unknown, any(unknown, yes) is yes, all(unknown, no) is no", () => {
+    expect(branch(afterQ(vehicleWorkflow([{ not: DIESEL }]), {}))).toMatchObject({ value: "unknown:fuel" });
+    expect(branch(afterQ(vehicleWorkflow([{ any: [DIESEL, { vehicle: "cylinders", equals: 4 }] }]), { cylinders: 4 }))).toMatchObject({ value: "rule:1" });
+    expect(branch(afterQ(vehicleWorkflow([{ all: [DIESEL, { vehicle: "cylinders", equals: 6 }] }]), { cylinders: 4 }))).toMatchObject({ value: "otherwise" });
+  });
+
+  it("requires a branch on vehicle facts to say where 'unknown' goes", () => {
+    const w = vehicleWorkflow([DIESEL]);
+    const without = { ...w, nodes: w.nodes.map((n) => (n.id === "b" ? { ...n, ifInconclusive: undefined } : n)) as WorkflowNode[] };
+    expect(validateWorkflow(w)).toEqual({ ok: true });
+    expect(validateWorkflow(without)).toMatchObject({ ok: false, problems: expect.arrayContaining([expect.objectContaining({ code: "no_inconclusive_route", nodeId: "b" })]) });
+  });
+
+  it("does not make a step unreachable because a fact is unknown: it stays potential", () => {
+    const w = vehicleWorkflow([DIESEL], "e_ref");
+    const unknown = at(w, {});
+    const reach = stepReachability(w, unknown);
+    expect([reach.get("diesel_test"), reach.get("petrol_test"), reach.get("e_ref")]).toEqual(["potential", "potential", "reachable"]);
+    expect(separatingSteps(w, unknown).map((x) => [x.nodeId, x.reachability])).toEqual([
+      ["diesel_test", "potential"],
+      ["petrol_test", "potential"],
+    ]);
+    // Known facts prune for real: a petrol vehicle can never reach the diesel-only test.
+    const petrol = at(w, { fuel: "gasoline" });
+    expect([stepReachability(w, petrol).get("diesel_test"), stepReachability(w, petrol).get("petrol_test")]).toEqual(["unreachable", "reachable"]);
+    expect(separatingSteps(w, petrol).map((x) => [x.nodeId, x.reachability])).toEqual([["petrol_test", "reachable"]]);
+    // Where "unknown" leads to a question that can still choose either test, both are reachable.
+    const viaQuestion = vehicleWorkflow([DIESEL]);
+    expect(stepReachability(viaQuestion, at(viaQuestion, {})).get("diesel_test")).toBe("reachable");
+  });
+
+  it("replays deterministically and resumes to the same result", () => {
+    const w = vehicleWorkflow([DIESEL]);
+    const f = { capabilities: PRO, vehicle: { cylinders: 4 } };
+    const live = run(f, [yes("q")], w);
+    expect(JSON.stringify(run(f, [yes("q")], w))).toBe(JSON.stringify(live));
+    const resumed = resumeSession(w, JSON.parse(JSON.stringify(live)));
+    expect(resumed.ok && sessionOutcome(resumed.session)).toEqual(sessionOutcome(live));
+    expect(resumed.ok && resumed.session.currentNodeId).toBe("ask_fuel");
   });
 });

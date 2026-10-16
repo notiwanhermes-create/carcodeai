@@ -366,7 +366,7 @@ describe("V2D: the synthetic misfire fixture (version 5)", () => {
 
   it("is valid and carries no text matching of codes", () => {
     expect(validateWorkflow(W)).toEqual({ ok: true });
-    expect(W.version).toBe(5);
+    expect(W.version).toBeGreaterThanOrEqual(5); // version 6 since V2E
     expect(JSON.stringify(W)).not.toMatch(/dtcAny|"dtc:/);
   });
 

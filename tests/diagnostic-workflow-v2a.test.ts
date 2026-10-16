@@ -66,9 +66,9 @@ const atFuelVerify = () =>
 /* ───────────────────────── checking a V2A workflow ───────────────────────── */
 
 describe("V2A: checking a workflow", () => {
-  it("accepts the synthetic misfire workflow (version 5 since V2D)", () => {
+  it("accepts the synthetic misfire workflow (version 6 since V2E)", () => {
     expect(validateWorkflow(W)).toEqual({ ok: true });
-    expect(W.version).toBe(5);
+    expect(W.version).toBe(6);
   });
 
   it("requires the single-primary-fault assumption to be stated", () => {

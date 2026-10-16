@@ -51,10 +51,12 @@ import {
   type WorkflowNode,
 } from "./types";
 import { convert, isUnit } from "./units";
-import { successors, validateWorkflow } from "./validate";
+import { forwardSuccessors, regionReturns, validateWorkflow } from "./validate";
 import { describeResolution, pinnedSpecificationProvider, resolveSpecification } from "./specifications";
 import { capabilityProblem, capabilityShortfall, checkApplicability, normalizeText, normalizeVehicleContext } from "./context";
-import { codeEvidence, codesAbsentVerdict, matchDtc, normalizeScan, workflowCodeKey, type NormalizedScan, type Tri } from "./dtc";
+import { codeEvidence, codesAbsentVerdict, normalizeScan, workflowCodeKey, type NormalizedScan } from "./dtc";
+import { holds, unknownVehicleFacts } from "./conditions";
+import { analyzeRegion, buildRecheckPlan, toRecommendations, type NextBestTests, type RecheckPlan } from "./next-best-test";
 
 /** A guard on top of the no-loops check: no run may take more automatic steps than this. */
 export const MAX_AUTOMATIC_STEPS = 500;
@@ -75,7 +77,7 @@ function frozen<T>(value: T): T {
 
 /* ───────────────────────── workflow lookup ───────────────────────── */
 
-type Prepared = { workflow: WorkflowDefinition; byId: Map<NodeId, WorkflowNode>; start: WorkflowNode };
+type Prepared = { workflow: WorkflowDefinition; byId: Map<NodeId, WorkflowNode>; start: WorkflowNode; returns: Map<NodeId, NodeId> };
 const prepared = new WeakMap<WorkflowDefinition, Prepared | { error: string }>();
 
 /** The workflow, checked once and indexed. A workflow that fails the check can never be run. */
@@ -86,7 +88,7 @@ function prepare(workflow: WorkflowDefinition): Prepared | { error: string } {
   const result = check.ok
     ? (() => {
         const byId = new Map(workflow.nodes.map((n) => [n.id, n] as const));
-        return { workflow, byId, start: workflow.nodes.find((n) => n.type === "start")! };
+        return { workflow, byId, start: workflow.nodes.find((n) => n.type === "start")!, returns: regionReturns(workflow.nodes) };
       })()
     : { error: `invalid_workflow: ${check.problems.map((p) => p.code).join(", ")}` };
   prepared.set(workflow, result);
@@ -198,52 +200,6 @@ function judge(node: JudgedNode, raw: number, unit: Unit, session: DiagnosticSes
 const canDo = (node: WorkflowNode, capabilities: DiagnosticCapabilityContext) => capabilityShortfall(node.requires, capabilities);
 
 /**
- * A condition: true, false or null (cannot tell). A branch rule fires only on
- * true. Code conditions are honest about absence (see matchDtc); the rest are
- * plain facts about the session.
- */
-function holds(condition: Condition, session: DiagnosticSession): Tri {
-  if ("dtc" in condition) return matchDtc(session.evidence, condition.dtc);
-  if ("noDtc" in condition) {
-    const present = matchDtc(session.evidence, condition.noDtc);
-    return present === null ? null : !present;
-  }
-  if ("symptomAny" in condition) return (session.facts.symptoms ?? []).some((s) => condition.symptomAny.includes(s));
-  if ("vehicle" in condition) {
-    // Three-valued: a fact the pinned context does not hold (missing, or blank before normalization) is unknown, never "no".
-    const actual = session.facts.vehicle?.[condition.vehicle];
-    if (actual === undefined) return null;
-    // The pinned context is normalized (lower case text), so compare against the normalized value.
-    const expected = typeof condition.equals === "string" ? normalizeText(condition.equals) : condition.equals;
-    return actual === expected;
-  }
-  if ("established" in condition) return session.establishedConditions.includes(condition.established);
-  if ("answered" in condition) {
-    const last = [...session.evidence].reverse().find((e) => e.nodeId === condition.answered && !NOT_ANSWERS.has(e.kind));
-    return last?.value === condition.is;
-  }
-  if ("all" in condition) {
-    const parts = condition.all.map((c) => holds(c, session));
-    return parts.includes(false) ? false : parts.includes(null) ? null : true;
-  }
-  if ("any" in condition) {
-    const parts = condition.any.map((c) => holds(c, session));
-    return parts.includes(true) ? true : parts.includes(null) ? null : false;
-  }
-  const inner = holds(condition.not, session);
-  return inner === null ? null : !inner;
-}
-
-/** The vehicle facts a condition asks about that the pinned context does not hold. */
-function unknownVehicleFacts(condition: Condition, session: DiagnosticSession): string[] {
-  if ("vehicle" in condition) return session.facts.vehicle?.[condition.vehicle] === undefined ? [condition.vehicle] : [];
-  if ("all" in condition) return condition.all.flatMap((c) => unknownVehicleFacts(c, session));
-  if ("any" in condition) return condition.any.flatMap((c) => unknownVehicleFacts(c, session));
-  if ("not" in condition) return unknownVehicleFacts(condition.not, session);
-  return [];
-}
-
-/**
  * Which way an automatic branch goes. The first rule that is definitely true
  * wins. A rule that cannot be evaluated because a vehicle fact is unknown
  * stops the search: going on to a later rule, or to `otherwise`, would treat
@@ -344,7 +300,7 @@ export function stepReachability(workflow: WorkflowDefinition, session: Diagnost
   const visit = (id: NodeId): void => {
     if (seen.has(id) || !p.byId.has(id)) return;
     seen.add(id);
-    for (const next of successors(p.byId.get(id)!)) visit(next);
+    for (const next of forwardSuccessors(p.byId.get(id)!, p.returns)) visit(next);
     order.push(id);
   };
   visit(session.currentNodeId);
@@ -353,7 +309,19 @@ export function stepReachability(workflow: WorkflowDefinition, session: Diagnost
     const here = out.get(id)!;
     if (here === "unreachable") continue;
     const node = p.byId.get(id)!;
-    const edges = node.type === "branch" ? branchEdges(node, session) : successors(node).map((to) => ({ to, status: "reachable" as Reachability }));
+    const edges =
+      node.type === "branch"
+        ? branchEdges(node, session)
+        : node.type === "test_selection"
+          ? [
+              // A candidate is reachable when its guard holds, potential when the guard is unknown (missing context), unreachable when it fails.
+              ...node.candidates.map((c) => {
+                const v = c.when === undefined ? true : holds(c.when, session);
+                return { to: c.step, status: (v === true ? "reachable" : v === null ? "potential" : "unreachable") as Reachability };
+              }),
+              { to: node.next, status: "reachable" as Reachability },
+            ]
+          : forwardSuccessors(node, p.returns).map((to) => ({ to, status: "reachable" as Reachability }));
     for (const edge of edges) {
       const via: Reachability = RANK[edge.status] < RANK[here] ? edge.status : here;
       if (RANK[via] > RANK[out.get(edge.to)!]) out.set(edge.to, via);
@@ -362,8 +330,6 @@ export function stepReachability(workflow: WorkflowDefinition, session: Diagnost
   return out;
 }
 
-/** Evidence kinds that are not an answer to a step. */
-const NOT_ANSWERS = new Set<Evidence["kind"]>(["scan", "code", "snapshot", "symptom", "specification"]);
 
 /** Record one normalized scan: the scan, then its codes, then its snapshots, all in the current phase. */
 function recordScan(session: DiagnosticSession, nodeId: NodeId, scan: NormalizedScan, to: NodeId, at?: string): DiagnosticSession {
@@ -549,6 +515,15 @@ function advance(p: Prepared, from: DiagnosticSession, nodeId: NodeId, at: strin
         const to = rule ? rule.to : node.otherwise;
         session = record(session, { nodeId: node.id, kind: "branch", value: rule ? `rule:${(route as { index: number }).index + 1}` : "otherwise", source: "engine", to, ...stamp }, rule ?? {});
         id = to;
+        continue;
+      }
+      case "test_selection": {
+        // An explicit reorderable region. Stay for the person's choice while a useful eligible test exists; otherwise leave it.
+        const analysis = analyzeRegion(p.byId, node, session);
+        if (analysis.ranked.length) return { ok: true, session: freezeSession({ ...session, currentNodeId: node.id }) };
+        const why = session.remainingCauses.length <= 1 ? "one_cause_left" : "no_eligible_test_can_change_the_causes";
+        session = record(session, { nodeId: node.id, kind: "test_selection", value: `exhausted:${why}`, source: "engine", to: node.next, ...stamp });
+        id = node.next;
         continue;
       }
       case "snapshot_check": {
@@ -877,6 +852,18 @@ export function submitStep(workflow: WorkflowDefinition, session: DiagnosticSess
       const judgement = { evaluated: true as const, range: judged.range, ...(judged.relation ? { relation: judged.relation } : {}), ...(judged.specification ? { specification: judged.specification } : {}) };
       return go(record(logged, { ...base, kind: "measurement", value: `${input.value} ${input.unit}`, measured, judgement, to }, judged.outcome ?? {}), to);
     }
+    case "test_selection": {
+      // Only an eligible, useful test of this region may be chosen; the recommendation is recorded with the choice.
+      if (input.kind !== "select_test") return fail("wrong_input_kind");
+      const analysis = analyzeRegion(p.byId, node, session);
+      if (!analysis.ranked.some((c) => c.step === input.test)) {
+        const why =
+          analysis.blocked.find((b) => b.step === input.test)?.reason ??
+          (analysis.potential.some((x) => x.step === input.test) ? "missing_context" : analysis.excluded.find((x) => x.step === input.test)?.reason ?? "not_in_region");
+        return fail(`not_eligible: "${input.test}" (${why})`);
+      }
+      return go(record(logged, { ...base, kind: "test_selection", value: input.test, recommendedTest: analysis.ranked[0].step, to: input.test }), input.test);
+    }
     case "actuator_test": {
       // MODELLING ONLY: an external tool commanded the actuator; this records what was observed. Nothing is executed here.
       if (input.kind !== "actuator_result") return fail("wrong_input_kind");
@@ -1015,6 +1002,41 @@ export function resumeSession(workflow: WorkflowDefinition, saved: unknown): Ste
  * skill level; then the step whose most telling outcome rules out the most
  * remaining causes; then the fewest tools. No probabilities are involved. (A
  * full next-best-test ranking is later work.)
+ */
+/**
+ * The next best test (V2E). Inside an explicit reorderable region (the
+ * session stands at a test_selection step) it returns the recommended test,
+ * the other eligible tests in order, and separately the useful tests that are
+ * blocked (capability, conditions) or only potentially available (missing
+ * context). Outside a region it says to follow the workflow: its order is
+ * authoritative there. Pure: computing it changes nothing.
+ */
+export function nextBestTests(workflow: WorkflowDefinition, session: DiagnosticSession): NextBestTests {
+  const p = prepare(workflow);
+  if ("error" in p) return { status: "follow_workflow", currentStep: null, reason: p.error };
+  const node = session.currentNodeId ? p.byId.get(session.currentNodeId) : undefined;
+  if (session.status !== "in_progress" || !node) return { status: "follow_workflow", currentStep: null, reason: "session_complete" };
+  if (node.type !== "test_selection") return { status: "follow_workflow", currentStep: node.id, reason: "not_in_a_reorderable_region" };
+  const a = analyzeRegion(p.byId, node, session);
+  const recs = toRecommendations(a, session.remainingCauses.length);
+  return { status: "region", group: a.group, selection: a.selection, recommended: recs[0] ?? null, alternatives: recs.slice(1), blocked: a.blocked, potential: a.potential, excluded: a.excluded };
+}
+
+/**
+ * The limited post-repair recheck plan, at a repair verification step. A
+ * plan only: it changes nothing and verifies nothing.
+ */
+export function recheckPlan(workflow: WorkflowDefinition, session: DiagnosticSession): RecheckPlan {
+  const p = prepare(workflow);
+  const node = "error" in p || !session.currentNodeId ? undefined : p.byId.get(session.currentNodeId);
+  if ("error" in p || session.status !== "in_progress" || node?.type !== "repair_verification") return { status: "not_at_verification" };
+  return buildRecheckPlan(p.byId, session, node);
+}
+
+/**
+ * Superseded by nextBestTests for recommendations. Kept for comparison: it
+ * lists every separating step still reachable, across the whole workflow, and
+ * must not be used to reorder a workflow.
  */
 export function separatingSteps(workflow: WorkflowDefinition, session: DiagnosticSession) {
   const p = prepare(workflow);

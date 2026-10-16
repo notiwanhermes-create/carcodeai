@@ -13,6 +13,9 @@
  * Problems are reported all at once, each with a stable code.
  */
 import {
+  INVASIVENESS,
+  SETUP,
+  TEST_RISK,
   DTC_STATUS_FLAGS,
   FACILITIES,
   FAULT_MODELS,
@@ -73,6 +76,9 @@ export function successors(node: WorkflowNode): NodeId[] {
     case "repair_verification":
       out.push(node.ifVerified, node.ifNotVerified);
       break;
+    case "test_selection":
+      out.push(...node.candidates.map((c) => c.step), node.next);
+      break;
     case "end":
       break;
   }
@@ -92,6 +98,26 @@ function edges(node: WorkflowNode): Array<{ to: NodeId; establishes: ConditionId
   }
   return successors(node).map(plain);
 }
+
+/**
+ * The bounded "return" edges of reorderable regions: candidate → its own
+ * test_selection. They are the one repetition allowed (each candidate runs at
+ * most once), so loop and condition analysis ignore them.
+ */
+export function regionReturns(nodes: readonly WorkflowNode[]): Map<NodeId, NodeId> {
+  const out = new Map<NodeId, NodeId>();
+  for (const n of nodes) if (n?.type === "test_selection" && Array.isArray(n.candidates)) for (const c of n.candidates) if (c && !out.has(c.step)) out.set(c.step, n.id);
+  return out;
+}
+
+/** Successors without the region return edges. */
+export function forwardSuccessors(node: WorkflowNode, returns: Map<NodeId, NodeId>): NodeId[] {
+  const back = returns.get(node.id);
+  return back === undefined ? successors(node) : successors(node).filter((to) => to !== back);
+}
+
+/** The test step types a reorderable region may contain. */
+const REGION_TEST_TYPES = new Set<WorkflowNode["type"]>(["check", "observation", "measurement", "actuator_test"]);
 
 /** The keys a step's results can take, for checking a re-test's passWhen. */
 function resultKeys(node: WorkflowNode): string[] | null {
@@ -319,6 +345,34 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
       }
     }
 
+    // Reorderable regions: explicit, well formed, and impossible to enter except through their selection.
+    if (node.type === "test_selection") {
+      if (typeof node.group !== "string" || !/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(node.group)) add("invalid_region", `"${node.id}" needs a generic group id.`, node.id);
+      if (!Array.isArray(node.candidates) || node.candidates.length < 2) add("invalid_region", `"${node.id}" needs two or more candidate tests.`, node.id);
+      const steps = (node.candidates ?? []).map((c) => c?.step);
+      if (new Set(steps).size !== steps.length) add("invalid_region", `"${node.id}" lists a candidate twice.`, node.id);
+      if (steps.includes(node.next)) add("invalid_region", `"${node.id}" exits to one of its own candidates.`, node.id);
+      for (const c of node.candidates ?? []) {
+        const target = byId.get(c?.step);
+        if (!target) continue; // reported as a broken transition
+        if (!REGION_TEST_TYPES.has(target.type)) add("invalid_region", `"${node.id}": "${c.step}" is a ${target.type} step; a region holds only tests (check, observation, measurement, actuator test).`, node.id);
+        if (!target.testProfile) add("invalid_region", `"${node.id}": "${c.step}" needs a test profile (risk, invasiveness, setup).`, node.id);
+        if (c.when !== undefined) {
+          for (const m of conditionMatchers(c.when)) for (const problem of matcherProblems(m)) add("invalid_dtc_matcher", `"${node.id}": ${problem}.`, node.id);
+          for (const name of conditionNames(c.when)) if (!conditionIds.has(name)) add("unknown_condition", `"${node.id}" refers to an undeclared condition "${name}".`, node.id);
+          for (const ref of conditionNodes(c.when)) if (!byId.has(ref)) add("broken_condition", `"${node.id}" depends on "${ref}", which does not exist.`, node.id);
+        }
+      }
+    }
+    if (node.testProfile !== undefined) {
+      const t = node.testProfile;
+      if (!t || !(TEST_RISK as readonly string[]).includes(t.risk) || !(INVASIVENESS as readonly string[]).includes(t.invasiveness) || !(SETUP as readonly string[]).includes(t.setup)) {
+        add("invalid_test_profile", `"${node.id}" has an unknown risk, invasiveness or setup category.`, node.id);
+      } else if (t.risk === "high" && !node.requires?.hazards?.length) {
+        add("no_hazards", `"${node.id}" is high risk and must state its hazards.`, node.id);
+      }
+    }
+
     // Named conditions are declared.
     const named = [
       ...(node.needsConditions ?? []),
@@ -375,6 +429,30 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
     }
   }
 
+  // Each candidate belongs to one region, is reached only from it, and leaves only back to it or out of the region.
+  const returns = regionReturns(workflow.nodes);
+  const regionOf = new Map<NodeId, NodeId>();
+  for (const sel of byId.values()) {
+    if (sel.type !== "test_selection" || !Array.isArray(sel.candidates)) continue;
+    for (const c of sel.candidates) {
+      if (!c || !byId.has(c.step)) continue;
+      if (regionOf.has(c.step) && regionOf.get(c.step) !== sel.id) add("invalid_region", `"${c.step}" is a candidate of two regions.`, c.step);
+      regionOf.set(c.step, sel.id);
+    }
+  }
+  const groups = [...byId.values()].filter((n) => n.type === "test_selection").map((n) => (n as { group: string }).group);
+  if (new Set(groups).size !== groups.length) add("invalid_region", "Two regions share a group id.");
+  for (const node of byId.values()) {
+    for (const to of successors(node)) {
+      const region = regionOf.get(to);
+      if (region !== undefined && node.id !== region) add("invalid_region", `"${node.id}" leads into "${to}", which can only be reached from its region "${region}".`, node.id);
+    }
+    const mine = regionOf.get(node.id);
+    if (mine !== undefined) {
+      for (const to of successors(node)) if (regionOf.get(to) === mine) add("invalid_region", `"${node.id}" leads to another candidate of its region; candidates return to "${mine}" or leave the region.`, node.id);
+    }
+  }
+
   // Every step reachable from the start, and no loops: every run must end.
   if (starts.length === 1 && problems.every((p) => p.code !== "duplicate_id")) {
     const reached = new Set<NodeId>();
@@ -395,7 +473,7 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
         return;
       }
       state.set(id, "visiting");
-      for (const next of successors(byId.get(id)!)) visit(next, [...path, id]);
+      for (const next of forwardSuccessors(byId.get(id)!, returns)) visit(next, [...path, id]);
       state.set(id, "done");
     };
     visit(starts[0].id, []);
@@ -409,7 +487,7 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
       const post = (id: NodeId): void => {
         if (seen.has(id) || !byId.has(id)) return;
         seen.add(id);
-        for (const next of successors(byId.get(id)!)) post(next);
+        for (const next of forwardSuccessors(byId.get(id)!, returns)) post(next);
         order.push(id);
       };
       post(starts[0].id);
@@ -417,7 +495,7 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
       const guaranteed = new Map<NodeId, Set<ConditionId>>([[starts[0].id, new Set()]]);
       for (const id of order) {
         const here = guaranteed.get(id) ?? new Set<ConditionId>();
-        for (const edge of edges(byId.get(id)!)) {
+        for (const edge of edges(byId.get(id)!).filter((e) => e.to !== returns.get(id))) {
           const arriving = new Set([...here, ...edge.establishes]);
           const known = guaranteed.get(edge.to);
           guaranteed.set(edge.to, known ? new Set([...known].filter((c) => arriving.has(c))) : arriving);
@@ -425,6 +503,8 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
       }
       for (const id of order) {
         const node = byId.get(id)!;
+        // Region candidates are offered only when their conditions are established (checked when ranking), so they are exempt here.
+        if (regionOf.has(id)) continue;
         const missing = (node.needsConditions ?? []).filter((c) => !guaranteed.get(id)?.has(c));
         if (missing.length) add("condition_not_guaranteed", `"${id}" needs ${missing.join(", ")}, which not every route to it establishes.`, id);
       }

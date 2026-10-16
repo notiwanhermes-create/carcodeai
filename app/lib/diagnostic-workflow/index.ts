@@ -16,4 +16,5 @@ export {
   specificationDrift,
   specificationProblem,
 } from "./specifications";
-export { MAX_AUTOMATIC_STEPS, currentStep, stepReachability, type Reachability, isTrustedSpec, replaySession, resumeSession, separatingSteps, sessionOutcome, startSession, submitStep } from "./engine";
+export { MAX_AUTOMATIC_STEPS, currentStep, nextBestTests, recheckPlan, stepReachability, type Reachability, isTrustedSpec, replaySession, resumeSession, separatingSteps, sessionOutcome, startSession, submitStep } from "./engine";
+export { analyzeRegion, detectingEvidence, separation, type Decisiveness, type NextBestTests, type RecheckItem, type RecheckPlan, type Recommendation, type RegionAnalysis } from "./next-best-test";

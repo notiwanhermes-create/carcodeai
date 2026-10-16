@@ -34,6 +34,11 @@
  * by an explicit snapshot_check step. See
  * docs/research/guided-diagnostics/v2d-dtc-freeze-frame.md.
  *
+ * V2E adds explicit reorderable test regions (test_selection) with a
+ * deterministic next-best-test ranking (no probabilities, no costs), and a
+ * bounded post-repair recheck plan. See
+ * docs/research/guided-diagnostics/v2e-next-best-test.md.
+ *
  * Original CarCode design, written from general troubleshooting practice.
  */
 import type { CheckLevel } from "../diagnosis-schema";
@@ -344,6 +349,19 @@ export type CauseEffect = {
   supports?: CauseId[];
 };
 
+/* ───────────────────────── test profile (V2E) ───────────────────────── */
+
+/** Categorical, reviewable comparisons between interchangeable tests. Never probabilities, times or money. */
+export const TEST_RISK = ["low", "moderate", "high"] as const;
+export type TestRisk = (typeof TEST_RISK)[number];
+/** How much a test disturbs the vehicle, least first. */
+export const INVASIVENESS = ["observe", "read_data", "command", "disconnect", "disassemble"] as const;
+export type Invasiveness = (typeof INVASIVENESS)[number];
+/** How much has to be set up before the test can start. */
+export const SETUP = ["none", "minor", "significant"] as const;
+export type Setup = (typeof SETUP)[number];
+export type TestProfile = { risk: TestRisk; invasiveness: Invasiveness; setup: Setup };
+
 type NodeBase = {
   id: NodeId;
   /** Short title for lists and history. */
@@ -359,6 +377,14 @@ type NodeBase = {
    * needing a tool.
    */
   ifUnsupported?: NodeId;
+  /** Required on every candidate of a reorderable region: how risky, invasive and involved the test is. */
+  testProfile?: TestProfile;
+  /**
+   * False when repeating this test after a repair would be unsafe or
+   * meaningless (a swap test, a destructive check). A post-repair recheck plan
+   * then records that it is not repeated, and why. Default: repeatable.
+   */
+  repeatableAfterRepair?: boolean;
   /**
    * Where to go when the step was done but the result does not decide
    * anything (unclear, intermittent, unstable). Allowed on check, observation
@@ -520,6 +546,26 @@ export type SnapshotCheckNode = NodeBase & {
   ifUnavailable: NodeId;
 };
 
+/**
+ * An EXPLICIT reorderable region: the workflow author states that these
+ * tests are interchangeable at this point. Only here does the engine rank
+ * tests; everywhere else the workflow's order is authoritative.
+ *
+ * The person picks one eligible candidate (the engine recommends one); its
+ * outcomes either come back here or leave the region (for example to a
+ * conclusion). Each candidate runs at most once, so the region always ends.
+ * When no eligible candidate can still change the remaining causes, the
+ * region exits to `next` on its own.
+ */
+export type TestSelectionNode = NodeBase & {
+  type: "test_selection";
+  /** The region's name, e.g. "misfire_primary_tests". Unique in the workflow. */
+  group: string;
+  /** In the author's order (the final tie-break). `when` must be definitely true for the candidate to be eligible. */
+  candidates: Array<{ step: NodeId; when?: Condition }>;
+  next: NodeId;
+};
+
 /** The end of a workflow. `result` says how it ended. */
 export type EndNode = NodeBase & { type: "end"; result: "resolved" | "concluded" | "referred" | "not_reproducible" | "inconclusive" };
 
@@ -537,6 +583,7 @@ export type WorkflowNode =
   | ActuatorTestNode
   | ServiceFunctionNode
   | SnapshotCheckNode
+  | TestSelectionNode
   | EndNode;
 
 export type NodeType = WorkflowNode["type"];
@@ -683,6 +730,8 @@ export type StepInput = (
   | { nodeId: NodeId; kind: "check"; result: "pass" | "fail" }
   /** What was observed while an external tool commanded the actuator. */
   | { nodeId: NodeId; kind: "actuator_result"; result: string }
+  /** In a reorderable region: the test the person chose. */
+  | { nodeId: NodeId; kind: "select_test"; test: NodeId }
   /** What the external tool reported for a service function. */
   | { nodeId: NodeId; kind: "service_result"; result: ServiceResult }
   | { nodeId: NodeId; kind: "done" }
@@ -721,6 +770,7 @@ export type Evidence = {
     | "code"
     | "snapshot"
     | "snapshot_check"
+    | "test_selection"
     | "symptom"
     | "specification"
     | "prerequisite"
@@ -769,6 +819,8 @@ export type Evidence = {
   snapshot?: SnapshotRecord;
   /** For a snapshot check: which snapshot and parameter were read, and the value. */
   snapshotRef?: { snapshot: string; parameter: string; value?: number | string; unit?: Unit };
+  /** For a test selection: the test the engine recommended at that moment (the choice is in `value`). */
+  recommendedTest?: NodeId;
   /** For an actuator test or service function: its generic id. */
   actuator?: string;
   serviceFunction?: string;

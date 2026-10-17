@@ -9,7 +9,7 @@ Read `AGENTS.md` before substantial work and obey its architecture and safety ru
 When your prompt is a `CARCODE_MANAGER_TASK` from `tools/agent-manager/`:
 
 - the manager's independent OpenAI review replaces the Codex steps below. Do not run Codex or `scripts/codex-review.ps1`;
-- do not commit or push. Leave changes uncommitted. Launching the manager is the explicit commit/push request for verified, independently reviewed work on non-protected `research/`, `feature/`, `fix/`, `chore/`, `docs/` or `test/` branches. The manager commits that work itself and pushes it unless `CARCODE_MANAGER_PUSH=0`. It never merges, deploys or force-pushes;
+- do not commit or push. Leave changes uncommitted. Launching the manager is the explicit commit request for verified, independently reviewed work on non-protected `research/`, `feature/`, `fix/`, `chore/`, `docs/` or `test/` branches, and the manager commits that work itself. Automatic push is OFF by default; it happens only when the person enables it (`CARCODE_MANAGER_PUSH=1` or `-AllowPush`), and never for main or protected branches. The manager never merges, deploys or force-pushes;
 - you cannot declare your own work reviewed. Fix the review findings the manager sends you, validating each against the code and `AGENTS.md`;
 - everything else in this file and in `AGENTS.md` still applies.
 

@@ -183,13 +183,17 @@ At `task_complete` the harness:
 6. runs `git diff --cached --check`;
 7. commits with a fixed-format message naming the task, the review cycle and model, and the checks.
 
-It never uses `--no-verify`. The push sends exactly the recorded commit, `<commit-sha>:refs/heads/<branch>`, to
-`origin`. It is never forced, and only goes to allowed automation branches. A resumed push requires HEAD to still be
-that commit.
+It never uses `--no-verify`.
+
+**Automatic push is OFF by default.** With `CARCODE_MANAGER_PUSH` unset or `0`, verified commits stay local.
+Only `CARCODE_MANAGER_PUSH=1`, or the launcher's `-AllowPush` for one run, enables pushing; any other value is a
+configuration error. When enabled, the push sends exactly the recorded commit, `<commit-sha>:refs/heads/<branch>`, to
+`origin`. It is never forced, and only goes to allowed automation branches. `main` and protected branches are refused
+regardless of configuration. A resumed push requires HEAD to still be that commit.
 
 CLAUDE.md says to commit or push only when the current task explicitly asks. Under the manager, the person who
-launches it gives that authorisation for verified, independently reviewed work on non-protected branches. Set
-`CARCODE_MANAGER_PUSH=0` to keep commits local. Merging, pull requests and deploys always stay manual.
+launches it authorises commits of verified, independently reviewed work on non-protected branches. Pushing needs the
+separate opt-in above. Merging, pull requests and deploys always stay manual.
 
 ## Resume
 

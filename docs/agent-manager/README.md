@@ -59,6 +59,7 @@ powershell -ExecutionPolicy Bypass -File scripts/carcode-manager.ps1 -ClearState
 Other switches:
 
 - `-ReadOnly`: the manager may assign only read-only tasks, and a saved implement task is never resumed.
+- `-AllowPush`: allow pushing verified, reviewed work on non-protected branches for this run (off by default).
 - `-Repo <path>`: manage a different CarCode checkout. The default is the checkout that holds the script.
 
 Exit codes: `0` finished or stopped normally, `2` needs a human, `3` blocked but resumable, `1` error.
@@ -73,7 +74,7 @@ Exit codes: `0` finished or stopped normally, `2` needs a human, `3` blocked but
 | `CARCODE_MANAGER_MAX_TASKS` | `3` | Tasks per invocation (`-Once` is always 1). |
 | `CARCODE_MANAGER_MAX_RETRIES` | `2` | Manager-driven fix attempts per task (e.g. failing checks). Resuming after an interruption does not count. |
 | `CARCODE_MANAGER_CLAUDE_TIMEOUT_MIN` | `90` | Per Claude run. |
-| `CARCODE_MANAGER_PUSH` | on | `0` keeps verified commits local. Otherwise the task branch is pushed to `origin` under the same name, never forced. |
+| `CARCODE_MANAGER_PUSH` | unset = **off** | Unset or `0`: never push; verified commits stay local. `1`: push verified work to `origin` under the same branch name, never forced, only for non-protected automation branches. Any other value is an error. The launcher's `-AllowPush` switch enables it for one run. `main` and protected branches are never pushed. |
 | `CARCODE_MANAGER_STATE_DIR` | `%LOCALAPPDATA%\CarCodeAI\agent-manager` | Runtime state and logs. Refused if inside the repository. |
 | `CARCODE_CLAUDE_BIN` | auto | Path to `claude.exe`. |
 
@@ -96,9 +97,10 @@ Claude's report has no review field. Claude cannot mark its own work reviewed.
 
 **Automatic** (only after harness verification **and** a clean independent review of the exact tree):
 create a `research/`, `feature/`, `fix/`, `chore/`, `docs/` or `test/` branch from a clean tree;
-have Claude edit and test; commit the reviewed diff; push that branch (never forced); then start the next task.
-Launching the manager is the explicit commit/push request that CLAUDE.md asks for, limited to that
-verified work. Set `CARCODE_MANAGER_PUSH=0` to keep commits local.
+have Claude edit and test; commit the reviewed diff; then start the next task.
+Launching the manager is the explicit commit request that CLAUDE.md asks for, limited to that verified work.
+**Pushing is off by default.** Only with `CARCODE_MANAGER_PUSH=1` or `-AllowPush` does the manager push the task
+branch (never forced, never `main` or a protected branch).
 
 **Never committed automatically**, even when the review is clean: changes to the agent rules, the
 review/manager machinery, dependencies, deploy/security configuration, database tooling, migrations

@@ -30,7 +30,7 @@ import {
   runProcess,
   snapshot,
 } from "./repo.mjs";
-import { CHECKS, isAutomationBranch, planChecks, protectedPathHits, screenDecision, stripSensitiveEnv } from "./safety.mjs";
+import { CHECKS, isAutomationBranch, isProtectedBranch, planChecks, protectedPathHits, screenDecision, stripSensitiveEnv } from "./safety.mjs";
 import { createStateStore } from "./state.mjs";
 
 export const MANAGER_HOME = dirname(fileURLToPath(import.meta.url));
@@ -66,16 +66,20 @@ export function readLimits(env = process.env) {
     if (!Number.isInteger(n) || n < 1 || n > max) throw new ConfigError(`${name} must be an integer between 1 and ${max}.`);
     return n;
   };
+  // Automatic push is OFF unless explicitly enabled: unset or "0" = no push, "1" = push allowed
+  // (verified, independently reviewed work on non-protected automation branches only).
+  const pushRaw = env.CARCODE_MANAGER_PUSH ?? "";
+  if (!["", "0", "1"].includes(pushRaw)) throw new ConfigError("CARCODE_MANAGER_PUSH must be unset, 0 (no push) or 1 (push allowed).");
   return {
     maxTasks: int("CARCODE_MANAGER_MAX_TASKS", 3, 20),
     maxRetries: int("CARCODE_MANAGER_MAX_RETRIES", 2, 10),
     claudeTimeoutMs: int("CARCODE_MANAGER_CLAUDE_TIMEOUT_MIN", 90, 600) * 60_000,
-    push: env.CARCODE_MANAGER_PUSH !== "0",
+    push: pushRaw === "1",
   };
 }
 
 export function parseArgs(argv) {
-  const opts = { repo: process.cwd(), goal: null, mode: "once", resume: false, readOnly: false };
+  const opts = { repo: process.cwd(), goal: null, mode: "once", resume: false, readOnly: false, allowPush: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => {
@@ -90,6 +94,7 @@ export function parseArgs(argv) {
       if (!MODES.includes(opts.mode)) throw new ConfigError(`unknown mode ${opts.mode}`);
     } else if (a === "--resume") opts.resume = true;
     else if (a === "--read-only") opts.readOnly = true;
+    else if (a === "--allow-push") opts.allowPush = true;
     else throw new ConfigError(`unknown argument ${a}`);
   }
   if (opts.goal !== null && (opts.goal.length > 4_000 || !opts.goal.trim())) throw new ConfigError("The goal must be 1-4000 characters.");
@@ -185,6 +190,7 @@ export async function runManager(opts, deps = {}) {
   const mode = opts.mode;
   const dryRun = mode === "dry-run";
   const limits = readLimits(env);
+  if (opts.allowPush) limits.push = true;
   const maxTasks = mode === "once" ? 1 : limits.maxTasks;
   const store = createStateStore(repo, { env, now });
 
@@ -290,9 +296,11 @@ export async function runManager(opts, deps = {}) {
 
     const pushTask = async (task) => {
       if (!limits.push) {
-        task.pushed = "skipped (CARCODE_MANAGER_PUSH=0)";
+        task.pushed = "skipped (automatic push is off; enable with CARCODE_MANAGER_PUSH=1 or -AllowPush)";
         return true;
       }
+      // Never auto-push main or any protected branch, whatever the configuration says.
+      if (isProtectedBranch(task.branch)) return false;
       const remote = await git(repo, ["remote", "get-url", "origin"], { allowFailure: true });
       if (remote.code !== 0) {
         task.pushed = "skipped (no origin remote)";

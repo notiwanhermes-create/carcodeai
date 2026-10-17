@@ -44,7 +44,7 @@ export function makeRepo({ branch = "research/base" } = {}) {
     OPENAI_MANAGER_MODEL: "",
     OPENAI_REVIEW_MODEL: "",
     CARCODE_MANAGER_STATE_DIR: stateDir,
-    CARCODE_MANAGER_PUSH: "0",
+    CARCODE_MANAGER_PUSH: "",
     CARCODE_MANAGER_MAX_TASKS: "",
     CARCODE_MANAGER_MAX_RETRIES: "",
   };

@@ -22,6 +22,9 @@ param(
     [switch]$ReadOnly,
     [switch]$Status,
     [switch]$ClearState,
+    # Automatic push is OFF by default. -AllowPush (or CARCODE_MANAGER_PUSH=1) allows pushing
+    # verified, reviewed work on non-protected branches; main/protected branches are never pushed.
+    [switch]$AllowPush,
     [string]$Repo
 )
 
@@ -63,6 +66,7 @@ if ($Goal) {
 }
 if ($Resume) { $nodeArgs += "--resume" }
 if ($ReadOnly) { $nodeArgs += "--read-only" }
+if ($AllowPush) { $nodeArgs += "--allow-push" }
 
 & node @nodeArgs
 exit $LASTEXITCODE

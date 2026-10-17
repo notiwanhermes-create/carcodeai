@@ -634,6 +634,68 @@ test("an unreadable lock is held while fresh and reclaimed only when stale; lock
   }
 });
 
+test("automatic push is off by default and only explicitly enabled", () => {
+  assert.equal(readLimits({}).push, false);
+  assert.equal(readLimits({ CARCODE_MANAGER_PUSH: "" }).push, false);
+  assert.equal(readLimits({ CARCODE_MANAGER_PUSH: "0" }).push, false);
+  assert.equal(readLimits({ CARCODE_MANAGER_PUSH: "1" }).push, true);
+  for (const v of ["yes", "true", "on", "2"]) assert.throws(() => readLimits({ CARCODE_MANAGER_PUSH: v }), ConfigError, v);
+  assert.equal(parseArgs([]).allowPush, false);
+  assert.equal(parseArgs(["--allow-push"]).allowPush, true);
+});
+
+async function pushFixture() {
+  const fx = makeRepo();
+  const origin = join(fx.root, "origin.git");
+  gitSync(fx.root, "init", "-q", "--bare", origin);
+  gitSync(fx.repo, "remote", "add", "origin", origin);
+  gitSync(fx.repo, "push", "-q", "origin", "research/base");
+  return { fx, origin };
+}
+const remoteHas = (origin, branch) => gitSync(origin, "branch", "--list", branch) !== "";
+
+test("verified work is committed but NOT pushed unless push is enabled", async () => {
+  for (const [label, env, opts, expectPush] of [
+    ["unset", { CARCODE_MANAGER_PUSH: undefined }, {}, false],
+    ["0", { CARCODE_MANAGER_PUSH: "0" }, {}, false],
+    ["1", { CARCODE_MANAGER_PUSH: "1" }, {}, true],
+    ["-AllowPush", { CARCODE_MANAGER_PUSH: undefined }, { allowPush: true }, true],
+  ]) {
+    const { fx, origin } = await pushFixture();
+    try {
+      const e = { ...fx.env, ...env };
+      if (env.CARCODE_MANAGER_PUSH === undefined) delete e.CARCODE_MANAGER_PUSH;
+      const r = await run(fx, opts, { env: e, fetch: fakeOpenAI([impl(), complete()], [rev("clean")]).fetch, runClaude: fakeClaude([writes({ "feature.md": "# Feature\n" })]).run });
+      assert.equal(r.stopReason, "once_complete", label);
+      assert.notEqual(gitSync(fx.repo, "rev-parse", "HEAD"), gitSync(origin, "rev-parse", "research/base"), `${label}: committed locally`);
+      assert.equal(remoteHas(origin, "research/feature"), expectPush, `${label}: pushed=${expectPush}`);
+      assert.equal(gitSync(origin, "rev-parse", "research/base"), gitSync(fx.repo, "rev-parse", "research/base"), `${label}: base branch untouched`);
+    } finally {
+      fx.cleanup();
+    }
+  }
+});
+
+test("main and protected branches are never worked on or pushed, even with push enabled", async () => {
+  const fx = makeRepo({ branch: "main" });
+  try {
+    const origin = join(fx.root, "origin.git");
+    gitSync(fx.root, "init", "-q", "--bare", origin);
+    gitSync(fx.repo, "remote", "add", "origin", origin);
+    gitSync(fx.repo, "push", "-q", "origin", "main");
+    const before = gitSync(origin, "rev-parse", "main");
+    const claude = fakeClaude([]);
+    for (const branch of [null, "main", "release/1.0"]) {
+      const r = await run(fx, { allowPush: true }, { env: { ...fx.env, CARCODE_MANAGER_PUSH: "1" }, fetch: fakeOpenAI([impl({ branch })]).fetch, runClaude: claude.run });
+      assert.equal(r.stopReason, "require_human", String(branch));
+    }
+    assert.equal(claude.calls.length, 0);
+    assert.equal(gitSync(origin, "rev-parse", "main"), before);
+  } finally {
+    fx.cleanup();
+  }
+});
+
 test("argument and limit parsing", () => {
   assert.equal(parseArgs(["--goal-b64", Buffer.from('Héllo "quoted"').toString("base64")]).goal, 'Héllo "quoted"');
   assert.throws(() => parseArgs(["--mode", "yolo"]), ConfigError);

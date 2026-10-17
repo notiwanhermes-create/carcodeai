@@ -4,6 +4,17 @@ You are the lead implementer for this repository.
 
 Read `AGENTS.md` before substantial work and obey its architecture and safety rules.
 
+## Manager mode (CarCode agent manager)
+
+When your prompt is a `CARCODE_MANAGER_TASK` from `tools/agent-manager/`:
+
+- the manager's independent OpenAI review replaces the Codex steps below. Do not run Codex or `scripts/codex-review.ps1`;
+- do not commit or push. Leave changes uncommitted. Launching the manager is the explicit commit/push request for verified, independently reviewed work on non-protected `research/`, `feature/`, `fix/`, `chore/`, `docs/` or `test/` branches. The manager commits that work itself and pushes it unless `CARCODE_MANAGER_PUSH=0`. It never merges, deploys or force-pushes;
+- you cannot declare your own work reviewed. Fix the review findings the manager sends you, validating each against the code and `AGENTS.md`;
+- everything else in this file and in `AGENTS.md` still applies.
+
+In interactive sessions, the Codex workflow below still applies.
+
 ## Claude + Codex workflow
 
 For every meaningful code change:

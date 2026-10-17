@@ -59,7 +59,7 @@ Active research, not merged, each stacked on the previous:
 Docs only, not in the stack, unique (keep): `research/guided-diagnostics-v2-standards`.
 
 Agent tooling, not merged:
-- `chore/openai-claude-codex-manager` (`56fc9d1`): the manager. Current.
+- `chore/openai-claude-codex-manager` (`0202c37`): the manager. Current.
 - `chore/claude-codex-collab-main` (`a58046e`): CLAUDE.md, AGENTS.md and
   `scripts/codex-review.ps1` on top of `main`. The manager branch contains it.
 - `chore/claude-codex-collab` (`fc99144`): the same three files, committed on
@@ -82,8 +82,8 @@ canonical checkout or one of its linked worktrees.
 `docs/project/manager-canonical-workspace.patch` makes this enforced and
 visible: with `CARCODE_CANONICAL_REPO` set, it refuses any other copy, and every
 run, `-Status`, the task record and the prompt to Claude name the canonical
-repository and the linked worktree in use. The manager tests pass with it
-(66 passed, 3 Windows-only skipped, on Linux). Apply it on the PC, in the
+repository and the linked worktree in use. The manager tests pass with it on
+`0202c37` (69 passed, 3 Windows-only skipped, on Linux). Apply it on the PC, in the
 manager worktree, after any uncommitted manager work there is committed. Take
 the patch straight from Git (a PowerShell `>` would re-encode it):
 

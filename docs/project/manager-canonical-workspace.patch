@@ -1,4 +1,4 @@
-From 06de109e14b8ad3ada5f67c1679d29ffdbeb7363 Mon Sep 17 00:00:00 2001
+From 29e665977772e92f3cd95b28e5138c8e41da4d2a Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 17 Oct 2026 18:44:46 +0000
 Subject: [PATCH] chore(manager): one canonical CarCode workspace
@@ -21,11 +21,11 @@ Claude-Session: https://claude.ai/code/session_019h1vGo4wZadWtLHYgXYc2f
  create mode 100644 tools/agent-manager/test/workspace.test.mjs
 
 diff --git a/docs/agent-manager/README.md b/docs/agent-manager/README.md
-index a8f53c4..7a9b3fa 100644
+index df251bc..75bef05 100644
 --- a/docs/agent-manager/README.md
 +++ b/docs/agent-manager/README.md
-@@ -76,6 +76,10 @@ Exit codes: `0` finished or stopped normally, `2` needs a human, `3` blocked but
- | `CARCODE_MANAGER_PUSH` | on | `0` keeps verified commits local. Otherwise the task branch is pushed to `origin` under the same name, never forced. |
+@@ -77,6 +77,10 @@ Exit codes: `0` finished or stopped normally, `2` needs a human, `3` blocked but
+ | `CARCODE_MANAGER_PUSH` | unset = **off** | Unset or `0`: never push; verified commits stay local. `1`: push verified work to `origin` under the same branch name, never forced, only for non-protected automation branches. Any other value is an error. The launcher's `-AllowPush` switch enables it for one run. `main` and protected branches are never pushed. |
  | `CARCODE_MANAGER_STATE_DIR` | `%LOCALAPPDATA%\CarCodeAI\agent-manager` | Runtime state and logs. Refused if inside the repository. |
  | `CARCODE_CLAUDE_BIN` | auto | Path to `claude.exe`. |
 +| `CARCODE_CANONICAL_REPO` | unset | The canonical CarCode checkout. When set, the manager refuses any checkout that is neither it nor one of its linked worktrees (an independent copy or clone), so a duplicate folder is never managed as CarCode. Set it once, at user level. |
@@ -63,7 +63,7 @@ index 4688d40..dffe422 100644
      "   - Do not touch production systems, shared databases, secrets, .env files, or credentials. No migrations against any real database. Do not add dependencies.",
      "   - If anything needs human approval under AGENTS.md or CLAUDE.md, stop and report needs_human=true instead of doing it.",
 diff --git a/tools/agent-manager/manager.mjs b/tools/agent-manager/manager.mjs
-index e9c40a9..9314686 100644
+index a0f5849..892c56e 100644
 --- a/tools/agent-manager/manager.mjs
 +++ b/tools/agent-manager/manager.mjs
 @@ -21,14 +21,17 @@ import {
@@ -82,9 +82,9 @@ index e9c40a9..9314686 100644
    snapshot,
 +  workspaceIdentity,
  } from "./repo.mjs";
- import { CHECKS, isAutomationBranch, planChecks, protectedPathHits, screenDecision, stripSensitiveEnv } from "./safety.mjs";
+ import { CHECKS, isAutomationBranch, isProtectedBranch, planChecks, protectedPathHits, screenDecision, stripSensitiveEnv } from "./safety.mjs";
  import { createStateStore } from "./state.mjs";
-@@ -182,6 +185,8 @@ export async function runManager(opts, deps = {}) {
+@@ -187,6 +190,8 @@ export async function runManager(opts, deps = {}) {
    const retry = deps.apiBackoffMs ? { backoffMs: deps.apiBackoffMs } : {};
  
    const repo = await repoRoot(opts.repo);
@@ -93,7 +93,7 @@ index e9c40a9..9314686 100644
    const mode = opts.mode;
    const dryRun = mode === "dry-run";
    const limits = readLimits(env);
-@@ -198,6 +203,7 @@ export async function runManager(opts, deps = {}) {
+@@ -204,6 +209,7 @@ export async function runManager(opts, deps = {}) {
      const snap = await snapshot(repo);
      const report = {
        repo,
@@ -101,7 +101,7 @@ index e9c40a9..9314686 100644
        branch: snap.branch,
        head: snap.head,
        clean: snap.clean,
-@@ -214,6 +220,9 @@ export async function runManager(opts, deps = {}) {
+@@ -220,6 +226,9 @@ export async function runManager(opts, deps = {}) {
      return { stopReason: "manager_stop", exitCode: 0, status: report };
    }
  
@@ -111,7 +111,7 @@ index e9c40a9..9314686 100644
    const config = readManagerConfig(env);
    const apiKey = requireApiKey(config);
    const instructions = readFileSync(join(MANAGER_HOME, "prompts", "manager.md"), "utf8");
-@@ -474,6 +483,8 @@ export async function runManager(opts, deps = {}) {
+@@ -482,6 +491,8 @@ export async function runManager(opts, deps = {}) {
            originalTask: d.task,
            branch: targetBranch,
            baseBranch: snap.branch,
@@ -120,7 +120,7 @@ index e9c40a9..9314686 100644
            startHead: snap.head,
            startedAt: now().toISOString(),
            attempts: 0,
-@@ -537,6 +548,7 @@ export async function runManager(opts, deps = {}) {
+@@ -545,6 +556,7 @@ export async function runManager(opts, deps = {}) {
        mode: task.mode,
        task: instruction,
        branch: task.branch,
@@ -194,11 +194,11 @@ index d9affae..9aa1898 100644
    const branch = (await git(repo, ["branch", "--show-current"])).stdout.trim();
    const head = (await git(repo, ["rev-parse", "HEAD"])).stdout.trim();
 diff --git a/tools/agent-manager/test/helpers.mjs b/tools/agent-manager/test/helpers.mjs
-index d383626..c569765 100644
+index 414b099..d9d5eb4 100644
 --- a/tools/agent-manager/test/helpers.mjs
 +++ b/tools/agent-manager/test/helpers.mjs
 @@ -47,6 +47,7 @@ export function makeRepo({ branch = "research/base" } = {}) {
-     CARCODE_MANAGER_PUSH: "0",
+     CARCODE_MANAGER_PUSH: "",
      CARCODE_MANAGER_MAX_TASKS: "",
      CARCODE_MANAGER_MAX_RETRIES: "",
 +    CARCODE_CANONICAL_REPO: "",

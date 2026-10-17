@@ -97,7 +97,7 @@ it is wired into the app. Each stage is a branch stacked on the previous one:
   exists only in a local worktree; GitHub has no copy. Its scope is recorded
   there, not here. Do not merge it into `main`. When a session picks it up,
   write its scope and branch into this file.
-- **Agent manager**: `chore/openai-claude-codex-manager` (`56fc9d1`), not
+- **Agent manager**: `chore/openai-claude-codex-manager` (`0202c37`), not
   merged. The PC may hold newer uncommitted manager changes.
 - **Canonical-workspace guard** for the manager:
   `docs/project/manager-canonical-workspace.patch`, ready to apply to the
@@ -112,9 +112,10 @@ it is wired into the app. Each stage is a branch stacked on the previous one:
   Git safety. Codex reviews read-only.
 - Agent manager (`tools/agent-manager/`, on `chore/openai-claude-codex-manager`):
   an OpenAI model plans, Claude Code CLI implements, a separate OpenAI request
-  reviews the diff. It commits and pushes only reviewed work on
-  `research/ feature/ fix/ chore/ docs/ test/` branches, and never merges,
-  deploys or force-pushes. Launch with `scripts/carcode-manager.ps1`. Docs:
+  reviews the diff. It commits only reviewed work on
+  `research/ feature/ fix/ chore/ docs/ test/` branches; pushing is off unless
+  enabled (`CARCODE_MANAGER_PUSH=1` or `-AllowPush`). It never merges, deploys
+  or force-pushes. Launch with `scripts/carcode-manager.ps1`. Docs:
   `docs/agent-manager/README.md`. State lives outside the repo in
   `%LOCALAPPDATA%\CarCodeAI\agent-manager`.
 - Workspace layout and which folder is canonical: `docs/project/WORKSPACE.md`.

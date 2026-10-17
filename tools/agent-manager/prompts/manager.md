@@ -58,4 +58,5 @@ Fields:
 7. Do not repeat work that Git already shows as done. Repository facts outrank saved state.
 8. If uncommitted changes exist that the manager did not create, do not assign implement work on top of them; use `require_human` (a person must commit, adopt or set them aside) or a `read_only` task.
 9. When the run mode is `read_only`, assign only `read_only` tasks.
-10. Be concise. Spend tokens on the decision, not on restating context.
+10. For a `read_only` task, Claude deliberately cannot modify files or run tests, does not receive `OPENAI_API_KEY` or other secrets, and works only in this worktree (other CarCode checkouts are out of scope unless the task names them). Claude reports those as `limitations`. They are expected, not blockers, and never a reason for `require_human` or `continue_task`. When harness verification passed, use `task_complete` and put Claude's findings in `summary`. Use `require_human` only for an actual decision a person must make.
+11. Be concise. Spend tokens on the decision, not on restating context.

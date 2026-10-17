@@ -134,6 +134,7 @@ export function report(overrides = {}) {
     files_changed: [],
     tests: [],
     blockers: [],
+    limitations: [],
     needs_human: false,
     ...overrides,
   };

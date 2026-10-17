@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, utimesSync,
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { runClaudeTask } from "../claude-adapter.mjs";
 import { ConfigError } from "../openai-manager.mjs";
 import { fingerprint } from "../repo.mjs";
 import { MAX_REVIEW_CYCLES, parseArgs, readLimits, reconcileTask, runManager } from "../manager.mjs";
@@ -500,6 +501,111 @@ test("Claude asking for a person stops the run immediately; failing tests never 
     assert.equal(api.reviewCalls().length, 0, "a failed verification is not sent for review");
   } finally {
     fx2.cleanup();
+  }
+});
+
+// --- read-only readiness: expected limitations are not a human gate --------------
+
+const READ_ONLY_LIMITATIONS = [
+  "Manager test suite not run: this task is read-only.",
+  "OPENAI_API_KEY is not visible in this session.",
+  "The separate main/V2I checkout was not inspected: it is outside this worktree.",
+];
+
+test("read-only readiness run: manager uses the key, Claude never gets it, expected limitations complete without a human gate", async () => {
+  const fx = makeRepo();
+  try {
+    const head = gitSync(fx.repo, "rev-parse", "HEAD");
+    const api = fakeOpenAI([
+      dec({ summary: "Assess manager safety boundaries", task: "Perform a read-only safety assessment of the manager and report findings." }),
+      dec({ decision: "task_complete", task: "", summary: "Assessment done; findings reported." }),
+    ]);
+    // The real adapter runs with a fake process runner, so the exact child env, argv and stdin are captured.
+    const spawned = [];
+    const runner = async (exe, args, opts) => {
+      spawned.push({ exe, args, opts });
+      const rep = report({ summary: "VERDICT: no blocking safety defect found in this fixture.", limitations: READ_ONLY_LIMITATIONS });
+      return { code: 0, stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, structured_output: rep }), stderr: "" };
+    };
+    const runClaude = (call) => runClaudeTask({ ...call, runner, bin: "claude.exe" });
+    const r = await run(fx, {}, { fetch: api.fetch, runClaude });
+
+    assert.equal(r.stopReason, "once_complete", r.message);
+    assert.equal(r.exitCode, 0);
+    // The manager process used the key, and only in the Authorization header.
+    assert.equal(api.managerCalls().length, 2);
+    for (const call of api.calls) assert.equal(call.init.headers.Authorization, `Bearer ${FAKE_KEY}`);
+    // The Claude subprocess never received it: not as a variable, not as a value, not in argv or the prompt.
+    assert.equal(spawned.length, 1);
+    const child = spawned[0];
+    assert.equal(Object.hasOwn(child.opts.env, "OPENAI_API_KEY"), false);
+    assert.ok(!Object.values(child.opts.env).some((v) => String(v).includes(FAKE_KEY)), "key value reached the Claude env");
+    assert.ok(!child.args.join(" ").includes(FAKE_KEY) && !child.opts.input.includes(FAKE_KEY), "key reached Claude's argv or prompt");
+    assert.match(child.opts.input, /OPENAI_API_KEY are deliberately withheld/);
+    assert.ok(child.opts.input.includes(`this working tree only (${fx.repo})`));
+    // The manager received Claude's result, limitations included, with verification passed and no gate.
+    const second = JSON.parse(api.managerCalls()[1].body.input).manager;
+    assert.deepEqual(second.lastClaudeResult.report.limitations, READ_ONLY_LIMITATIONS);
+    assert.equal(second.verification.passed, true);
+    assert.equal(second.verification.claudeNeedsHuman, false);
+    assert.match(api.managerCalls()[0].body.instructions, /`limitations`\. They are expected, not blockers, and never a reason for `require_human`/);
+    // Claude changed nothing, and nothing was reviewed or committed.
+    assert.equal(gitSync(fx.repo, "status", "--porcelain"), "");
+    assert.equal(gitSync(fx.repo, "rev-parse", "HEAD"), head);
+    assert.equal(api.reviewCalls().length, 0);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("read-only: needs_human set with only expected limitations and no blocker does not stop for a person", async () => {
+  const fx = makeRepo();
+  try {
+    const api = fakeOpenAI([dec(), dec({ decision: "task_complete", task: "" })]);
+    const claude = fakeClaude([async () => claudeResult(report({ needs_human: true, limitations: READ_ONLY_LIMITATIONS }))]);
+    const r = await run(fx, {}, { fetch: api.fetch, runClaude: claude.run });
+    assert.equal(r.stopReason, "once_complete", r.message);
+    const { verification } = JSON.parse(api.managerCalls()[1].body.input).manager;
+    assert.equal(verification.passed, true);
+    assert.equal(verification.claudeNeedsHuman, false);
+    assert.match(verification.notes.join(" "), /without naming a blocker/);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("read-only: a genuine blocker or a blocked status still stops for a person", async () => {
+  for (const rep of [
+    report({ needs_human: true, blockers: ["The task asks for production data; a person must approve access."], limitations: READ_ONLY_LIMITATIONS }),
+    report({ status: "blocked", blockers: [] }),
+  ]) {
+    const fx = makeRepo();
+    try {
+      const api = fakeOpenAI([dec(), dec({ decision: "task_complete", task: "" })]);
+      const r = await run(fx, {}, { fetch: api.fetch, runClaude: fakeClaude([async () => claudeResult(rep)]).run });
+      assert.equal(r.stopReason, "require_human");
+      assert.equal(r.state.verification.claudeNeedsHuman, true);
+      assert.equal(api.remaining(), 1, "the manager is not asked to complete a gated task");
+      if (rep.blockers.length) {
+        assert.match(r.message, /production data/);
+        assert.doesNotMatch(r.message, /OPENAI_API_KEY/);
+      }
+    } finally {
+      fx.cleanup();
+    }
+  }
+});
+
+test("implement: needs_human still stops for a person even without a named blocker", async () => {
+  const fx = makeRepo();
+  try {
+    const api = fakeOpenAI([impl({ branch: "research/n", task: "Add n" }), complete()]);
+    const r = await run(fx, {}, { fetch: api.fetch, runClaude: fakeClaude([writes({ "n.md": "n\n" }, report({ needs_human: true }))]).run });
+    assert.equal(r.stopReason, "require_human");
+    assert.equal(api.reviewCalls().length, 0);
+    assert.equal(gitSync(fx.repo, "log", "-1", "--format=%s"), "init");
+  } finally {
+    fx.cleanup();
   }
 });
 

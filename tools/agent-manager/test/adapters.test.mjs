@@ -228,6 +228,30 @@ test("task prompt binds AGENTS.md/CLAUDE.md, forbids Codex and self-review, fenc
   assert.equal(fix.match(/<<<END FINDINGS>>>/g).length, 1);
 });
 
+test("read-only prompt states the contract: no changes or tests, secrets withheld, this worktree only, limitations are not needs_human", () => {
+  const scope = join("fixture", "manager-worktree");
+  const p = buildClaudePrompt({ taskId: "t", mode: "read_only", task: "Assess safety", branch: "chore/x", scope });
+  assert.match(p, /do not create, modify, or delete any file/);
+  assert.match(p, /Do not run tests, builds, installs/);
+  assert.match(p, /OPENAI_API_KEY are deliberately withheld/);
+  assert.ok(p.includes(`this working tree only (${scope})`));
+  assert.match(p, /Other CarCode checkouts and worktrees[^\n]*out of scope unless the TASK names them/);
+  assert.match(p, /genuine safety or correctness defects[^\n]*findings/);
+  assert.match(p, /in limitations\. These are expected; they are not blockers and never a reason for needs_human/);
+  assert.match(p, /blockers and needs_human=true only for an actual decision/);
+  const impl = buildClaudePrompt({ taskId: "t", mode: "implement", task: "Do", branch: "b", scope });
+  assert.doesNotMatch(impl, /deliberately withheld|Do not run tests/);
+});
+
+test("Claude's report requires a limitations list separate from blockers", () => {
+  assert.ok(REPORT_SCHEMA.required.includes("limitations"));
+  assert.equal(validateReport(report({ limitations: ["Tests not run: read-only task"] })).ok, true);
+  const withoutLimitations = report();
+  delete withoutLimitations.limitations;
+  assert.equal(validateReport(withoutLimitations).ok, false);
+  assert.equal(validateReport(report({ limitations: [1] })).ok, false);
+});
+
 test("Claude's report cannot carry a review verdict", () => {
   assert.equal(REPORT_SCHEMA.properties.codex, undefined);
   assert.equal(validateReport(report()).ok, true);

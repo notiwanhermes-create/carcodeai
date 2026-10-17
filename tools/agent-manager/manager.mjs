@@ -545,6 +545,7 @@ export async function runManager(opts, deps = {}) {
       mode: task.mode,
       task: instruction,
       branch: task.branch,
+      scope: repo,
       harnessChecks: task.checks,
       textChecks,
       context,
@@ -568,6 +569,7 @@ export async function runManager(opts, deps = {}) {
     history({ event: "verification", taskId: task.id, passed: verification.passed, reasons: verification.reasons });
     persist();
     log(`Verification ${verification.passed ? "passed" : `failed: ${verification.reasons.join("; ")}`}`);
+    if (verification.limitations.length) log(`Expected limitations reported by Claude (not blockers): ${redact(verification.limitations.join("; "), env).slice(0, 1_000)}`);
 
     if (verification.headMoved || verification.branchChanged || verification.remoteChanged || verification.gitInternalsChanged) {
       return stop("require_human", `Claude changed Git state during task ${task.id} (${verification.reasons.join("; ")}). The manager will not continue automatically.`);
@@ -685,6 +687,8 @@ export async function runManager(opts, deps = {}) {
       gitInternalsChanged: false,
       protectedPaths: [],
       claudeNeedsHuman: false,
+      limitations: [],
+      notes: [],
       noChanges: false,
     };
     const snap = await snapshot(repo);
@@ -712,9 +716,16 @@ export async function runManager(opts, deps = {}) {
     if (!result.ok) reasons.push(`Claude run not ok: ${result.errors.join("; ")}`);
     const report = result.report;
     if (report?.status && report.status !== "done") reasons.push(`Claude reported ${report.status}`);
-    if (report?.needs_human) reasons.push("Claude reported needs_human");
+    out.limitations = report?.limitations ?? [];
     // An explicit request for a person (or a blocked task) stops the run; it is not a retryable failure.
-    out.claudeNeedsHuman = Boolean(report?.needs_human || report?.status === "blocked");
+    // A read-only task cannot change anything, so there needs_human counts only when Claude names a
+    // blocker. Limits the read-only setup imposes on purpose (no tests, withheld secrets, other
+    // checkouts out of scope) are limitations, not decisions for a person. Implement tasks are unchanged.
+    const namedBlocker = (report?.blockers ?? []).length > 0;
+    const askedForPerson = Boolean(report?.needs_human) && (task.mode !== "read_only" || namedBlocker);
+    if (askedForPerson) reasons.push("Claude reported needs_human");
+    else if (report?.needs_human) out.notes = ["Claude set needs_human on a read-only task without naming a blocker; treated as an expected read-only limitation."];
+    out.claudeNeedsHuman = askedForPerson || report?.status === "blocked";
     const failedTests = (report?.tests ?? []).filter((t) => t.result === "failed").map((t) => t.command);
     if (failedTests.length) reasons.push(`Claude reported failing tests: ${failedTests.join(", ")}`);
 

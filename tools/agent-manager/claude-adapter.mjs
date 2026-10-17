@@ -9,7 +9,10 @@ import { runProcess } from "./repo.mjs";
 import { redact } from "./redact.mjs";
 import { stripSensitiveEnv } from "./safety.mjs";
 
-const REPORT_FIELDS = ["status", "summary", "files_changed", "tests", "blockers", "needs_human"];
+// blockers: genuine problems a person must resolve. limitations: things Claude could not do only
+// because of how the task was set up (read-only, secrets withheld, out-of-scope checkouts); expected,
+// never a reason to stop for a person.
+const REPORT_FIELDS = ["status", "summary", "files_changed", "tests", "blockers", "limitations", "needs_human"];
 
 export const REPORT_SCHEMA = {
   type: "object",
@@ -29,6 +32,7 @@ export const REPORT_SCHEMA = {
       },
     },
     blockers: { type: "array", items: { type: "string" } },
+    limitations: { type: "array", items: { type: "string" } },
     needs_human: { type: "boolean" },
   },
 };
@@ -172,7 +176,7 @@ export function resolveClaudeBinary(env = process.env, exists = existsSync) {
 
 const fence = (text) => String(text ?? "").replace(/<<</g, "‹‹‹").replace(/>>>/g, "›››");
 
-export function buildClaudePrompt({ taskId, mode, task, branch, harnessChecks = [], textChecks = [], context = "", findings = null }) {
+export function buildClaudePrompt({ taskId, mode, task, branch, scope = "", harnessChecks = [], textChecks = [], context = "", findings = null }) {
   const readOnly = mode === "read_only";
   const lines = [
     `<<<CARCODE_MANAGER_TASK id=${taskId} mode=${mode}>>>`,
@@ -185,10 +189,18 @@ export function buildClaudePrompt({ taskId, mode, task, branch, harnessChecks = 
     `   - Work only in this repository, on the current branch (${branch || "detached"}). Do not switch, create, or delete branches.`,
     "   - Do not commit, push, merge, rebase, reset, stash, tag, deploy, or open pull requests. The manager commits after it verifies your work.",
     "   - Do not touch production systems, shared databases, secrets, .env files, or credentials. No migrations against any real database. Do not add dependencies.",
-    "   - If anything needs human approval under AGENTS.md or CLAUDE.md, stop and report needs_human=true instead of doing it.",
+    "   - If anything needs human approval under AGENTS.md or CLAUDE.md, stop and report needs_human=true, with the decision needed in blockers, instead of doing it.",
   ];
   if (readOnly) {
-    lines.push("   - READ-ONLY TASK: do not create, modify, or delete any file, and run only read-only inspection commands.");
+    lines.push(
+      "   - READ-ONLY TASK: do not create, modify, or delete any file, and run only read-only inspection commands.",
+      "   - Do not run tests, builds, installs, formatters, code generators, or any other command that writes files or changes state. Running checks is the manager's job, outside your session.",
+      "   - Secrets such as OPENAI_API_KEY are deliberately withheld from your session. Their absence is correct and expected, not a problem to report.",
+      `   - Your scope is this working tree only${scope ? ` (${fence(scope)})` : ""}. Other CarCode checkouts and worktrees, and Git metadata shared from outside this worktree, are intentionally out of scope unless the TASK names them explicitly; do not look for them.`,
+      "   - Report genuine safety or correctness defects you find as findings in summary, with file and line references.",
+      "   - Put anything you could not do only because of this setup (tests or builds not run in read-only mode, secrets withheld, other checkouts out of scope) in limitations. These are expected; they are not blockers and never a reason for needs_human.",
+      "   - Use blockers and needs_human=true only for an actual decision or approval a person must give before this task can be answered.",
+    );
   } else {
     lines.push(
       "   - Implement the change and run the targeted tests for it. Leave every change uncommitted.",
@@ -197,7 +209,7 @@ export function buildClaudePrompt({ taskId, mode, task, branch, harnessChecks = 
     );
   }
   lines.push(
-    "4. Your final answer is the structured report this session requires (status, summary, files_changed, tests, blockers, needs_human). Be factual: report failures, skipped steps, and anything not verified.",
+    "4. Your final answer is the structured report this session requires (status, summary, files_changed, tests, blockers, limitations, needs_human). Be factual: report failures, skipped steps, and anything not verified. blockers are problems a person must resolve; limitations are things this task's setup did not allow.",
     "",
     "<<<TASK>>>",
     fence(task),
@@ -228,6 +240,7 @@ export function validateReport(r) {
   if (!Array.isArray(r.files_changed) || r.files_changed.some((f) => typeof f !== "string")) errors.push("bad files_changed");
   if (!Array.isArray(r.tests) || r.tests.some((t) => typeof t?.command !== "string" || !["passed", "failed", "not_run"].includes(t?.result))) errors.push("bad tests");
   if (!Array.isArray(r.blockers) || r.blockers.some((b) => typeof b !== "string")) errors.push("bad blockers");
+  if (!Array.isArray(r.limitations) || r.limitations.some((l) => typeof l !== "string")) errors.push("bad limitations");
   if (typeof r.needs_human !== "boolean") errors.push("bad needs_human");
   return errors.length ? { ok: false, errors } : { ok: true, report: r };
 }

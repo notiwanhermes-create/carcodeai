@@ -113,7 +113,9 @@ force pushes, history rewrites, authentication or security policy changes, paid 
 new public APIs, secrets or credentials, publishing, new dependencies, weakening any `AGENTS.md` invariant,
 or anything the manager model is unsure about. For read-only tasks only the action gates apply: a
 read-only task may inspect and report on topics such as security or production, because it cannot change anything.
-It also stops when Claude reports `needs_human` or `blocked`, when it finds uncommitted changes it did not
+It also stops when Claude reports `needs_human` or `blocked` (for a read-only task, `needs_human` counts only when
+Claude names a blocker: deliberate read-only limits such as tests not run, `OPENAI_API_KEY` withheld from Claude,
+or other checkouts being out of scope are reported as `limitations` and do not stop the run), when it finds uncommitted changes it did not
 make, when Git moved under a saved task, when origin's branches or Git hooks/config changed during a Claude
 run, when the reviewed tree changed before commit, and on any malformed or unexpected decision.
 

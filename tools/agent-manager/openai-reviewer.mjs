@@ -88,7 +88,7 @@ function capped(text, max) {
 export async function buildReviewInput(repo, { task, checks = [], previousFindings = [], env = process.env }) {
   const digest = await fingerprint(repo);
   const snap = await snapshot(repo);
-  const { files, diff } = await changeSet(repo, task.startHead);
+  const { files, diff, withheld = [] } = await changeSet(repo, task.startHead);
   if (!files.length) return { ok: false, reason: "there is no change to review", digest };
   if (diff.length > MAX_REVIEW_DIFF_CHARS) {
     return { ok: false, reason: `the change is too large for one independent review (${diff.length} chars > ${MAX_REVIEW_DIFF_CHARS}); split the task`, digest };
@@ -111,6 +111,14 @@ export async function buildReviewInput(repo, { task, checks = [], previousFindin
     },
     changedFiles: files,
     migrationFiles: files.filter((f) => /^prisma\/(migrations\/|schema\.prisma$)/i.test(f.path)).map((f) => f.path),
+    sensitivePathGate: {
+      ran: true,
+      suspiciousFilesFound: withheld,
+      note:
+        withheld.length > 0
+          ? "A fail-closed sensitive-path gate ran. These changed files have credential/secret-like names; their CONTENTS were deliberately withheld from this review. Any such file that was not an allow-listed fixture would have stopped the run before this review, so these are allow-listed placeholders. Judge them by name only."
+          : "A fail-closed sensitive-path gate ran over the complete changed-file set and found no credential/secret-like filenames.",
+    },
     diff,
     harnessVerification: checks.map((c) => ({ check: c.id, status: c.status, output: capped(String(c.output ?? ""), 3_000) })),
     previousReviewFindings: previousFindings,

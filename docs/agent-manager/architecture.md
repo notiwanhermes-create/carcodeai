@@ -39,9 +39,9 @@ One implement task:
 
 1. **Manager** decides `assign_task` (validated, then gated).
 2. **Claude** implements (fixed permissions, prompt on stdin).
-3. **Verification** (harness): HEAD, branch, origin heads, hooks/config unchanged; protected paths untouched; Claude
-   neither failed nor asked for a person; `diff-check`, any requested allowlisted checks, and the default `typecheck` /
-   `unit-tests` / `lint` when the repository can run them.
+3. **Verification** (harness): HEAD, branch, origin heads, hooks/config and verification tooling unchanged; protected
+   paths untouched; no credential-like file in the change; Claude neither failed nor asked for a person; `diff-check`,
+   any requested allowlisted checks, and the default `typecheck` / `unit-tests` / `lint` when the repository can run them.
 4. **Independent review**, cycle n, a fresh request:
    - `clean`: the task is `verified` for this exact tree digest. The manager is asked, and on `task_complete` the
      harness re-checks the digest and commits.
@@ -120,6 +120,7 @@ All runs: `--permission-mode dontAsk`, `--permission-prompts none`, `--strict-mc
 unknown fields are rejected.
 
 The deny list (Bash and PowerShell) covers `git push/merge/rebase/reset/stash/checkout/switch/commit/tag/clean/config`,
+`git -c`, and ref/remote mutation (`git remote/fetch/pull/update-ref/symbolic-ref/update-index/worktree/cherry-pick/revert/am/apply/notes/replace/reflog/gc/prune/fast-import/bundle`),
 `gh`, `vercel`, `prisma migrate/db`, `npm run db:*`, `npm run build` (it runs the migration script),
 `npm install/ci/publish`, `curl`/`Invoke-WebRequest`, `codex`, `scripts/codex-review.ps1`, plus WebFetch and
 WebSearch. It also denies:
@@ -128,7 +129,9 @@ WebSearch. It also denies:
 - `.env*`, `*.pem` and `*.key` files, for Read/Edit/Write and for any shell command naming `.env`;
 - home-directory sign-in stores (`~/.codex`, `~/.claude/.credentials.json`, `~/.ssh`, `~/.aws`, `~/.azure`,
   `~/.config/gh`, `~/.git-credentials`);
-- Edit/Write anywhere under `.git/`.
+- Edit/Write anywhere under `.git/`;
+- Edit/Write to installed dependencies and caches (`node_modules`, `.pnp`, `.yarn`, `.pnpm-store`, `.npm`,
+  `.turbo`, `.cache`), so Claude cannot alter the tooling the harness runs to verify its work.
 
 The file tools are scoped to the repository (`Read(./**)`, `Edit(./**)`, `Write(./**)`).
 
@@ -142,10 +145,15 @@ Live probes in throwaway repositories confirmed these rules:
 - writes to `.git/hooks` were refused, as were reads and writes outside the repo;
 - `git … --output=` was refused.
 
-**This is a guard rail, not a sandbox.** The allowed test runners execute code that Claude can write. Claude is the
-trusted implementer; the rules stop accidents and injected instructions, and the harness checks the outcome
-deterministically. Before and after every Claude run it compares origin's branch heads (to detect a push) and a
-digest of Git hooks, `core.hooksPath`, config and info files. It cannot undo what it detects; it stops for a person.
+**Claude is an untrusted implementer, and nothing Claude can modify is trusted as evidence that its work is
+correct.** The allowed test runners execute code that Claude can write, so the harness establishes an integrity
+baseline at the start of each task — a digest of Git hooks, `core.hooksPath`, config, attributes and info files;
+origin's branch heads; and the verification tooling (the check entrypoints and `node_modules/.bin`) — and re-checks
+it at every stage: after the Claude run, around verification (including after the checks have run), around the
+independent review, and around the commit and push. Any drift stops the run fail-closed; it cannot undo what it
+detects. The manager's own Git operations run with repository hooks disabled (via `core.hooksPath`), so a planted
+hook cannot execute with the manager's credentials, while the on-disk digest still detects that the hook was planted.
+The write-deny on `node_modules` and the caches is the primary boundary for the tooling; the digest is the second line.
 
 Child environment: every variable whose name looks like a database connection or a credential is removed. Matching
 is by pattern, so `DATABASE_URL_UNPOOLED`, `*_CLIENT_SECRET`, `*_TOKEN`, `PG*` and `OPENAI_*` are all caught. Claude's
@@ -165,11 +173,27 @@ Changes to these are verified like any other, but they always stop for a person 
 - `package.json`, `package-lock.json`, `.npmrc`;
 - deploy/security config (`next.config.*`, `proxy.*`, `middleware.*`, `vercel.json`, `prisma.config.*`);
 - database tooling (`scripts/db-*`, `scripts/rollback-check/`) and the database schema (`prisma/schema.prisma`);
+- verification configuration: lint (`eslint.config.*`, `.eslintrc*`, `.eslintignore`), TypeScript (`tsconfig*.json`),
+  and test/build runners (`vitest`/`vite`/`jest`/`playwright`/`cypress`/`webpack`/`rollup`/`babel`/`tsup`/`swc`
+  config, `.mocharc*`, `.babelrc*`, `.swcrc`, `jest.setup.*`), so Claude cannot make a check pass by editing it;
+- `.gitattributes` (it can blind the reviewer's diff) and `.gitconfig`/`.gitmodules`;
+- installed dependencies and caches (`node_modules`, `.pnp`, `.yarn`, `.npm`, `.turbo`, `.cache`);
 - any file under `prisma/migrations/`. Existing migrations must never be rewritten, and nothing deterministic checks
   that a new one is additive;
 - any **new** file under `app/api/`.
 
 A protected-path hit stops the run before the reviewer is called.
+
+## Sensitive-file gate
+
+Independently of path protection, a fail-closed gate runs over the complete changed set (tracked, staged, untracked,
+new, and both sides of a rename). It matches credential/secret-like **filenames** — `.env`/`.env.*`/`.envrc`,
+`*.pem`/`*.key`/`*.p12`/`*.pfx`/`*.keystore`/`*.jks`, `id_rsa`/`id_ed25519`/`id_dsa`/`id_ecdsa`, `.netrc`/`.npmrc`/`.pgpass`/`.htpasswd`,
+and the stems `credentials*`/`secret*`/`token*`/`auth*`/`service-account*`/`private-key*`/`api-key*` on **data** files
+only (recognised code/test/doc extensions such as `.ts` are never matched, so `auth-service.ts` and `tokenizer.ts`
+pass). A non-allow-listed match stops the run before anything is committed; the file's contents are never read,
+committed, or sent to Claude or the reviewer. Documented placeholders (`.env.example`, `*.example`/`*.sample`/`*.template`)
+are allow-listed and may be committed; the reviewer is told the gate ran and which filenames had their contents withheld.
 
 ## Commit and push
 
@@ -178,12 +202,15 @@ At `task_complete` the harness:
 1. re-checks the branch and HEAD;
 2. re-checks that the latest review is `clean` and its digest equals the current tree;
 3. re-checks protected paths;
-4. stages everything (the tree was clean when the task started, so every change belongs to the task);
-5. refuses secret-looking paths or tokens in the staged diff;
-6. runs `git diff --cached --check`;
-7. commits with a fixed-format message naming the task, the review cycle and model, and the checks.
+4. re-runs the sensitive-file gate over the complete changed set and re-checks the integrity baseline;
+5. stages everything (the tree was clean when the task started, so every change belongs to the task);
+6. refuses credential/secret-like paths or tokens in the staged diff;
+7. runs `git diff --cached --check`;
+8. commits with a fixed-format message naming the task, the review cycle and model, and the checks, then
+   re-checks the integrity baseline immediately after the commit.
 
-It never uses `--no-verify`.
+The commit runs with repository hooks disabled via `core.hooksPath` (not `--no-verify`), so a planted hook cannot
+run with the manager's credentials.
 
 **Automatic push is OFF by default.** With `CARCODE_MANAGER_PUSH` unset or `0`, verified commits stay local.
 Only `CARCODE_MANAGER_PUSH=1`, or the launcher's `-AllowPush` for one run, enables pushing; any other value is a

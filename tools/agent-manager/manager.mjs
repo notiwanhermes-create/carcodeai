@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { buildClaudePrompt, runClaudeTask } from "./claude-adapter.mjs";
 import { ConfigError, ManagerApiError, readManagerConfig, requestDecision, requireApiKey, validateDecision } from "./openai-manager.mjs";
 import { runIndependentReview } from "./openai-reviewer.mjs";
-import { containsLikelySecret, isSecretPath, redact, redactDeep } from "./redact.mjs";
+import { containsLikelySecret, redact, redactDeep, sensitiveFileHits } from "./redact.mjs";
 import {
   branchExists,
   buildRepoContext,
@@ -29,6 +29,7 @@ import {
   repoRoot,
   runProcess,
   snapshot,
+  toolingDigest,
 } from "./repo.mjs";
 import { CHECKS, isAutomationBranch, isProtectedBranch, planChecks, protectedPathHits, screenDecision, stripSensitiveEnv } from "./safety.mjs";
 import { createStateStore } from "./state.mjs";
@@ -133,7 +134,10 @@ async function defaultRunCheck(repo, id, env) {
   const spec = CHECKS[id];
   if (!spec) return { id, status: "unavailable", output: "not an allowlisted check" };
   if (!checkAvailable(repo, id)) return { id, status: "unavailable", output: `${spec.needs} is missing` };
-  const r = await runProcess(spec.cmd, spec.args, { cwd: repo, env: stripSensitiveEnv(env), timeoutMs: spec.timeoutMs });
+  // Run node-based checks through the manager's own interpreter (absolute path), never a bare "node"
+  // name that executable resolution could redirect. The scripts are resolved against the repo.
+  const cmd = spec.cmd === "node" ? process.execPath : spec.cmd;
+  const r = await runProcess(cmd, spec.args, { cwd: repo, env: stripSensitiveEnv(env), timeoutMs: spec.timeoutMs });
   return { id, status: r.code === 0 ? "passed" : "failed", output: redact(`${r.stdout}\n${r.stderr}`).slice(-2_000) };
 }
 
@@ -248,6 +252,37 @@ export async function runManager(opts, deps = {}) {
   let tasksCompleted = 0;
   let tasksStarted = 0;
 
+  // Trust boundary: Claude is an untrusted implementer. The Git metadata that can run code or redirect
+  // Git (hooks, config, attributes), the origin refs, and the installed tooling the harness runs to
+  // verify Claude's work must all stay exactly as they were when the task started. We snapshot them
+  // once per task and re-check at every lifecycle stage (after Claude, around verification, around
+  // review, around commit, before push). Any drift stops the run fail-closed.
+  let integrity = null;
+  const captureIntegrity = async () => ({
+    internals: await gitInternalsDigest(repo),
+    remote: await remoteHeads(repo),
+    tooling: await toolingDigest(repo),
+  });
+  const integrityDrift = async () => {
+    if (!integrity) {
+      integrity = await captureIntegrity();
+      return [];
+    }
+    const cur = await captureIntegrity();
+    const problems = [];
+    if (cur.internals !== integrity.internals) problems.push("Git hooks or config changed");
+    if (integrity.remote?.ok && cur.remote?.ok && integrity.remote.digest !== cur.remote.digest) problems.push("origin branches changed");
+    if (cur.tooling !== integrity.tooling) problems.push("verification tooling (installed dependencies) changed");
+    return problems;
+  };
+  const checkpoint = async (label) => {
+    const problems = await integrityDrift();
+    if (problems.length) {
+      return stop("require_human", `Integrity drift ${label}: ${problems.join("; ")}. Stopping fail-closed; nothing was committed or pushed.`);
+    }
+    return null;
+  };
+
   try {
     const goal = opts.goal ?? state.goal ?? DEFAULT_GOAL;
     if (!dryRun) {
@@ -289,6 +324,7 @@ export async function runManager(opts, deps = {}) {
       state.counters.tasksCompleted = (state.counters.tasksCompleted ?? 0) + 1;
       state.activeTask = null;
       state.verification = null;
+      integrity = null;
       tasksCompleted++;
       persist();
       log(`Task ${task.id} complete${task.commit ? ` (commit ${task.commit.slice(0, 7)}${task.pushed === true ? ", pushed" : ""})` : ""}.`);
@@ -310,13 +346,15 @@ export async function runManager(opts, deps = {}) {
       task.phase = "pushing";
       persist();
       // Push exactly the recorded commit, never whatever the branch points at now.
-      const r = await git(repo, ["push", "--porcelain", "origin", `${task.commit}:refs/heads/${task.branch}`], { allowFailure: true, timeoutMs: 300_000 });
+      const r = await git(repo, ["push", "--porcelain", "origin", `${task.commit}:refs/heads/${task.branch}`], { allowFailure: true, timeoutMs: 300_000, noHooks: true });
       if (r.code !== 0) {
         task.phase = "committed";
         persist();
         return false;
       }
       task.pushed = true;
+      // Our own push legitimately moves origin; fold it into the baseline so later checks don't flag it.
+      if (integrity) integrity.remote = await remoteHeads(repo);
       return true;
     };
 
@@ -324,6 +362,8 @@ export async function runManager(opts, deps = {}) {
     if (state.activeTask?.phase === "committed" || state.activeTask?.phase === "pushing") {
       const task = state.activeTask;
       if (dryRun) return stop("dry_run", `Would push ${task.branch} (commit ${task.commit}) and complete task ${task.id}.`);
+      const prePush = await checkpoint(`before pushing task ${task.id}`);
+      if (prePush) return prePush;
       if (!(await pushTask(task))) return stop("push_failed", `Push of ${task.branch} failed; the commit is kept locally. Run again with -Resume.`);
       finishTask(task, "committed");
       if (tasksCompleted >= maxTasks) return stop(mode === "once" ? "once_complete" : "task_limit", "Task limit reached.");
@@ -398,6 +438,8 @@ export async function runManager(opts, deps = {}) {
         if (task.mode === "implement" && !state.verification?.noChanges) {
           const committed = await commitTask(task);
           if (committed.stop) return stop(committed.stop, committed.message);
+          const prePush = await checkpoint(`before pushing task ${task.id}`);
+          if (prePush) return prePush;
           if (!(await pushTask(task))) return stop("push_failed", `Push of ${task.branch} failed; commit ${task.commit} is kept locally. Run again with -Resume.`);
         }
         finishTask(task, d.summary);
@@ -499,7 +541,7 @@ export async function runManager(opts, deps = {}) {
         if (createBranch) {
           current.phase = "creating_branch";
           persist();
-          await git(repo, ["switch", "-c", targetBranch]);
+          await git(repo, ["switch", "-c", targetBranch], { noHooks: true });
           current.createdBranch = true;
           current.phase = "starting";
           persist();
@@ -537,9 +579,9 @@ export async function runManager(opts, deps = {}) {
     task.phase = "claude_running";
     task.claudeStartedAt = now().toISOString();
     persist();
+    // Establish the per-task integrity baseline before the first run (no-op on later fix cycles).
+    if (!integrity) integrity = await captureIntegrity();
     const before = await fingerprint(repo);
-    const remoteBefore = await remoteHeads(repo);
-    const internalsBefore = await gitInternalsDigest(repo);
     const prompt = buildClaudePrompt({
       taskId: task.id,
       mode: task.mode,
@@ -562,7 +604,7 @@ export async function runManager(opts, deps = {}) {
       log(`Claude did not return a result: ${result.errors.join("; ")}`);
     }
 
-    const verification = await verifyTask(task, result, before, remoteBefore, internalsBefore);
+    const verification = await verifyTask(task, result, before);
     state.verification = verification;
     task.phase = verification.passed ? (task.mode === "implement" && !verification.noChanges ? "awaiting_review" : "verified") : "verification_failed";
     if (task.mode === "implement") task.ownedFingerprint = await fingerprint(repo);
@@ -571,11 +613,17 @@ export async function runManager(opts, deps = {}) {
     log(`Verification ${verification.passed ? "passed" : `failed: ${verification.reasons.join("; ")}`}`);
     if (verification.limitations.length) log(`Expected limitations reported by Claude (not blockers): ${redact(verification.limitations.join("; "), env).slice(0, 1_000)}`);
 
-    if (verification.headMoved || verification.branchChanged || verification.remoteChanged || verification.gitInternalsChanged) {
-      return stop("require_human", `Claude changed Git state during task ${task.id} (${verification.reasons.join("; ")}). The manager will not continue automatically.`);
+    if (verification.headMoved || verification.branchChanged || verification.remoteChanged || verification.gitInternalsChanged || verification.toolingChanged) {
+      return stop("require_human", `Claude changed Git or verification-tooling state during task ${task.id} (${verification.reasons.join("; ")}). The manager will not continue automatically.`);
     }
     if (task.mode === "read_only" && !verification.treeUnchanged) {
       return stop("require_human", `Read-only task ${task.id} changed the working tree. Inspect the changes; nothing was committed.`);
+    }
+    if (verification.sensitiveFiles?.length) {
+      return stop(
+        "require_human",
+        `Task ${task.id} changed credential/secret-like files that must not be committed automatically (${verification.sensitiveFiles.join(", ")}). Their contents were not read or sent to any model. A person must handle these.`,
+      );
     }
     if (verification.protectedPaths?.length) {
       return stop(
@@ -607,6 +655,8 @@ export async function runManager(opts, deps = {}) {
       }
       task.phase = "reviewing";
       persist();
+      const preReview = await checkpoint(`before the independent review of task ${task.id}`);
+      if (preReview) return preReview;
       log(`Independent review, cycle ${cycle}/${MAX_REVIEW_CYCLES}, with ${config.reviewModel} (fresh request)...`);
       reviewRuns++;
       const r = await runIndependentReview({
@@ -652,6 +702,8 @@ export async function runManager(opts, deps = {}) {
       history({ event: "review", taskId: task.id, cycle, verdict: r.status, findings: record.findings.length, model: r.model });
       log(`Independent review cycle ${cycle}: ${r.status}${record.findings.length ? ` (${record.findings.length} finding(s))` : ""}.`);
       if (r.status === "clean") {
+        const postReview = await checkpoint(`after the independent review of task ${task.id}`);
+        if (postReview) return postReview;
         task.phase = "verified";
         task.reviewedDigest = r.digest;
         task.pendingFixes = [];
@@ -674,7 +726,26 @@ export async function runManager(opts, deps = {}) {
     }
   }
 
-  async function verifyTask(task, result, before, remoteBefore, internalsBefore) {
+  // Compare the live Git/tooling integrity to the task baseline; push a reason and set the matching
+  // flag for each kind of drift. `when` names the window for the failure message.
+  async function integrityReasons(reasons, out, when) {
+    if (!integrity) return;
+    const cur = await captureIntegrity();
+    if (cur.internals !== integrity.internals) {
+      out.gitInternalsChanged = true;
+      reasons.push(`Git hooks or config changed ${when}`);
+    }
+    if (integrity.remote?.ok && cur.remote?.ok && integrity.remote.digest !== cur.remote.digest) {
+      out.remoteChanged = true;
+      reasons.push(`branches on origin changed ${when}`);
+    }
+    if (cur.tooling !== integrity.tooling) {
+      out.toolingChanged = true;
+      reasons.push(`verification tooling (installed dependencies) changed ${when}`);
+    }
+  }
+
+  async function verifyTask(task, result, before) {
     const reasons = [];
     const out = {
       passed: false,
@@ -685,24 +756,19 @@ export async function runManager(opts, deps = {}) {
       branchChanged: false,
       remoteChanged: false,
       gitInternalsChanged: false,
+      toolingChanged: false,
       protectedPaths: [],
+      sensitiveFiles: [],
+      allowlistedSensitive: [],
       claudeNeedsHuman: false,
       limitations: [],
       notes: [],
       noChanges: false,
     };
     const snap = await snapshot(repo);
-    // Allowed test runners can execute code, so a push is detected rather than assumed impossible.
-    const remoteAfter = await remoteHeads(repo);
-    if (remoteBefore?.ok && remoteAfter.ok && remoteBefore.digest !== remoteAfter.digest) {
-      out.remoteChanged = true;
-      reasons.push("branches on origin changed during the Claude run");
-    }
-    // Hooks/config run code at commit time and are outside the tree fingerprint.
-    if (internalsBefore && internalsBefore !== (await gitInternalsDigest(repo))) {
-      out.gitInternalsChanged = true;
-      reasons.push("Git hooks or config changed during the Claude run");
-    }
+    // Allowed test runners can execute code, so a push, a planted hook/config change, or a tampered
+    // dependency during the Claude run is detected against the task baseline rather than assumed impossible.
+    await integrityReasons(reasons, out, "during the Claude run");
     if (snap.branch !== task.branch) {
       out.branchChanged = true;
       reasons.push(`branch is now ${snap.branch || "(detached)"}`);
@@ -736,8 +802,16 @@ export async function runManager(opts, deps = {}) {
     }
 
     out.noChanges = snap.clean && !out.headMoved;
-    out.protectedPaths = protectedPathHits(await changedPaths(repo));
+    const changed = await changedPaths(repo);
+    out.protectedPaths = protectedPathHits(changed);
     if (out.protectedPaths.length) reasons.push(`protected paths changed: ${out.protectedPaths.map((h) => h.path).join(", ")}`);
+    // Fail-closed sensitive-file gate over the COMPLETE changed set (tracked, staged, untracked,
+    // new, both sides of a rename). Non-allow-listed credential/secret-like files stop the run; their
+    // contents are never read or sent anywhere. Allow-listed fixtures are recorded for the reviewer.
+    const sens = sensitiveFileHits(changed);
+    out.sensitiveFiles = sens.flagged;
+    out.allowlistedSensitive = sens.allowlisted;
+    if (sens.flagged.length) reasons.push(`credential/secret-like files must not be committed automatically: ${sens.flagged.join(", ")}`);
 
     if (reasons.length === 0 && !out.noChanges) {
       const required = task.checks ?? ["diff-check"];
@@ -753,6 +827,9 @@ export async function runManager(opts, deps = {}) {
         out.checks.push({ ...c, required: false });
         if (c.status === "failed") reasons.push(`check ${id} failed`);
       }
+      // The checks run code (test runners); a hook/config/push/tooling change WHILE they ran must
+      // also stop us. This closes the window that a single before-the-checks snapshot would miss.
+      await integrityReasons(reasons, out, "while verification checks ran");
     }
     out.passed = reasons.length === 0;
     return out;
@@ -772,8 +849,15 @@ export async function runManager(opts, deps = {}) {
       persist();
       return { stop: "require_human", message: `Refusing to commit task ${task.id}: the change differs from what the independent reviewer approved, so that clean verdict is invalid.` };
     }
-    const guarded = protectedPathHits(await changedPaths(repo));
+    const changed = await changedPaths(repo);
+    const guarded = protectedPathHits(changed);
     if (guarded.length) return { stop: "require_human", message: `Refusing to commit protected paths: ${guarded.map((h) => h.path).join(", ")}.` };
+    // Fail-closed sensitive-file gate over the complete changed set, immediately before commit.
+    const sens = sensitiveFileHits(changed);
+    if (sens.flagged.length) return { stop: "require_human", message: `Refusing to commit credential/secret-like files: ${sens.flagged.join(", ")}. Their contents were not read.` };
+    // Git/tooling integrity must be exactly the task baseline right before we commit.
+    const preDrift = await integrityDrift();
+    if (preDrift.length) return { stop: "require_human", message: `Refusing to commit task ${task.id}: integrity drift before commit: ${preDrift.join("; ")}.` };
 
     task.phase = "committing";
     persist();
@@ -785,16 +869,20 @@ export async function runManager(opts, deps = {}) {
     };
     await git(repo, ["add", "-A"]);
     const names = (await git(repo, ["diff", "--cached", "--name-only", "-z"])).stdout.split("\0").filter(Boolean);
-    const secretFiles = names.filter(isSecretPath);
-    if (secretFiles.length) return unstage(`Refusing to commit secret-looking files: ${secretFiles.join(", ")}.`);
+    const stagedSensitive = sensitiveFileHits(names.map((path) => ({ status: "A", path }))).flagged;
+    if (stagedSensitive.length) return unstage(`Refusing to commit credential/secret-like files: ${stagedSensitive.join(", ")}.`);
     const staged = (await git(repo, ["diff", "--cached", "--no-color", "--no-ext-diff"], { timeoutMs: 300_000 })).stdout;
     if (containsLikelySecret(staged, env)) return unstage("Refusing to commit: the staged diff contains something that looks like a credential.");
     const check = await git(repo, ["diff", "--cached", "--check"], { allowFailure: true });
     if (check.code !== 0) return unstage("Refusing to commit: git diff --check failed on the staged changes.");
 
-    const commit = await git(repo, ["commit", "-q", "-F", "-"], { input: commitMessage(task, review, state.verification?.checks ?? []), allowFailure: true, timeoutMs: 600_000 });
+    // Commit runs with hooks disabled (gitEnv), so a planted hook cannot run with the manager's credentials.
+    const commit = await git(repo, ["commit", "-q", "-F", "-"], { input: commitMessage(task, review, state.verification?.checks ?? []), allowFailure: true, timeoutMs: 600_000, noHooks: true });
     if (commit.code !== 0) return unstage(`git commit failed (exit ${commit.code}); changes were unstaged and kept: ${redact(commit.stderr).slice(0, 300)}`);
     task.commit = (await git(repo, ["rev-parse", "HEAD"])).stdout.trim();
+    // Hooks/config, origin refs and tooling must be unchanged immediately after the commit.
+    const postDrift = await integrityDrift();
+    if (postDrift.length) return { stop: "require_human", message: `Integrity drift immediately after committing task ${task.id}: ${postDrift.join("; ")}. Inspect before any push.` };
     task.phase = "committed";
     persist();
     log(`Committed ${task.commit.slice(0, 7)} on ${task.branch}.`);

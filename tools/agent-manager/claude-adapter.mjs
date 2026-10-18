@@ -65,6 +65,26 @@ const DENY = [
   "git clean",
   "git filter-branch",
   "git config",
+  "git -c",
+  // Remote and ref mutation: Claude must never push, fetch, or move refs. Only the manager pushes.
+  "git remote",
+  "git fetch",
+  "git pull",
+  "git update-ref",
+  "git symbolic-ref",
+  "git update-index",
+  "git worktree",
+  "git cherry-pick",
+  "git revert",
+  "git am",
+  "git apply",
+  "git notes",
+  "git replace",
+  "git reflog",
+  "git gc",
+  "git prune",
+  "git fast-import",
+  "git bundle",
   "gh",
   "vercel",
   "npx vercel",
@@ -99,6 +119,20 @@ const DENY_HOME = [
 ];
 // Git internals: hooks and config run code at commit time, outside the tree fingerprint.
 const DENY_GIT_INTERNALS = ["Edit(./.git/**)", "Write(./.git/**)", "Edit(**/.git/**)", "Write(**/.git/**)"];
+// Installed dependencies and package-manager caches that the harness trusts when it runs
+// verification (tsc, vitest, eslint, their transitive imports). These are gitignored, so a write
+// here is invisible to the Git diff/review and the tree fingerprint. Denying the file tools is the
+// primary, enforced boundary; the harness also compares a tooling-integrity digest before and after.
+const DENY_TOOLING = [
+  "node_modules/**",
+  ".pnp",
+  ".pnp.*",
+  ".yarn/**",
+  ".pnpm-store/**",
+  ".npm/**",
+  ".turbo/**",
+  ".cache/**",
+].flatMap((p) => [`Edit(./${p})`, `Write(./${p})`, `Edit(**/${p})`, `Write(**/${p})`]);
 
 /** CLI arguments for a task mode. Fixed by the harness; the model cannot change them. */
 export function buildClaudeArgs(mode) {
@@ -118,6 +152,7 @@ export function buildClaudeArgs(mode) {
     ...DENY_SECRETS,
     ...DENY_HOME,
     ...DENY_GIT_INTERNALS,
+    ...DENY_TOOLING,
     ...DENY_CODEX,
   ];
   return [
@@ -204,6 +239,7 @@ export function buildClaudePrompt({ taskId, mode, task, branch, scope = "", harn
   } else {
     lines.push(
       "   - Implement the change and run the targeted tests for it. Leave every change uncommitted.",
+      "   - Do not modify installed dependencies or their caches (node_modules, .pnp, .yarn, .npm, .turbo, .cache) or anything under .git. The harness enforces this and independently verifies the tooling and Git state were untouched; a task needing a dependency change is a person's decision. If you need a package that is missing, stop and report it in blockers.",
       "   - Do NOT run Codex or scripts/codex-review.ps1. Under the manager, an independent OpenAI reviewer examines the actual diff after you finish (this replaces CLAUDE.md's Codex step). You cannot mark your own work as reviewed; do not claim it was reviewed.",
       `   - After you finish, the harness independently runs: ${[...new Set([...harnessChecks, "diff-check"])].join(", ")} (plus typecheck, unit tests and lint when available).`,
     );

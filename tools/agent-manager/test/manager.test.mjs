@@ -471,7 +471,7 @@ test("a read-only task that changes files, or Claude committing, stops for a hum
     ]);
     const r2 = await run(fx2, {}, { fetch: fakeOpenAI([impl({ branch: "research/c", task: "Add c" })]).fetch, runClaude: committer.run });
     assert.equal(r2.stopReason, "require_human");
-    assert.match(r2.message, /changed Git state/);
+    assert.match(r2.message, /changed Git( or verification-tooling)? state/);
   } finally {
     fx2.cleanup();
   }
@@ -659,6 +659,92 @@ test("a push to origin during a Claude run is detected", async () => {
     const r = await run(fx, {}, { fetch: fakeOpenAI([dec()]).fetch, runClaude: claude.run });
     assert.equal(r.stopReason, "require_human");
     assert.match(r.message, /origin changed/);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+// --- trust boundary: HIGH 1/2/3 regressions --------------------------------------
+
+test("HIGH 3: a credential-like file Claude creates stops the run, never reaching review or commit", async () => {
+  const fx = makeRepo();
+  try {
+    const api = fakeOpenAI([impl({ branch: "research/s", summary: "Add config loader", task: "Add a configuration loader module." }), complete()], [rev("clean")]);
+    const claude = fakeClaude([writes({ "config/credentials.json": '{"value":"abc"}\n', "notes.md": "ok\n" })]);
+    const r = await run(fx, {}, { fetch: api.fetch, runClaude: claude.run });
+    assert.equal(r.stopReason, "require_human");
+    assert.match(r.message, /credential\/secret-like files/);
+    assert.ok(r.message.includes("config/credentials.json"));
+    assert.equal(api.reviewCalls().length, 0, "the sensitive change is never sent for review");
+    assert.equal(gitSync(fx.repo, "log", "-1", "--format=%s"), "init", "nothing was committed");
+    assert.equal(api.remaining(), 1, "the manager was not asked to complete a gated task");
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("HIGH 3: an allow-listed .env.example is tolerated; the reviewer is told its contents were withheld", async () => {
+  const fx = makeRepo();
+  try {
+    const api = fakeOpenAI([impl({ branch: "research/e", summary: "Document example config", task: "Add an example configuration placeholder file." }), complete()], [rev("clean")]);
+    const claude = fakeClaude([writes({ ".env.example": "OPENAI_API_KEY=\nDATABASE_URL=\n", "docs/env-note.md": "see example\n" })]);
+    const r = await run(fx, {}, { fetch: api.fetch, runClaude: claude.run });
+    assert.equal(r.stopReason, "once_complete", r.message);
+    assert.equal(api.reviewCalls().length, 1);
+    const gate = JSON.parse(api.reviewCalls()[0].body.input).sensitivePathGate;
+    assert.equal(gate.ran, true);
+    assert.deepEqual(gate.suspiciousFilesFound, [".env.example"]);
+    // The example file's contents are not in the reviewer's diff.
+    assert.ok(!api.reviewCalls()[0].body.input.includes("OPENAI_API_KEY="));
+    assert.match(gitSync(fx.repo, "log", "-1", "--format=%s"), /Document example config/);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("HIGH 2: a hook or config change WHILE the harness checks run is caught (not just before)", async () => {
+  const fx = makeRepo();
+  try {
+    const api = fakeOpenAI([impl({ branch: "research/h", task: "Add h" }), complete()], [rev("clean")]);
+    const claude = fakeClaude([writes({ "h.md": "h\n" })]);
+    // A check that plants a hook mid-verification; the post-check integrity re-check must catch it.
+    let planted = false;
+    const runCheck = async (repo, id) => {
+      if (!planted) {
+        writeFileSync(join(repo, ".git", "hooks", "pre-commit"), "#!/bin/sh\necho owned\n");
+        planted = true;
+      }
+      return { id, status: "passed", output: "" };
+    };
+    const r = await run(fx, {}, { fetch: api.fetch, runClaude: claude.run, runCheck });
+    assert.equal(r.stopReason, "require_human");
+    assert.match(r.message, /hooks or config changed while verification checks ran|changed Git/);
+    assert.equal(api.reviewCalls().length, 0, "a tampered verification never reaches review");
+    assert.equal(gitSync(fx.repo, "log", "-1", "--format=%s"), "init");
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test("HIGH 1: tampering with the verification tooling during a run stops the task", async () => {
+  const fx = makeRepo();
+  try {
+    const api = fakeOpenAI([impl({ branch: "research/t", task: "Add t" }), complete()], [rev("clean")]);
+    // The fake implementer also drops a fake binary into node_modules/.bin (gitignored, invisible to
+    // the diff). The tooling-integrity digest must notice and stop the run.
+    const claude = fakeClaude([
+      async ({ repo }) => {
+        mkdirSync(join(repo, "node_modules", ".bin"), { recursive: true });
+        writeFileSync(join(repo, "node_modules", ".bin", "tsc"), "#!/bin/sh\nexit 0\n");
+        writeFileSync(join(repo, "t.md"), "t\n");
+        return claudeResult();
+      },
+    ]);
+    const r = await run(fx, {}, { fetch: api.fetch, runClaude: claude.run });
+    assert.equal(r.stopReason, "require_human");
+    assert.match(r.message, /verification-tooling|verification tooling/);
+    assert.equal(api.reviewCalls().length, 0);
+    assert.equal(gitSync(fx.repo, "log", "-1", "--format=%s"), "init");
   } finally {
     fx.cleanup();
   }

@@ -89,3 +89,68 @@ const SECRET_PATH = /(^|[\\/])(\.env(\..*)?|[^\\/]*\.(pem|key|p12|pfx)|id_rsa[^\
 export function isSecretPath(path) {
   return SECRET_PATH.test(path) && !/(^|[\\/])\.env\.example$/i.test(path);
 }
+
+// --- sensitive-file gate (fail-closed, filename only) -----------------------
+// Decides whether a CHANGED FILE looks like a credential/secret file, so its
+// contents are never sent to a model and it is never committed automatically.
+// Two tiers keep ordinary source code (auth-service.ts, tokenizer.ts) out of it:
+//   STRONG  - credential-shaped filenames whatever the extension (.env, *.pem, id_rsa...).
+//   STEM    - credential-ish name stems that count ONLY for data/config files,
+//             never for recognised code/test extensions.
+
+const SENSITIVE_STRONG =
+  /(^|[\\/])(\.env(rc|\.[^\\/]+)?|[^\\/]*\.(pem|key|p12|pfx|pkcs12|keystore|jks|ppk|asc|gpg)|id_(rsa|dsa|ecdsa|ed25519)[^\\/]*|\.netrc|\.npmrc|\.pgpass|\.htpasswd|\.dockercfg)$/i;
+const SENSITIVE_STEM = /^(credentials?|secrets?|service[-_]?account|private[-_]?key|access[-_]?key|api[-_]?keys?|auth|authentication|token|tokens|oauth|session[-_]?secret)([._-].*)?$/i;
+// Extensions that mark a file as code/test/docs, so a generic stem does NOT flag it.
+const CODE_EXT = new Set([
+  "ts", "tsx", "js", "jsx", "mjs", "cjs", "go", "py", "rb", "java", "kt", "kts", "c", "h", "cc", "cpp", "hpp",
+  "cs", "rs", "php", "swift", "scala", "sql", "graphql", "gql", "css", "scss", "sass", "less", "html", "htm",
+  "vue", "svelte", "md", "mdx", "sh", "bash", "zsh", "ps1", "psm1", "lock", "map", "snap",
+]);
+// Extensions that mark a file as a documented placeholder, so it is allow-listed.
+const PLACEHOLDER_EXT = /\.(example|sample|template|dist|defaults?)$/i;
+
+function basename(path) {
+  return String(path).replace(/\\/g, "/").split("/").pop() ?? "";
+}
+
+/** True when a changed file is a documented, non-secret placeholder (safe to commit/review by name). */
+export function isAllowlistedFixture(path, extraAllow = []) {
+  const p = String(path).replace(/\\/g, "/");
+  const base = basename(p);
+  if (/^\.env\.example$/i.test(base) || PLACEHOLDER_EXT.test(base)) return true;
+  return extraAllow.some((a) => p === String(a).replace(/\\/g, "/"));
+}
+
+// True when a changed file's NAME is credential/secret-shaped. This is shape only; whether such a
+// file stops the run (flagged) or is tolerated (allow-listed placeholder) is decided separately, so
+// that a placeholder is still recognised as sensitive and its contents withheld from the reviewer.
+export function isSensitiveFilePath(path) {
+  const p = String(path).replace(/\\/g, "/");
+  const base = basename(p);
+  if (SENSITIVE_STRONG.test(p)) return true;
+  const dot = base.lastIndexOf(".");
+  const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+  const stem = dot > 0 ? base.slice(0, dot) : base;
+  if (CODE_EXT.has(ext)) return false;
+  return SENSITIVE_STEM.test(stem) || SENSITIVE_STEM.test(base);
+}
+
+/**
+ * Fail-closed sensitive-file gate over a COMPLETE changed-file set
+ * ([{status, path}], renames reported on both sides). Returns
+ * { flagged, allowlisted }: filenames only, contents never read.
+ */
+export function sensitiveFileHits(changes = [], { allow = [] } = {}) {
+  const flagged = [];
+  const allowlisted = [];
+  const seen = new Set();
+  for (const { path } of changes) {
+    const p = String(path).replace(/\\/g, "/");
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    if (!isSensitiveFilePath(p)) continue;
+    (isAllowlistedFixture(p, allow) ? allowlisted : flagged).push(p);
+  }
+  return { flagged, allowlisted };
+}

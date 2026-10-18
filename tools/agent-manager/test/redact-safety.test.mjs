@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { containsLikelySecret, isSecretPath, redact } from "../redact.mjs";
+import { containsLikelySecret, isAllowlistedFixture, isSecretPath, isSensitiveFilePath, redact, sensitiveFileHits } from "../redact.mjs";
 import { buildClaudeArgs } from "../claude-adapter.mjs";
 import { isAutomationBranch, isProtectedBranch, planChecks, protectedPathHits, screenDecision, screenText, stripSensitiveEnv } from "../safety.mjs";
 import { dec, FAKE_GH, fakeDbUrl, tok } from "./helpers.mjs";
@@ -44,6 +44,41 @@ test("commit secret scan ignores ordinary auth code but catches tokens", () => {
 test("secret paths", () => {
   for (const p of [".env", ".env.local", "config/.env.production", "certs/server.pem", "id_rsa", ".npmrc"]) assert.ok(isSecretPath(p), p);
   for (const p of [".env.example", "app/lib/env.ts", "docs/secrets-handling.md"]) assert.ok(!isSecretPath(p), p);
+});
+
+test("sensitive-file gate flags credential files by name but not ordinary source", () => {
+  // Credential/secret-shaped files, whatever the extension, are flagged.
+  for (const p of [
+    ".env", ".env.local", "config/.env.production", ".envrc", "certs/server.pem", "deploy/app.key",
+    "id_rsa", "id_ed25519.pub", "secrets.json", "app/secrets.yaml", "credentials.json", "service-account.json",
+    "private-key.txt", "token.txt", "auth.json", "store.keystore", ".pgpass", ".netrc",
+  ]) {
+    assert.ok(isSensitiveFilePath(p), `expected sensitive: ${p}`);
+  }
+  // Ordinary source/test/doc files must NOT be flagged even when a generic word appears.
+  for (const p of [
+    "app/lib/auth-service.ts", "app/lib/tokenizer.ts", "app/lib/credentialsStore.ts", "app/api/secrets/route.ts",
+    "lib/authentication.tsx", "test/token.spec.ts", "docs/secrets-handling.md", "app/lib/env.ts", "package.json",
+  ]) {
+    assert.ok(!isSensitiveFilePath(p), `expected NOT sensitive: ${p}`);
+  }
+  // Documented placeholders are allow-listed.
+  for (const p of [".env.example", ".env.sample", "config.template", "credentials.json.example"]) {
+    assert.ok(isAllowlistedFixture(p), `expected allow-listed: ${p}`);
+  }
+});
+
+test("sensitive-file gate partitions a complete changed set and never lets a non-fixture through", () => {
+  const changes = [
+    { status: "A", path: ".env" }, // untracked new
+    { status: "R", path: "config/credentials.json" }, // renamed into place
+    { status: "??", path: "keys/id_rsa" },
+    { status: "A", path: ".env.example" }, // allow-listed fixture
+    { status: "M", path: "app/lib/auth-service.ts" }, // ordinary source
+  ];
+  const { flagged, allowlisted } = sensitiveFileHits(changes);
+  assert.deepEqual(flagged.sort(), [".env", "config/credentials.json", "keys/id_rsa"].sort());
+  assert.deepEqual(allowlisted, [".env.example"]);
 });
 
 test("approval gates block merge, deploy, production and other gated actions", () => {
@@ -118,6 +153,28 @@ test("protected paths: rules, review machinery, dependencies, migrations, new AP
     "app/lib/diagnostic-workflow/CLAUDE.md",
     "app/.claude/settings.json",
     "prisma/schema.prisma",
+  ]);
+});
+
+test("protected paths now include verification config, git metadata and installed tooling", () => {
+  const hits = protectedPathHits([
+    { status: " M", path: "tsconfig.json" },
+    { status: " M", path: "eslint.config.mjs" },
+    { status: " M", path: "vitest.config.ts" },
+    { status: "??", path: "jest.setup.ts" },
+    { status: " M", path: ".gitattributes" },
+    { status: " M", path: ".gitconfig" },
+    { status: "??", path: "node_modules/typescript/bin/tsc" },
+    { status: " M", path: "app/lib/engine.ts" },
+  ]).map((h) => h.path);
+  assert.deepEqual(hits, [
+    "tsconfig.json",
+    "eslint.config.mjs",
+    "vitest.config.ts",
+    "jest.setup.ts",
+    ".gitattributes",
+    ".gitconfig",
+    "node_modules/typescript/bin/tsc",
   ]);
 });
 

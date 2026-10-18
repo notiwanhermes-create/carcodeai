@@ -104,8 +104,25 @@ branch (never forced, never `main` or a protected branch).
 
 **Never committed automatically**, even when the review is clean: changes to the agent rules, the
 review/manager machinery, dependencies, deploy/security configuration, database tooling, migrations
-(new or existing), or new `app/api/` routes. The run stops so a person can review and commit them.
+(new or existing), new `app/api/` routes, test/build/lint runner configuration, or `.gitattributes`
+and Git configuration. The run stops so a person can review and commit them.
 See [architecture.md](architecture.md#protected-paths).
+
+**Credential-like files never bypass review.** A fail-closed sensitive-file gate runs over the complete
+changed set — tracked, staged, untracked, new, and both sides of a rename — matching names such as
+`.env`/`.env.*`, `*.pem`/`*.key`, `id_rsa`/`id_ed25519`, and `credentials*`/`secret*`/`token*`/`service-account*`
+on data files (ordinary source like `auth-service.ts` is not matched). A non-allow-listed match stops the run;
+its contents are never read, committed, or sent to Claude or the reviewer. Allow-listed placeholders
+(`.env.example`, `*.example`/`*.sample`/`*.template`) may be committed, and the reviewer is told the gate ran
+and which names were withheld.
+
+**Claude cannot tamper with what verifies it.** Claude's file tools are denied writes to installed
+dependencies and caches (`node_modules`, `.pnp`, `.yarn`, `.npm`, `.turbo`, `.cache`) and to anything under
+`.git`, and its shell cannot push, fetch, move refs, or change Git hooks/config. The manager also records an
+integrity digest of the Git metadata (hooks, config, attributes), the origin refs, and the verification
+tooling at the start of each task and re-checks it after Claude runs, around verification, around the review,
+and around the commit and push; any drift stops the run fail-closed. The manager's own Git operations run with
+repository hooks disabled, so a planted hook cannot execute with its credentials.
 
 **Always stops for you** before: merges or pull requests, deploys, production systems or data,
 migrations against a real database, shared or destructive database operations, deleting user data,
@@ -116,8 +133,9 @@ read-only task may inspect and report on topics such as security or production, 
 It also stops when Claude reports `needs_human` or `blocked` (for a read-only task, `needs_human` counts only when
 Claude names a blocker: deliberate read-only limits such as tests not run, `OPENAI_API_KEY` withheld from Claude,
 or other checkouts being out of scope are reported as `limitations` and do not stop the run), when it finds uncommitted changes it did not
-make, when Git moved under a saved task, when origin's branches or Git hooks/config changed during a Claude
-run, when the reviewed tree changed before commit, and on any malformed or unexpected decision.
+make, when Git moved under a saved task, when origin's branches, Git hooks/config, or the verification
+tooling changed at any point in the task, when a credential-like file would otherwise be committed, when the
+reviewed tree changed before commit, and on any malformed or unexpected decision.
 
 Never: push to `main` or any protected branch, merge, deploy, force-push, or run text produced by a model.
 

@@ -102,6 +102,17 @@ const PROTECTED_PATHS = [
   { re: /^(vercel\.json|next\.config\.[cm]?[jt]s|proxy\.[jt]s|middleware\.[jt]s|prisma\.config\.[jt]s)$/i, label: "deploy/security configuration" },
   { re: /^scripts\/(db-|rollback-check)/i, label: "database tooling" },
   { re: /^prisma\/schema\.prisma$/i, label: "database schema" },
+  // Verification configuration: Claude could otherwise make the harness's own typecheck/tests/lint
+  // pass trivially by editing the config they run under, so a person reviews and commits these.
+  { re: /(^|\/)(eslint\.config\.[cm]?[jt]s|\.eslintrc(\.[a-z]+)?|\.eslintignore)$/i, label: "lint configuration" },
+  { re: /(^|\/)tsconfig(\.[a-z0-9.-]+)?\.json$/i, label: "typescript configuration" },
+  { re: /(^|\/)(vitest|vite|jest|playwright|cypress|karma|ava|mocha|webpack|rollup|babel|tsup|swc)\.config\.[cm]?[jt]s$/i, label: "test/build runner configuration" },
+  { re: /(^|\/)(\.mocharc(\.[a-z]+)?|\.babelrc(\.[a-z]+)?|\.swcrc|jest\.setup\.[cm]?[jt]s)$/i, label: "test/build runner configuration" },
+  // Git metadata that can redirect Git or blind the reviewer's diff (e.g. a `-diff`/binary attribute).
+  { re: /(^|\/)\.gitattributes$/i, label: "git attributes (affect diff/review)" },
+  { re: /(^|\/)(\.gitconfig|\.gitmodules)$/i, label: "git configuration" },
+  // Installed dependencies and package-manager caches the harness trusts when it runs verification.
+  { re: /(^|\/)(node_modules|\.pnp|\.yarn|\.pnpm-store|\.npm|\.turbo|\.cache)(\/|$)/i, label: "installed dependencies / verification tooling" },
 ];
 
 /** Protected-path hits for [{status, path}] from `git status --porcelain`. */

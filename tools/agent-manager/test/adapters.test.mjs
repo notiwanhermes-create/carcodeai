@@ -192,6 +192,27 @@ test("implement runs may edit inside the repo, but never commit, deploy, or run 
   for (const rule of ["Write(./.git/**)", "Edit(./.git/**)", "Read(~/.codex/**)", "Read(~/.ssh/**)", "Bash(*.codex/*)"]) assert.ok(deny.includes(rule), rule);
 });
 
+test("implement runs cannot mutate remotes/refs or tamper with trusted verification tooling", () => {
+  const deny = (() => {
+    const args = buildClaudeArgs("implement");
+    return args.slice(args.indexOf("--disallowedTools") + 1, args.indexOf("--json-schema"));
+  })();
+  // HIGH 2: no push, fetch, remote or ref mutation, no config override.
+  for (const rule of [
+    "Bash(git push*)", "Bash(git remote*)", "Bash(git fetch*)", "Bash(git pull*)", "Bash(git update-ref*)",
+    "Bash(git worktree*)", "Bash(git apply*)", "Bash(git -c*)", "PowerShell(git remote*)",
+  ]) {
+    assert.ok(deny.includes(rule), rule);
+  }
+  // HIGH 1: the file tools cannot write installed dependencies or their caches (the verification tooling).
+  for (const rule of [
+    "Edit(./node_modules/**)", "Write(./node_modules/**)", "Edit(**/node_modules/**)", "Write(**/node_modules/**)",
+    "Write(./.yarn/**)", "Write(./.npm/**)", "Edit(./.pnp)", "Write(./.turbo/**)", "Edit(./.cache/**)",
+  ]) {
+    assert.ok(deny.includes(rule), rule);
+  }
+});
+
 test("Claude child env drops host-session plumbing and secrets", () => {
   const nested = claudeEnv({ PATH: "p", CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "s", CLAUDE_CODE_SIMPLE: "1", ANTHROPIC_BASE_URL: "http://127.0.0.1:1", OPENAI_API_KEY: "k", DATABASE_URL: "d" }, { CARCODE_MANAGER_TASK_ID: "t" });
   assert.deepEqual(Object.keys(nested).sort(), ["CARCODE_MANAGER_TASK_ID", "PATH"]);

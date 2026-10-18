@@ -3,12 +3,23 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { isSecretPath } from "./redact.mjs";
+import { isSecretPath, isSensitiveFilePath } from "./redact.mjs";
+import { CHECKS } from "./safety.mjs";
 
 const MAX_CAPTURE = 64 * 1024 * 1024;
+
+// An empty directory used as core.hooksPath for the manager's OWN git operations, so a hook
+// planted in the repository can never run with the manager's credentials. Detection of a planted
+// hook is separate (gitInternalsDigest reads the real on-disk hooks); this only stops execution.
+const NO_HOOKS_DIR = join(tmpdir(), "carcode-manager-no-hooks");
+try {
+  mkdirSync(NO_HOOKS_DIR, { recursive: true });
+} catch {
+  /* best effort; git simply finds no hooks */
+}
 
 function killTree(child) {
   if (!child.pid) return;
@@ -71,9 +82,16 @@ export function gitEnv(env = process.env) {
   return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" };
 }
 
-/** Run git in a repository; throws on failure unless allowFailure. */
-export async function git(repo, args, { allowFailure = false, input, timeoutMs = 120_000, env } = {}) {
-  const r = await runProcess("git", ["-C", repo, ...args], { env: gitEnv(env), input, timeoutMs });
+/**
+ * Run git in a repository; throws on failure unless allowFailure.
+ * `noHooks` points core.hooksPath at an empty directory FOR THIS INVOCATION ONLY, so a
+ * repository hook cannot run with the manager's credentials. It is applied per-command (via `-c`,
+ * never via env or repo config) so it affects only mutating ops (commit, push, switch) and never
+ * leaks into reads such as gitInternalsDigest's `config --get core.hooksPath`.
+ */
+export async function git(repo, args, { allowFailure = false, input, timeoutMs = 120_000, env, noHooks = false } = {}) {
+  const prefix = ["-C", repo, ...(noHooks ? ["-c", `core.hooksPath=${NO_HOOKS_DIR}`] : [])];
+  const r = await runProcess("git", [...prefix, ...args], { env: gitEnv(env), input, timeoutMs });
   if (r.code !== 0 && !allowFailure) {
     throw new Error(`git ${args[0]} failed (exit ${r.code}): ${r.stderr.trim().slice(0, 500)}`);
   }
@@ -151,16 +169,20 @@ export async function diffCheckAll(repo) {
  */
 export async function changeSet(repo, base, { unified = 15 } = {}) {
   return withTempIndex(repo, async (env) => {
-    const scope = ["--", ".", ...EXCLUDE_SECRET_PATHS];
-    const files = (await git(repo, ["diff", "--cached", "--name-status", "--no-renames", base, ...scope], { env })).stdout
+    const all = (await git(repo, ["diff", "--cached", "--name-status", "--no-renames", base, "--", "."], { env })).stdout
       .split("\n")
       .filter(Boolean)
       .map((line) => {
         const [status, ...rest] = line.split("\t");
         return { status, path: rest.join("\t") };
       });
+    // Sensitive-looking files are reported by NAME only; their contents never enter the reviewer's diff.
+    const withheld = [...new Set(all.filter((f) => isSensitiveFilePath(f.path)).map((f) => f.path))];
+    const files = all.filter((f) => !isSensitiveFilePath(f.path));
+    const excludeWithheld = withheld.map((p) => `:(exclude,literal,top)${p}`);
+    const scope = ["--", ".", ...EXCLUDE_SECRET_PATHS, ...excludeWithheld];
     const diff = (await git(repo, ["diff", "--cached", "--no-color", "--no-ext-diff", "--no-renames", `--unified=${unified}`, base, ...scope], { env, timeoutMs: 300_000 })).stdout;
-    return { files, diff };
+    return { files, diff, withheld };
   });
 }
 
@@ -194,6 +216,41 @@ export async function gitInternalsDigest(repo) {
   };
   for (const f of [join(common, "config"), join(gitDir, "config.worktree"), join(common, "info", "attributes"), join(common, "info", "exclude")]) addFile(f);
   if (existsSync(hooksDir) && statSync(hooksDir).isDirectory()) for (const name of readdirSync(hooksDir).sort()) addFile(join(hooksDir, name));
+  return h.digest("hex");
+}
+
+/**
+ * Integrity digest of the executables the harness TRUSTS when it verifies Claude's work
+ * (the check entrypoints such as tsc, vitest, eslint, plus the node_modules/.bin listing).
+ * These live in gitignored node_modules, so they are invisible to the tree fingerprint and to
+ * Git status; Claude is also denied write access to them. The digest is a fail-closed, second line
+ * of defence: it is taken before Claude runs and re-checked before verification and before commit,
+ * so a tampered check runner is caught even if the permission boundary were bypassed. Entrypoint
+ * level by design (hashing all of node_modules each run is impractical); the enforced write-deny is
+ * the primary boundary.
+ */
+export async function toolingDigest(repo) {
+  const h = createHash("sha256");
+  const targets = [...new Set(Object.values(CHECKS).flatMap((spec) => [spec.needs, spec.cmd === "node" ? spec.args?.[0] : null].filter(Boolean)))].sort();
+  for (const rel of targets) {
+    const p = resolve(repo, rel);
+    h.update(`${rel}\0`);
+    if (existsSync(p) && statSync(p).isFile()) h.update(readFileSync(p));
+    h.update("\0");
+  }
+  const bin = resolve(repo, "node_modules", ".bin");
+  if (existsSync(bin) && statSync(bin).isDirectory()) {
+    for (const name of readdirSync(bin).sort()) {
+      const p = join(bin, name);
+      h.update(`bin\0${name}\0`);
+      try {
+        if (statSync(p).isFile()) h.update(readFileSync(p));
+      } catch {
+        /* skip unreadable entry */
+      }
+      h.update("\0");
+    }
+  }
   return h.digest("hex");
 }
 

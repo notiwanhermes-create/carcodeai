@@ -13,6 +13,7 @@ import { appSuite } from "./suites/app";
 import { constraintSuite } from "./suites/constraints";
 import { garageSuite } from "./suites/garage";
 import { guidedSessionSuite } from "./suites/guided-sessions";
+import { guidedServiceSuite } from "./suites/guided-service";
 
 // Several of these run the real migration command, which takes a few seconds each.
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 120_000 });
@@ -23,3 +24,4 @@ accountSuite();
 appSuite();
 garageSuite();
 guidedSessionSuite();
+guidedServiceSuite();

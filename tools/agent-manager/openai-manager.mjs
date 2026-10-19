@@ -21,14 +21,22 @@ export const DECISION_SCHEMA = {
     summary: { type: "string" },
     task: { type: "string" },
     reason: { type: "string" },
-    required_checks: { type: "array", items: { type: "string" } },
+    required_checks: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "Concise verification requirements in PLAIN ENGLISH, not shell commands. Entries may mix known short check IDs the harness runs itself (diff-check, typecheck, unit-tests, lint, manager-tests) with plain-English requirements such as \"Run the Guided Diagnostics service tests and report exact results.\". Plain-English entries are advisory instructions to the implementer only; the harness never executes them and never treats the implementer's say-so as a passed check. At most 10 entries, each at most about 300 characters.",
+    },
     approval_reason: { type: ["string", "null"] },
     mode: { type: "string", enum: TASK_MODES },
     branch: { type: ["string", "null"] },
   },
 };
 
-const LIMITS = { summary: 2_000, task: 8_000, reason: 2_000, approval_reason: 1_000, branch: 100, check: 100, checks: 10 };
+// `check` bounds the length of ONE required_checks entry. Entries are concise plain-English
+// verification requirements (or short check IDs), advisory to the implementer and never executed,
+// so the bound is generous enough for a sentence but still fails closed on anything oversized.
+const LIMITS = { summary: 2_000, task: 8_000, reason: 2_000, approval_reason: 1_000, branch: 100, check: 300, checks: 10 };
 
 export class ConfigError extends Error {}
 export class ManagerApiError extends Error {
@@ -88,8 +96,14 @@ export function validateDecision(raw) {
     if (typeof d[f] !== "string") errors.push(`${f} must be a string`);
     else if (d[f].length > LIMITS[f]) errors.push(`${f} too long`);
   }
-  if (!Array.isArray(d.required_checks) || d.required_checks.length > LIMITS.checks) errors.push("required_checks must be an array of at most 10 strings");
-  else if (d.required_checks.some((c) => typeof c !== "string" || c.length > LIMITS.check)) errors.push("required_checks entries must be short strings");
+  // required_checks: an array of concise verification requirements. Each entry is either a known
+  // check ID the harness runs itself, or a bounded plain-English requirement passed to the implementer
+  // as an advisory instruction (never executed). Fails closed on a non-array, too many entries, a
+  // non-string entry, or an oversized entry.
+  if (!Array.isArray(d.required_checks)) errors.push("required_checks must be an array");
+  else if (d.required_checks.length > LIMITS.checks) errors.push(`required_checks must have at most ${LIMITS.checks} entries`);
+  else if (d.required_checks.some((c) => typeof c !== "string")) errors.push("required_checks entries must be strings");
+  else if (d.required_checks.some((c) => c.length > LIMITS.check)) errors.push(`required_checks entries must be at most ${LIMITS.check} characters`);
   if (!(d.approval_reason === null || (typeof d.approval_reason === "string" && d.approval_reason.length <= LIMITS.approval_reason))) {
     errors.push("approval_reason must be null or a short string");
   }

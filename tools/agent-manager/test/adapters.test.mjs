@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { buildClaudeArgs, buildClaudePrompt, claudeEnv, parseClaudeOutput, REPORT_SCHEMA, resolveClaudeBinary, runClaudeTask, validateReport } from "../claude-adapter.mjs";
-import { ConfigError, DEFAULT_MODEL, readManagerConfig, requestDecision, validateDecision } from "../openai-manager.mjs";
+import { ConfigError, DECISION_SCHEMA, DEFAULT_MODEL, readManagerConfig, requestDecision, validateDecision } from "../openai-manager.mjs";
 import { buildReviewInput, MAX_REVIEW_DIFF_CHARS, REVIEW_SCHEMA, runIndependentReview, validateReview } from "../openai-reviewer.mjs";
 import { dec, FAKE_KEY, fakeDbUrl, fakeOpenAI, finding, gitSync, makeRepo, report, rev } from "./helpers.mjs";
 
@@ -31,6 +31,35 @@ test("malformed or unknown decisions fail closed", () => {
     JSON.stringify(dec({ task: "x".repeat(9_000) })),
   ];
   for (const raw of bad) assert.equal(validateDecision(raw).ok, false, raw.slice(0, 80));
+});
+
+// The real gpt-6.1-sol sentence that previously failed the run (fail-closed) before the contract fix.
+const REAL_CHECK_SENTENCE = "Run the targeted Guided Diagnostics service and affected boundary regression suites and report their exact results.";
+
+test("required_checks accepts bounded plain-English verification requirements, and still fails closed on abuse", () => {
+  // The exact real gpt-6.1-sol sentence now validates.
+  assert.equal(validateDecision(dec({ required_checks: [REAL_CHECK_SENTENCE] })).ok, true);
+  // Several normal textual requirements, mixed with known IDs, validate.
+  assert.equal(
+    validateDecision(dec({ required_checks: ["diff-check", "typecheck", REAL_CHECK_SENTENCE, "Run typecheck and confirm no new errors."] })).ok,
+    true,
+  );
+  // A 300-character entry is allowed (the boundary); 301 is rejected as oversized.
+  assert.equal(validateDecision(dec({ required_checks: ["y".repeat(300)] })).ok, true);
+  const over = validateDecision(dec({ required_checks: ["x".repeat(301)] }));
+  assert.equal(over.ok, false);
+  assert.ok(over.errors.some((e) => /at most 300 characters/.test(e)), over.errors.join("; "));
+  // Too many entries rejected.
+  const many = validateDecision(dec({ required_checks: Array(11).fill("check something") }));
+  assert.equal(many.ok, false);
+  assert.ok(many.errors.some((e) => /at most 10 entries/.test(e)), many.errors.join("; "));
+  // A non-string entry rejected.
+  assert.equal(validateDecision(dec({ required_checks: ["ok", 5] })).ok, false);
+  // Not an array rejected (still fail-closed).
+  assert.equal(validateDecision(dec({ required_checks: "unit-tests" })).ok, false);
+  // The schema documents the plain-English, advisory, never-executed contract.
+  assert.match(DECISION_SCHEMA.properties.required_checks.description, /PLAIN ENGLISH/);
+  assert.match(DECISION_SCHEMA.properties.required_checks.description, /never executes them/);
 });
 
 test("manager and review model configuration; missing key error", async () => {

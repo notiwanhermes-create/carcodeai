@@ -329,9 +329,29 @@ never will be. They are what the user typed and what the app shows.
 ## Rollback check
 
 `npm run db:rollback-check` answers one question with the real code: after this
-release's migrations, does the previous version of the app (now Phase 2D, commit
-`bdf96de`) still work, as it would after a Vercel Instant Rollback? The harness
-for the release before that (Phase 2C, `e79758c`) is kept beside it.
+release's migrations, does the previous version of the app still work, as it
+would after a Vercel Instant Rollback?
+
+The release it checks is chosen explicitly. Each one has its own harness, listed
+in `scripts/rollback-check/baselines.mjs`:
+
+| Baseline | Commit | Harness |
+| --- | --- | --- |
+| `phase-2e` (default: the release in production) | `7bb5408` | `harness.phase-2e.mjs` |
+| `phase-2d` | `bdf96de` | `harness.phase-2d.mjs` |
+| `phase-2c` | `e79758c` | `harness.phase-2c.mjs` |
+
+```
+npm run db:rollback-check                 # Phase 2E
+npm run db:rollback-check -- phase-2d     # or a git ref naming one of the commits above, e.g. bdf96de
+```
+
+Anything else (a branch, `HEAD`, an unknown ref, a release without a harness)
+is **refused** before anything is copied or any database is touched. There is
+no fallback to another release's harness: until October 2026 a ref that was not
+listed silently ran the Phase 2D harness, which checks the wrong code (pointed at
+Phase 2E it failed on 2E's extra tables). `tests/rollback-baselines.test.ts`
+covers the choice without a database.
 
 It copies the previous version's source out of git into a temporary folder and
 runs it for real:
@@ -345,15 +365,34 @@ runs it for real:
    connection pool, the admin list, the daily allowance and follow-up counters;
 4. the migration command is run again and must find nothing to do.
 
-**One thing the previous version cannot do after Phase 2E has been used:**
+**The Phase 2E harness** also covers what 2E added and what came after it:
+
+- before the upgrade, 2E stores saved diagnoses (through its real `/api/diagnose`
+  route, with the AI model faked), a repair that did not hold followed by one
+  that did, a current odometer reading and an archived vehicle;
+- this release's migrations must add the guided diagnostic session tables
+  (V2G, `20261016120000_guided_diagnostic_sessions`). Sessions and revisions are
+  then written into them as a release using them would (active, AI-parsed
+  input, completed);
+- after the rollback, 2E reads its garage, archive, vehicle page, diagnoses and
+  repair history back exactly, and keeps working: new vehicle, mileage, service
+  record, new diagnosis, reopen, archive. None of that changes a guided
+  session. Deleting a vehicle still in the garage is refused (409). Deleting
+  the archived vehicle for good with 2E's own code succeeds and takes that
+  vehicle's guided sessions with it (`ON DELETE CASCADE`, the V2G decision);
+  the other sessions are untouched;
+- 2E changes no structure (columns, indexes, constraints), and rolling forward
+  again finds nothing to do and keeps the remaining sessions.
+
+**One thing Phase 2D cannot do after Phase 2E has been used:**
 delete a vehicle that has gained a saved diagnosis. Its delete request is
 refused by the database (the `NO ACTION` foreign key) and the vehicle and its
 history stay. That is the intended direction of failure: an older version can
 never remove history it does not know about. The check covers it.
 
 It empties the database it uses, so it only accepts `TEST_DATABASE_URL` on this
-machine. It also runs as part of the database tests whenever that commit is
-present in the local copy of the repository.
+machine. The Phase 2D and Phase 2E checks also run as part of the database
+tests whenever those commits are present in the local copy of the repository.
 
 Two further tests in `tests/integration` check the same thing structurally:
 every column the previous version's database client names still exists with the

@@ -15,9 +15,12 @@ import { parseCost, parseModelYear, parseOdometer, parseServiceDate } from "../.
 
 const APP_TABLES = db.APP_TABLES;
 
-/** The release a rollback returns to (Phase 2D, as deployed). Its code is run for real when this copy of the repository has it. */
+/** Earlier releases a rollback can return to (see scripts/rollback-check/baselines.mjs). Their code is run for real when this copy of the repository has it. */
 const PREVIOUS_RELEASE = "bdf96de";
 const hasPreviousRelease = spawnSync("git", ["cat-file", "-e", `${PREVIOUS_RELEASE}^{commit}`], { cwd: db.ROOT }).status === 0;
+/** The release in production (Phase 2E). */
+const PRODUCTION_RELEASE = "7bb5408";
+const hasProductionRelease = spawnSync("git", ["cat-file", "-e", `${PRODUCTION_RELEASE}^{commit}`], { cwd: db.ROOT }).status === 0;
 
 export function migrationSuite() {
   db.dbDescribe("migrations", () => {
@@ -549,6 +552,16 @@ export function migrationSuite() {
       // this release's migrations are applied, and the previous version is then
       // started again and exercised. See docs/database.md, "Rollback check".
       const run = db.runScript("rollback-check/run.mjs", [PREVIOUS_RELEASE]);
+      expect(run.output).toContain("harness.phase-2d.mjs");
+      expect(run.output).toContain("PASSED: the previous version");
+      expect(run.status, run.output).toBe(0);
+    });
+
+    it.skipIf(!hasProductionRelease)("the real production version (Phase 2E code) runs against a database migrated by this release, guided sessions included", () => {
+      // Its own harness: saved diagnoses, repairs, archive and permanent delete,
+      // with guided diagnostic sessions (V2G) in the database.
+      const run = db.runScript("rollback-check/run.mjs", [PRODUCTION_RELEASE]);
+      expect(run.output).toContain("harness.phase-2e.mjs");
       expect(run.output).toContain("PASSED: the previous version");
       expect(run.status, run.output).toBe(0);
     });

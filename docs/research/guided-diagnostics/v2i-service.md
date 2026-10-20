@@ -43,12 +43,37 @@ retypes and updates nothing. No earlier migration was edited.
 **Rollback:**
 
 - The migration only adds tables, which older releases never read. The
-  Phase 2D rollback check passes.
-- There is no Phase 2E harness: `scripts/rollback-check/run.mjs` still
-  defaults to Phase 2D (`bdf96de`). Pointed at `7bb5408`, it falls back to the
-  2D harness, which fails on 2E's two extra tables.
-- This tooling gap already exists on `main`. It must be closed before this
-  migration goes to production.
+  Phase 2D rollback check passes (Gate A run above).
+- At Gate A there was no Phase 2E harness: pointed at `7bb5408`, the runner fell
+  back to the 2D harness, which fails on 2E's two extra tables.
+
+**Rollback tooling follow-up (2026-10-19, branch
+`test/phase2e-rollback-compatibility`):**
+
+- `scripts/rollback-check/baselines.mjs` now lists each release, by full commit
+  id, with its own harness: `phase-2c`, `phase-2d`, `phase-2e`. The default is
+  `phase-2e`, the release in production. Phase 2D is still selected, and runs
+  the same unchanged harness, with `phase-2d` or `bdf96de`.
+- Any other ref is refused before anything is copied or a database touched.
+  The fallback is gone.
+- `scripts/rollback-check/harness.phase-2e.mjs` runs Phase 2E's real code
+  against a database migrated by this release, with guided sessions and
+  revisions in the V2G tables. See docs/database.md, "Rollback check", for
+  what it exercises.
+
+| Check | Result |
+| --- | --- |
+| `npx vitest run tests/rollback-baselines.test.ts` (Phase 2D selection, Phase 2E selection and default, unsupported/unknown/missing baselines refused with nothing copied, Phase 2E harness expects 2E's own migrations and tables and the V2G ones) | pass, 16 of 16 |
+| `npm run typecheck` | pass |
+| `npx eslint` on the changed files | pass, no findings |
+| **Phase 2E rollback rehearsal against a database** (`npm run db:rollback-check`) | **pass** (2026-10-20). Ran against a throwaway real PostgreSQL 17.10 (embedded-postgres in a separate scratch project, not `prisma dev`). The Phase 2E harness ran its four parts (A: 2E builds its DB and stores data; B: this release's migrations apply on top, keep every value, and add the V2G tables; C: after a rollback 2E reads everything back and keeps working, guided sessions survive, and permanent-delete of the archived vehicle cascades to its sessions; D: roll-forward finds nothing to do), 4 of 4. |
+| Phase 2D rollback check after this change (`npm run db:rollback-check -- phase-2d`) | **pass** (2026-10-20), same database, 4 of 4, still running `harness.phase-2d.mjs`. |
+
+Both rehearsals passed on real PostgreSQL, so Phase 2E rollback compatibility
+with V2G is verified, not merely expected from the migration being additive.
+(The full `database.db.test.ts` suite was not run whole: its known legacy
+embedded-Postgres connection timeout is unrelated to this change; the rollback
+checks here were run directly through `scripts/rollback-check/run.mjs`.)
 
 **Environment findings, not defects:**
 
@@ -173,8 +198,10 @@ construct the service (V2J).
    (`ON DELETE CASCADE`, an intentional V2G choice, unchanged here). Decide
    before production whether permanent delete should remove sessions
    explicitly and report the count.
-3. **Phase 2E rollback harness.** Add one, and move the rollback check's
-   default to the release in production, before this migration ships.
+3. **Phase 2E rollback harness.** Added, the default moved to Phase 2E, and
+   rehearsed against a real disposable PostgreSQL on 2026-10-20 — both the
+   Phase 2E default and `-- phase-2d` passed (see "Rollback tooling follow-up"
+   above). This item is closed for the migration-shipping gate.
 4. **Retried start across time.** A retried start is a duplicate only when it
    is the same start, including the evidence time. The service stamps the
    time when it handles the request, so a route retry seconds later gets

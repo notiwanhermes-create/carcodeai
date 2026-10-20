@@ -84,7 +84,20 @@ describe("the previous release (Phase 2D) against this release's database", () =
   const made = {};
 
   beforeAll(async () => {
-    if (!TEST_DB || !["localhost", "127.0.0.1", "::1"].includes(new URL(TEST_DB).hostname)) throw new Error("TEST_DATABASE_URL must be a database on this machine");
+    // Local-only guard for the destructive DROP SCHEMA below. The authority must be local AND there
+    // must be no host/hostaddr query parameter, which pg would honour to connect somewhere else.
+    // (Inlined, not imported: this file is copied into the previous release's checkout to run.)
+    const localDb = (() => {
+      let u;
+      try {
+        u = new URL(TEST_DB);
+      } catch {
+        return false;
+      }
+      const host = u.hostname.replace(/^\[(.*)\]$/, "$1");
+      return ["localhost", "127.0.0.1", "::1"].includes(host) && !u.searchParams.has("host") && !u.searchParams.has("hostaddr");
+    })();
+    if (!localDb) throw new Error("TEST_DATABASE_URL must be a database on this machine (no host/hostaddr query override)");
     if (!NEW_RELEASE) throw new Error("CARCODE_NEW_RELEASE is not set (run this through scripts/rollback-check/run.mjs)");
     pool = new pg.Pool({ connectionString: TEST_DB, max: 2 });
     await pool.query("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;");

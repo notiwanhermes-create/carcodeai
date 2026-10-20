@@ -15,16 +15,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
 import { describe, vi } from "vitest";
+import { isLocalTestDbUrl } from "../../scripts/rollback-check/baselines.mjs";
 
 export const TEST_DB = process.env.TEST_DATABASE_URL || "";
 
-const isLocal = (() => {
-  try {
-    return ["localhost", "127.0.0.1", "::1"].includes(new URL(TEST_DB).hostname);
-  } catch {
-    return false;
-  }
-})();
+// These suites EMPTY the database (DROP SCHEMA). The shared guard requires a genuinely local
+// authority AND rejects a host/hostaddr query parameter, which pg would otherwise honour to connect
+// elsewhere. Same rule as scripts/rollback-check (run.mjs and the per-release harnesses).
+const isLocal = isLocalTestDbUrl(TEST_DB);
 
 /** `describe` when a local test database is configured, otherwise a skipped suite. */
 export const dbDescribe = TEST_DB && isLocal ? describe : describe.skip;

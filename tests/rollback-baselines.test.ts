@@ -182,6 +182,30 @@ describe("rollback check: the runner refuses before doing anything", () => {
   });
 });
 
+describe("rollback check: every destructive harness guards the local database the same way", () => {
+  // Each harness runs DROP SCHEMA; its locality guard must reject host/hostaddr redirection and sit
+  // before the destructive statement. The harnesses are copied into old checkouts, so each inlines
+  // the rule (it cannot import the shared helper). The authority check and the DROP live together.
+  for (const name of ["harness.phase-2c.mjs", "harness.phase-2d.mjs", "harness.phase-2e.mjs"]) {
+    it(`${name} refuses host/hostaddr redirection before DROP SCHEMA`, () => {
+      const src = fs.readFileSync(path.join(DIR, name), "utf8");
+      expect(src).toMatch(/searchParams\.has\("host"\)/);
+      expect(src).toMatch(/searchParams\.has\("hostaddr"\)/);
+      expect(src).toMatch(/\["localhost", "127\.0\.0\.1", "::1"\]\.includes\(host\)/);
+      const guardAt = src.search(/no host\/hostaddr query override/);
+      const dropAt = src.search(/pool\.query\("DROP SCHEMA/);
+      expect(guardAt).toBeGreaterThan(-1);
+      expect(dropAt).toBeGreaterThan(guardAt);
+    });
+  }
+
+  it("the integration test harness (tests/integration/db.ts) uses the shared guard", () => {
+    const src = fs.readFileSync(path.join(ROOT, "tests", "integration", "db.ts"), "utf8");
+    expect(src).toMatch(/import \{ isLocalTestDbUrl \} from "\.\.\/\.\.\/scripts\/rollback-check\/baselines\.mjs"/);
+    expect(src).toMatch(/isLocalTestDbUrl\(TEST_DB\)/);
+  });
+});
+
 describe("rollback check: the Phase 2E harness covers the V2G additions", () => {
   const harness = fs.readFileSync(path.join(DIR, "harness.phase-2e.mjs"), "utf8");
 

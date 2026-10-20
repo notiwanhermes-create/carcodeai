@@ -209,4 +209,8 @@ Then come production UI and API work, still not started.
 - Production build: pending local or CI verification.
 - V2G real migration: pending local verification.
 
-Both for the same cloud-environment reasons as before.
+Both for the same cloud-environment reasons as before. (Historical: both were
+later run locally in V2I Gate A. See [v2i-service.md](v2i-service.md). Step 5
+above is implemented in the V2I service by `PRODUCTION_CONTENT_POLICY`. No
+route uses it yet. Steps 1–4 are
+still open.)

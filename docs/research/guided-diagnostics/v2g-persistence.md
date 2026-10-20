@@ -142,8 +142,10 @@ refused. Tests cover:
 The repository does compare-and-set on (id, owner, revision,
 `lifecycle = active`):
 
-- a stale writer gets `conflict` with the current revision;
-- a completed session gets `immutable`;
+- a stale writer gets `conflict` with the current revision, even if the
+  session has since completed (revision is checked before lifecycle, since
+  `cb4179e`);
+- a writer at the current revision of a completed session gets `immutable`;
 - there is no last-write-wins;
 - the (session, revision) primary key makes a double write of one revision
   impossible.
@@ -156,11 +158,17 @@ untouched. The new state must itself replay exactly. Anything else is
 
 **Idempotency, without an event framework:**
 
-- A retried save whose result is already the current revision (same digest)
-  answers `saved` with `duplicate: true`. Nothing is written twice, including
-  when two identical retries race.
+- A retried save whose result is already the current revision answers
+  `saved` with `duplicate: true` only when the persisted revision matches in
+  digest **and** provenance (input origin, and for AI-parsed input the text
+  hash), since `cb4179e`. Anything else is `conflict`. Nothing is written
+  twice, including when two identical retries race.
 - A retried start with the same `createKey` returns the session it made.
 - The same key with a different session is `create_key_conflict`.
+- Through the V2I service, a sequential retry of an applied submit is
+  `conflict`. The service checks the revision before the store. See
+  [v2i-service.md](v2i-service.md), "Concurrency and retry contract", for the
+  current contract and its tests.
 
 ## Ownership
 

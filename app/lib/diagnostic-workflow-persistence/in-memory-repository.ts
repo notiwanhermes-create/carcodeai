@@ -71,9 +71,11 @@ export function createInMemorySessionRepository(options: InMemoryRepositoryOptio
       const row = owned(owner, sessionId);
       if (!row) return { status: "not_found" };
       const current = read(row);
-      if (current.lifecycle !== "active") return { status: "immutable" };
-      // Compare-and-set: only the writer that saw the current revision may move it on.
+      // Compare-and-set, revision before lifecycle: a stale writer gets "conflict" even if the
+      // session has since completed. "immutable" is only for a current-revision writer on a
+      // completed session. (Same precedence in the Prisma adapter.)
       if (current.revision !== expectedRevision) return { status: "conflict", currentRevision: current.revision as number };
+      if (current.lifecycle !== "active") return { status: "immutable" };
       if (change.revision !== expectedRevision + 1 || revision.revision !== change.revision) throw new Error("an update must advance the revision by exactly one");
       const at = now();
       const record = { ...current, ...change, updatedAt: at, completedAt: change.lifecycle === "completed" ? at : null };

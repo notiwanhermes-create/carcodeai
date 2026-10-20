@@ -295,12 +295,22 @@ export function createSessionStore(options: SessionStoreOptions) {
         payload: pl.payload,
       });
 
-    // A retry of a save that already went through: same result, nothing written twice.
+    // A retry of a save that already went through: same result, nothing written twice. "The same
+    // save" means the persisted revision matches in payload (digest) AND in provenance/audit identity
+    // (origin, and the AI text-hash). An identical payload with a different origin is NOT a duplicate:
+    // returning duplicate would falsely imply the loser's provenance was the one recorded.
     const alreadySaved = async () => {
       const got = await repository.get(owner, request.sessionId);
       if (got.status !== "found") return null;
       const r = StoredSessionSchema.safeParse(got.record);
-      return r.success && r.data.revision === nextRevision && r.data.payloadDigest === sealedAt(nextRevision) ? r.data : null;
+      if (!r.success || r.data.revision !== nextRevision || r.data.payloadDigest !== sealedAt(nextRevision)) return null;
+      const hist = await repository.history(owner, request.sessionId);
+      if (hist.status !== "found") return null;
+      const persisted = hist.revisions.map((x) => StoredRevisionSchema.safeParse(x)).find((p) => p.success && p.data.revision === nextRevision);
+      if (!persisted || !persisted.success) return null;
+      const sameProvenance =
+        persisted.data.inputOrigin === provenance.origin && (provenance.origin === "ai_parser" ? persisted.data.aiTextRef === provenance.textRef : persisted.data.aiTextRef === null);
+      return sameProvenance ? r.data : null;
     };
     if (current.meta.revision !== request.expectedRevision) {
       const done = current.meta.revision === nextRevision ? await alreadySaved() : null;

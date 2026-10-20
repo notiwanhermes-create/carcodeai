@@ -134,8 +134,10 @@ export function createPrismaSessionRepository(prisma: PrismaClient): DiagnosticS
           if (moved.count !== 1) {
             const row = await findOwned(tx, owner, sessionId);
             if (!row) return { status: "not_found" } as const;
-            if (row.lifecycle !== "active") return { status: "immutable" } as const;
-            return { status: "conflict", currentRevision: row.revision } as const;
+            // Revision conflict takes precedence over immutability: a stale writer gets "conflict"
+            // even if the session has since completed. "immutable" is only for a current-revision
+            // writer on a completed session.
+            return row.revision === expectedRevision && row.lifecycle !== "active" ? ({ status: "immutable" } as const) : ({ status: "conflict", currentRevision: row.revision } as const);
           }
           await tx.guidedDiagnosticSessionRevision.create({ data: { ...revision, sessionId, createdAt: now } });
           const row = await findOwned(tx, owner, sessionId);

@@ -114,8 +114,11 @@ export function guidedServiceContract(name: string, setup: ServiceContractSetup)
       expect(final.session.endResult).toBe(reference(fuelStart(), [...FUEL_ROUTE, FUEL_VERIFIED]).endResult);
       const h = await svc.guidedSessionHistory(ANN, id);
       expect(h.status === "found" && h.history.revisions.map((r) => r.transition)).toEqual(["start", ...FUEL_ROUTE.map(() => "input"), "input"]);
-      // Completed history is never changed.
+      // Completed history is never changed. Revision conflict takes precedence over immutability:
+      // a submit at the CURRENT revision of a completed session is immutable, but a submit at a STALE
+      // revision is a conflict (its primary failure is operating on stale state), on both repositories.
       expect(await svc.submitGuidedStep(ANN, { sessionId: id, expectedRevision: final.meta.revision, input: FUEL_ROUTE[0] })).toEqual({ status: "immutable" });
+      expect(await svc.submitGuidedStep(ANN, { sessionId: id, expectedRevision: final.meta.revision - 1, input: FUEL_ROUTE[0] })).toEqual({ status: "conflict", currentRevision: final.meta.revision });
     });
 
     it("keeps contradictory evidence inconclusive, exactly as the engine does", async () => {

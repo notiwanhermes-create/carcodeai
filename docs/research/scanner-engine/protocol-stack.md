@@ -131,6 +131,13 @@ the edition used). Each maps to a distinct, typed outcome; none is ever data.
   the command `interrupted`. If no `>` arrives in time, the session is marked
   `adapter_unresponsive` and the transport is closed; no further command is
   sent on that connection.
+- Proposed (INFERRED): after the interrupt's `>`, the session continues only
+  if a read-only probe (`ATRV`, then `ATDPN`) can be sent whose answer cannot
+  be confused with a late answer of the interrupted command. A free-text
+  command (`ATZ`, `ATWS`, `ATI`, `AT@1`, `ATDP`) may print any line,
+  including one shaped like a probe's answer, so after one of them is
+  interrupted the session ends `resync_impossible` and the transport is
+  closed (fail closed); the person reconnects.
 - A cancelled command never yields partial data as a result.
 
 ### Timeouts

@@ -61,7 +61,9 @@ STANDARD-DOCUMENTED (unverified copy), SAE J1979 $01 PID `01` "monitor status
 since DTCs cleared", cross-checked against
 <https://en.wikipedia.org/wiki/OBD-II_PIDs> (section "Service 01", PID `01`;
 public, secondary). **The bit table must be re-checked against a primary
-source before S6 lands.**
+source (a licensed SAE J1979 / ISO 15031-5 copy) before the scanner leaves the
+developer preview or its readiness feeds a Guided Diagnostics session.** See
+[Primary-source check](#primary-source-check-pending) for what holds until then.
 
 | Bytes / bits | Meaning |
 | --- | --- |
@@ -89,7 +91,25 @@ Rules (Proposed, INFERRED):
 Formulas: SAE J1979 (unverified copy), cross-checked against
 <https://en.wikipedia.org/wiki/OBD-II_PIDs> (public, secondary). `A`, `B` are
 the first and second data bytes. **Each row must be re-checked against a
-primary source before S6 lands**, and the table records who checked and when.
+primary source (a licensed SAE J1979 / ISO 15031-5 copy) before the scanner
+leaves the developer preview or its values feed a Guided Diagnostics
+session**, and the table records who checked, against which edition, and when.
+
+### Primary-source check (pending)
+
+Decided 2026-10-26: no licensed copy of SAE J1979 or ISO 15031-5 is available
+to this project, so the check above could not be done before S6. S6 lands with
+the check **pending**, under these conditions, which hold until it is done:
+
+- The code records the status: `PID_TABLE_REVIEW` and `READINESS_TABLE_REVIEW`
+  keep `primarySourceCheck: "pending"`; nothing may set it without a real check.
+- The preview page says, next to decoded values and readiness, that they are
+  decoded with public secondary formulas and that the check against the
+  standard is pending, and it shows each value's raw data bytes with it.
+- Decoded values stay display-only (rule 5 above): no value is judged, and
+  none reaches a Guided Diagnostics session (none is built in the preview).
+- Whoever does the check records who checked, against which edition, and when,
+  in these tables and in the code, and corrects any row that differs.
 
 The "GD unit" column uses the repository's unit list (**OBSERVED**,
 `app/lib/diagnostic-workflow/types.ts:223`: `V, mV, ohm, kohm, A, kPa, bar, psi,

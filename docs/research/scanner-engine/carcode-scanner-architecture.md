@@ -1,7 +1,9 @@
 # CarCode scanner architecture (proposed)
 
-Status: **proposed design, documentation only. Not approved for
-implementation.** No scanner code exists. Labels are defined in
+Status: **proposed design.** On 2026-10-26 the person directed
+implementation of the read-only developer preview (tasks S1–S12 below); S1–S6
+are implemented on research branches, nothing is released, and the approval
+requests below stay not approved. Labels are defined in
 [thinkcar-observed-architecture](thinkcar-observed-architecture.md#provenance-labels).
 `AGENTS.md` remains binding and wins on any conflict.
 
@@ -211,8 +213,10 @@ then the baseline above applies.
 
 ## Validation status
 
-- **Simulated validation**: not yet run (no code exists). Planned per the
-  [simulated test matrix](scan-flow.md#simulated-test-matrix).
+- **Simulated validation**: S1–S6 pass their tests against scripted adapters
+  only, per the [simulated test matrix](scan-flow.md#simulated-test-matrix);
+  later tasks are not yet built. PID and readiness tables: primary-source check
+  **pending** ([live-data](live-data.md#primary-source-check-pending)).
 - **Real-adapter validation: PENDING.** No adapter of any kind has been
   connected. No BLE UUID has been confirmed on a device.
 - **Real-vehicle validation: PENDING.** No vehicle has been read.

@@ -15,7 +15,20 @@ export type TransportState = "idle" | "connecting" | "open" | "closing" | "close
 /** `closed_by_client`: close() was called. `disconnected`: the link went away. */
 export type TransportCloseReason = "closed_by_client" | "disconnected" | "error";
 
-export type TransportErrorCode = "not_open" | "already_open" | "closed" | "aborted" | "write_failed";
+/**
+ * `unsupported_adapter`: the link opened but no single suitable service and
+ * characteristic pair was found (fail closed, nothing guessed).
+ * `connect_failed`: the link could not be opened (connection, service lookup
+ * or notification start failed).
+ */
+export type TransportErrorCode =
+  | "not_open"
+  | "already_open"
+  | "closed"
+  | "aborted"
+  | "write_failed"
+  | "unsupported_adapter"
+  | "connect_failed";
 
 export class TransportError extends Error {
   constructor(

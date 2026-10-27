@@ -1,9 +1,12 @@
 # CarCode scanner architecture (proposed)
 
 Status: **proposed design.** On 2026-10-26 the person directed
-implementation of the read-only developer preview (tasks S1–S12 below); S1–S6
+implementation of the read-only developer preview (tasks S1–S12 below); S1–S7
 are implemented on research branches, nothing is released, and the approval
-requests below stay not approved. Labels are defined in
+requests below stay not approved. S7 was implemented as one scanner
+controller (`scanner/controller.ts`, `scanner/report.ts`) covering the
+`scanner/` parts of S7–S9: discovery, the scan flow and reports, bounded
+user-started live polling, cancellation and person-started recovery. Labels are defined in
 [thinkcar-observed-architecture](thinkcar-observed-architecture.md#provenance-labels).
 `AGENTS.md` remains binding and wins on any conflict.
 
@@ -213,9 +216,10 @@ then the baseline above applies.
 
 ## Validation status
 
-- **Simulated validation**: S1–S6 pass their tests against scripted adapters
+- **Simulated validation**: S1–S7 pass their tests against scripted adapters
   only, per the [simulated test matrix](scan-flow.md#simulated-test-matrix);
-  later tasks are not yet built. PID and readiness tables: primary-source check
+  S10–S12 are not yet built. Page hide, navigation and unmount reach the
+  controller only through `cancel()` / `dispose()`, which S12 must wire. PID and readiness tables: primary-source check
   **pending** ([live-data](live-data.md#primary-source-check-pending)).
 - **Real-adapter validation: PENDING.** No adapter of any kind has been
   connected. No BLE UUID has been confirmed on a device.

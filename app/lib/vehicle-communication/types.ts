@@ -53,7 +53,9 @@ export type SessionFailure = "transport_lost" | "adapter_unresponsive" | "resync
 
 /**
  * Scanner lifecycle (scan-flow.md, "Lifecycle"). `failed` is reachable from
- * every non-terminal state; `closed` is terminal.
+ * every non-terminal state; `closed` is terminal. `ready → initialising` is a
+ * person-started recovery (re-initialise and rediscover on the same link);
+ * `polling` is user-started live data (live-data.md, "Live polling").
  */
 export type ScannerLifecycleState =
   | "idle"
@@ -62,6 +64,7 @@ export type ScannerLifecycleState =
   | "discovering"
   | "ready"
   | "scanning"
+  | "polling"
   | "closing"
   | "closed"
   | "failed";
@@ -74,8 +77,9 @@ export const LIFECYCLE_TRANSITIONS: Readonly<Record<ScannerLifecycleState, reado
   connecting: ["initialising", "closing", "failed"],
   initialising: ["discovering", "closing", "failed"],
   discovering: ["ready", "closing", "failed"],
-  ready: ["scanning", "closing", "failed"],
+  ready: ["scanning", "polling", "initialising", "closing", "failed"],
   scanning: ["ready", "closing", "failed"],
+  polling: ["ready", "closing", "failed"],
   closing: ["closed", "failed"],
   failed: ["closed"],
   closed: [],

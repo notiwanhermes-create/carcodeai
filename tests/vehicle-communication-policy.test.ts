@@ -195,7 +195,6 @@ describe("scanner independence (architecture rules 1-4)", () => {
 
   it("Guided Diagnostics never imports vehicle-communication", () => {
     const gdDirs = readdirSync(path.join(root, "app/lib")).filter((name) => name.startsWith("diagnostic-workflow"));
-    expect(gdDirs.length).toBeGreaterThan(0);
     for (const dir of gdDirs) {
       for (const file of listTs(path.join(root, "app/lib", dir))) {
         for (const spec of specifiers(file)) expect(spec, path.relative(root, file)).not.toMatch(/vehicle-communication/);

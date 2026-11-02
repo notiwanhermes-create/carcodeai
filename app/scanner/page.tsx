@@ -6,7 +6,7 @@ import ScannerClient from "./ScannerClient";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Scanner preview - CarCode AI",
+  title: "CarCode Scanner",
   robots: { index: false, follow: false },
 };
 

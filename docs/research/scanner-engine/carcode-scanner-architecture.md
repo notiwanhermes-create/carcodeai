@@ -83,7 +83,9 @@ Rules (Proposed, INFERRED; each checked by a test or lint rule when built):
    page reads and writes no database.
 5. The scanner never decides anything diagnostic: no pass/fail, no cause, no
    "safe to drive", no meanings attached to codes, no judgement of readiness.
-   It reports what was read and how reliably.
+   It reports what was read and how reliably. The `/scanner` page may show a
+   code's title from the app's own lookup (`app/lib/dtc.ts`), which says when
+   no definition is on file; the title is display-only and is not evidence.
 6. **No GD session wiring in the preview.** Nothing in the preview starts,
    submits to, or attaches evidence to a GD session, suggests a GD capability
    context, or calls the GD service. The mapper is a pure function whose output

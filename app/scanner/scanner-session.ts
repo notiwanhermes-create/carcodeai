@@ -108,7 +108,7 @@ export type ScannerSessionOptions = {
 const isRefusal = (result: object): result is ScannerRefusal => "status" in result && result.status === "refused";
 
 /** The adapter's own wording for this is in the log. The likeliest cause is the ignition, but nothing is concluded about the vehicle. */
-const CAR_NOT_REACHED = "The adapter answered, but it could not reach the car. Turn the ignition on, then press Reset adapter and search again. Nothing is concluded about the vehicle.";
+const CAR_NOT_REACHED = "Scanner connected, but the vehicle did not respond. Make sure the ignition is on and try again.";
 
 const ATTEMPT_CANCELLED: Notice = { tone: "info", text: "The connection attempt was cancelled, so nothing was opened. Choose the adapter again." };
 

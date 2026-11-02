@@ -1,81 +1,91 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import Link from "next/link";
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { scannerBackLink, type ScannerVehicleContext } from "@/app/lib/scanner-preview";
 import { pidDefinition } from "@/app/lib/vehicle-communication/obd/pids";
-import { MAX_LIVE_CYCLES, MAX_LIVE_INTERVAL_MS, MAX_LIVE_PIDS, type LiveSelection } from "@/app/lib/vehicle-communication/scanner/controller";
+import { MAX_LIVE_CYCLES, MAX_LIVE_INTERVAL_MS, MAX_LIVE_PIDS } from "@/app/lib/vehicle-communication/scanner/controller";
 import type { DiscoveryReport } from "@/app/lib/vehicle-communication/scanner/report";
-import { DOCUMENTED_BLE_PROFILES } from "@/app/lib/vehicle-communication/transport/ble-profiles";
-import { WEB_BLUETOOTH_LIMITATIONS } from "@/app/lib/vehicle-communication/transport/web-bluetooth";
-import { DEFAULT_SERIAL_SETTINGS, WEB_SERIAL_LIMITATIONS } from "@/app/lib/vehicle-communication/transport/web-serial";
-import { AdapterLog, DiscoverySummary, LiveReadings, ModuleLabel, ScanResults, UnverifiedBadge, UnverifiedNote } from "@/components/scanner/ScannerPanels";
-import { Card, GaragePage, SectionTitle, inputClass, primaryButton, quietButton } from "@/components/garage/shared";
-import { ScannerSession, type ScannerSnapshot, type TransportOffer } from "./scanner-session";
+import { DEFAULT_SERIAL_SETTINGS } from "@/app/lib/vehicle-communication/transport/web-serial";
+import { cn } from "@/components/garage/shared";
+import { AdvancedConnection, ConnectedSummary, ConnectOptions, Disclosure, FailurePanel, focusRing, mainAction, NoticeBanner, ProgressSteps, quietAction, type ManualUuids } from "@/components/scanner/ConnectionPanels";
+import { ConnectorGraphic } from "@/components/scanner/ConnectorGraphic";
+import { ShieldIcon } from "@/components/scanner/ScannerIcons";
+import { AdvancedDiagnostics, FaultCodesCard, FreezeFrameCard, LiveDataCard, pollKey, ReadinessCard, ScanSkeleton, ScanSummary, VehicleCard, type PollOption } from "@/components/scanner/ScannerPanels";
+import { ScannerSession, type LinkInfo, type ScannerSnapshot } from "./scanner-session";
+import { connectionSteps, describeNotice, pinsFor, scanSteps, stageOf, type Stage } from "./scanner-view";
 
 export const PREVIEW_BANNER = "Preview. Generic OBD-II only. Not all modules or codes are visible. Not tested with your adapter or vehicle.";
 
 const PHASE_LABEL: Record<string, string> = {
-  open: "Opening the link",
-  initialise: "Initialising the adapter",
-  identify: "Reading what the adapter reports about itself",
-  protocol: "Searching for the vehicle protocol",
-  current_data_support: "Reading which data each ECU lists",
-  vin: "Reading the reported VIN",
+  open: "Opening the connection",
+  initialise: "Setting up the adapter",
+  identify: "Asking the adapter what it is",
+  protocol: "Looking for the vehicle",
+  current_data_support: "Checking what each module can report",
+  vin: "Reading the VIN",
   readiness: "Reading readiness",
   dtcs: "Reading stored, pending and permanent codes",
-  freeze_frame: "Reading freeze frame 0",
+  freeze_frame: "Reading the freeze frame",
   current_data: "Reading current data",
-  live: "Polling current data",
+  live: "Updating current data",
 };
 
 function statusLine(view: ScannerSnapshot): string {
   if (view.stopping) return "Stopping…";
-  if (view.link === "choosing") return "Waiting for the browser's chooser. It can only be dismissed in the browser.";
-  if (view.link === "closing") return "Closing the link…";
+  if (view.link === "choosing") return "Waiting for you to choose an adapter in the browser window.";
+  if (view.link === "closing") return "Closing the connection…";
   if (view.phase) return `${PHASE_LABEL[view.phase]}…`;
   if (view.link === "connecting") return "Connecting…";
   if (view.link === "open") return view.vehicleFound ? "Connected. A vehicle answered." : "Connected to the adapter. No vehicle was read.";
-  if (view.link === "ended") return "The link has ended.";
+  if (view.link === "ended") return "The connection has ended.";
   return "Not connected.";
 }
 
-function Limitations({ items }: { items: readonly string[] }) {
+/** The current-data PIDs each ECU's own bitmap lists and the reviewed table can decode. */
+function pollable(discovery: DiscoveryReport | null): PollOption[] {
+  return (discovery?.ecus ?? []).flatMap((ecu) => ecu.currentData.supportedPids.filter((pid) => pidDefinition(pid)).map((pid) => ({ module: ecu.module, responseId: ecu.responseId, pid })));
+}
+
+const headline = "text-3xl font-semibold tracking-tight text-white sm:text-4xl lg:text-5xl";
+
+const HEADLINE: Partial<Record<Stage, string>> = {
+  disconnected: "Connect your scanner",
+  choosing: "Choose your adapter",
+  connecting: "Connecting to your scanner",
+  scanning: "Scanning your vehicle",
+  closing: "Disconnecting",
+};
+
+function Frame({ back, children }: { back: { href: string; label: string }; children: ReactNode }) {
   return (
-    <details className="mt-2 text-xs text-slate-400">
-      <summary className="cursor-pointer">Browser and adapter limitations</summary>
-      <ul className="mt-1 list-disc space-y-1 pl-4">
-        {items.map((item) => (
-          <li key={item}>{item}</li>
-        ))}
-      </ul>
-    </details>
+    <main className="relative min-h-screen bg-[#0f172a] text-slate-100">
+      <div aria-hidden className="pointer-events-none fixed inset-0 bg-[radial-gradient(56rem_30rem_at_78%_-8%,rgba(59,130,246,0.16),transparent_70%)]" />
+      <div className="relative mx-auto max-w-6xl px-4 pb-16 pt-5 sm:px-6 lg:px-8">
+        <header className="mb-8 flex items-center justify-between gap-3 lg:mb-12">
+          <h1 className="text-lg font-semibold tracking-tight text-white">CarCode Scanner</h1>
+          <Link href={back.href} className={cn("shrink-0 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-white/10", focusRing)}>
+            {back.label}
+          </Link>
+        </header>
+        {children}
+      </div>
+    </main>
   );
 }
 
-function Unavailable({ offer }: { offer: TransportOffer }) {
-  if (offer.status === "checking") return <p className="text-sm text-slate-400">Checking this browser…</p>;
-  if (offer.status === "unavailable") return <p data-unavailable className="text-sm text-amber-200">Not available here: {offer.detail}.</p>;
-  return null;
-}
-
-/** The current-data PIDs each ECU's own bitmap lists and the reviewed table can decode. */
-function pollable(discovery: DiscoveryReport | null): LiveSelection[] {
-  return (discovery?.ecus ?? []).flatMap((ecu) => ecu.currentData.supportedPids.filter((pid) => pidDefinition(pid)).map((pid) => ({ module: ecu.module, pid })));
-}
-
-const keyOf = (entry: LiveSelection) => `${entry.module}:${entry.pid}`;
-
 /**
- * The scanner preview. Everything stays in this page's memory: nothing is
- * saved, sent or attached to a diagnosis. Decoded values are shown as
- * pending / unverified, and no conclusion is drawn from anything read.
+ * The scanner page. Everything stays in this page's memory: nothing is saved,
+ * sent or attached to a diagnosis. Decoded values are shown as pending
+ * verification, and no conclusion is drawn from anything read.
  */
 export default function ScannerClient({ vehicle }: { vehicle: ScannerVehicleContext | null }) {
   const [session] = useState(() => new ScannerSession());
   const view = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const [pendingKind, setPendingKind] = useState<LinkInfo["kind"] | null>(null);
   const [profile, setProfile] = useState("documented");
   const [showAllDevices, setShowAllDevices] = useState(false);
-  const [manual, setManual] = useState({ service: "", notify: "", write: "" });
+  const [manual, setManual] = useState<ManualUuids>({ service: "", notify: "", write: "" });
   const [baudRate, setBaudRate] = useState(String(DEFAULT_SERIAL_SETTINGS.baudRate));
   const [chosen, setChosen] = useState<string[]>([]);
   const [cycles, setCycles] = useState("10");
@@ -96,195 +106,179 @@ export default function ScannerClient({ vehicle }: { vehicle: ScannerVehicleCont
     };
   }, [session]);
 
+  const stage = stageOf(view);
   const idle = view.link === "none" || view.link === "ended";
   const ready = view.link === "open" && view.lifecycle === "ready" && !view.activity;
   const canRead = ready && view.vehicleFound && !view.needsRecovery;
   const options = pollable(view.discovery);
-  const selection = options.filter((entry) => chosen.includes(keyOf(entry)));
+  const selection = options.filter((entry) => chosen.includes(pollKey(entry))).map(({ module, pid }) => ({ module, pid }));
   const vehicleName = vehicle ? `${vehicle.year} ${vehicle.make} ${vehicle.model}${vehicle.engine ? ` (${vehicle.engine})` : ""}` : null;
+  const kind = view.link === "choosing" ? pendingKind : (view.transport ?? pendingKind);
+  const inlineNotice = view.notice && stage !== "failed" && stage !== "no_vehicle";
+  const hasResults = Boolean(view.scan || view.discovery?.ecus.length);
+  // Connecting again is the one main action, unless it cannot help: then the other ways to connect come first.
+  const canRetry = view.canReconnect && !(view.notice && describeNotice(view.notice).noRetry);
+
+  const connectBluetooth = () => {
+    setPendingKind("web_bluetooth");
+    void session.connectBluetooth({ profile, showAllDevices, manual });
+  };
+  const connectSerial = () => {
+    setPendingKind("web_serial");
+    void session.connectSerial({ baudRate: Number(baudRate) });
+  };
+
+  const disconnect = (
+    <button type="button" data-disconnect className={quietAction} onClick={() => void session.disconnect()}>
+      Disconnect
+    </button>
+  );
+  const recover = (label: string, primary: boolean) => (
+    <button type="button" data-recover className={primary ? mainAction : quietAction} onClick={() => void session.recover()}>
+      {label}
+    </button>
+  );
+  const reconnect = canRetry && (
+    <button type="button" data-reconnect className={mainAction} onClick={() => void session.reconnect()}>
+      Connect again
+    </button>
+  );
+
+  const connectionChoices = (
+    <>
+      <ConnectOptions bluetooth={view.offers.bluetooth} serial={view.offers.serial} onBluetooth={connectBluetooth} onSerial={connectSerial} />
+      <AdvancedConnection
+        bluetooth={view.offers.bluetooth}
+        serial={view.offers.serial}
+        profile={profile}
+        onProfile={setProfile}
+        showAllDevices={showAllDevices}
+        onShowAllDevices={setShowAllDevices}
+        manual={manual}
+        onManual={setManual}
+        baudRate={baudRate}
+        onBaudRate={setBaudRate}
+      />
+    </>
+  );
 
   return (
-    <GaragePage title="Connect Scanner" subtitle="Read-only OBD-II preview" back={scannerBackLink(vehicle)}>
-      <p data-preview-banner role="note" className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-100">
-        {PREVIEW_BANNER}
-      </p>
-
-      <Card>
-        <SectionTitle>Vehicle</SectionTitle>
-        <p data-vehicle-context className="text-sm text-slate-200">
-          {vehicleName ?? "No vehicle chosen. You can still connect."}
-        </p>
-        <p className="mt-1 text-xs text-slate-400">
-          {vehicleName ? "This is the vehicle you came from. Nothing checks that it is the car the adapter is plugged into. " : ""}
-          Nothing read here is saved, sent or attached to a diagnosis. No sign-in is needed.
-        </p>
-      </Card>
-
-      {view.notice && (
-        <p role={view.notice.tone === "error" ? "alert" : "status"} data-notice={view.notice.tone} className={view.notice.tone === "error" ? "rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-200" : "rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-slate-200"}>
-          {view.notice.text}
-        </p>
-      )}
-
-      {idle && (
-        <>
-          <Card>
-            <SectionTitle>Bluetooth Low Energy adapter</SectionTitle>
-            <Unavailable offer={view.offers.bluetooth} />
-            {view.offers.bluetooth.status === "available" && (
-              <div className="space-y-3">
-                <label className="block text-xs text-slate-300">
-                  Adapter profile
-                  <select aria-label="Adapter profile" className={`${inputClass} mt-1`} value={profile} onChange={(event) => setProfile(event.target.value)}>
-                    <option value="documented">All documented profiles (community-reported, unverified)</option>
-                    {DOCUMENTED_BLE_PROFILES.map((candidate) => (
-                      <option key={candidate.id} value={candidate.id}>
-                        {candidate.label}: {candidate.reportedFor}
-                      </option>
-                    ))}
-                    <option value="manual">Enter UUIDs manually</option>
-                  </select>
-                </label>
-                {profile === "manual" && (
-                  <div className="grid gap-2 sm:grid-cols-3">
-                    {(["service", "notify", "write"] as const).map((field) => (
-                      <label key={field} className="block text-xs text-slate-300">
-                        {field === "service" ? "Service UUID" : field === "notify" ? "Notify UUID" : "Write UUID"}
-                        <input aria-label={`${field} UUID`} className={`${inputClass} mt-1`} value={manual[field]} onChange={(event) => setManual({ ...manual, [field]: event.target.value })} />
-                      </label>
-                    ))}
-                  </div>
-                )}
-                <label className="flex items-center gap-2 text-xs text-slate-300">
-                  <input type="checkbox" checked={showAllDevices} onChange={(event) => setShowAllDevices(event.target.checked)} />
-                  Show all nearby devices (use if your adapter is not listed)
-                </label>
-                <button type="button" data-connect-ble className={primaryButton} onClick={() => void session.connectBluetooth({ profile, showAllDevices, manual })}>
-                  Choose Bluetooth adapter
+    <Frame back={scannerBackLink(vehicle)}>
+      <section data-stage={stage} className="grid items-center gap-x-12 gap-y-6 lg:grid-cols-[minmax(0,1fr)_21rem]">
+        <div className="min-w-0">
+          {stage === "failed" && (
+            <FailurePanel notice={view.notice} fallback="Connection failed" hasResults={hasResults}>
+              {reconnect}
+            </FailurePanel>
+          )}
+          {stage === "no_vehicle" && (
+            <FailurePanel notice={view.notice} fallback="Vehicle not responding" hasResults={hasResults}>
+              {ready && recover("Try Again", true)}
+              {disconnect}
+            </FailurePanel>
+          )}
+          {HEADLINE[stage] && <h2 className={headline}>{HEADLINE[stage]}</h2>}
+          {stage === "connected" && (
+            <>
+              <h2 className={cn(headline, "flex items-center gap-3")}>
+                <span aria-hidden className="mt-1.5 size-3 shrink-0 rounded-full bg-cyan-300 shadow-[0_0_14px_rgba(103,232,249,0.8)]" />
+                Connected
+              </h2>
+              {view.discovery && <ConnectedSummary vehicleName={vehicleName} discovery={view.discovery} linkInfo={view.linkInfo} />}
+              {view.needsRecovery && <p className="mt-3 text-sm text-amber-200">The adapter needs a reset before anything else is read.</p>}
+              <div className="mt-6 flex flex-wrap gap-2">
+                <button type="button" data-scan className={mainAction} disabled={!canRead} onClick={() => void session.scan()}>
+                  {view.scan ? "Scan Again" : "Scan Vehicle"}
                 </button>
+                {disconnect}
+                {ready && recover("Reset adapter", view.needsRecovery)}
               </div>
-            )}
-            <Limitations items={WEB_BLUETOOTH_LIMITATIONS} />
-          </Card>
-
-          <Card>
-            <SectionTitle>Paired COM port or USB serial adapter</SectionTitle>
-            <Unavailable offer={view.offers.serial} />
-            {view.offers.serial.status === "available" && (
-              <div className="space-y-3">
-                <p className="text-xs text-slate-400">Pair a Bluetooth Classic adapter in Windows Bluetooth settings first. Windows then offers it as a COM port in the browser&apos;s list.</p>
-                <label className="block text-xs text-slate-300">
-                  Baud rate
-                  <input aria-label="Baud rate" inputMode="numeric" className={`${inputClass} mt-1`} value={baudRate} onChange={(event) => setBaudRate(event.target.value)} />
-                </label>
-                <button type="button" data-connect-serial className={primaryButton} onClick={() => void session.connectSerial({ baudRate: Number(baudRate) })}>
-                  Choose COM port
+            </>
+          )}
+          {stage === "disconnected" && (
+            <p className="mt-3 max-w-xl text-base text-slate-300 sm:text-lg">
+              Plug your Vgate into the vehicle&apos;s OBD-II port and turn the ignition on.
+            </p>
+          )}
+          {(stage === "disconnected" || stage === "failed") && !view.discovery && (
+            <p data-vehicle-context className="mt-3 text-sm text-slate-400">
+              {vehicleName ?? "No vehicle chosen. You can still connect."}
+            </p>
+          )}
+          {stage === "disconnected" && reconnect && <div className="mt-5">{reconnect}</div>}
+          {(stage === "choosing" || stage === "connecting") && <ProgressSteps steps={connectionSteps(view, kind)} />}
+          {stage === "scanning" && <ProgressSteps steps={scanSteps(view)} />}
+          <p data-status aria-live="polite" className={cn("text-sm text-slate-400", stage === "choosing" || stage === "connecting" || stage === "scanning" || stage === "closing" ? "mt-4" : "sr-only")}>
+            {statusLine(view)}
+          </p>
+          {(stage === "connecting" || stage === "scanning") && (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {(view.activity === "scan" || view.activity === "discovery") && (
+                <button type="button" data-cancel className={quietAction} disabled={view.stopping} onClick={() => session.cancel()}>
+                  Cancel
                 </button>
-              </div>
-            )}
-            <Limitations items={WEB_SERIAL_LIMITATIONS} />
-          </Card>
-        </>
-      )}
-
-      <Card>
-        <SectionTitle aside={view.transport && <span className="text-xs text-slate-400">{view.transport === "web_bluetooth" ? "Web Bluetooth" : "Web Serial"}</span>}>Connection</SectionTitle>
-        <p data-status aria-live="polite" className="text-sm text-slate-200">
-          {statusLine(view)}
-        </p>
-        {view.linkInfo?.kind === "web_bluetooth" && (
-          <p data-link-info className="mt-1 text-xs text-slate-400">
-            {view.linkInfo.deviceName ?? "Unnamed device"}: {view.linkInfo.profile.label}, {view.linkInfo.profile.provenance === "user_supplied" ? "entered by you" : "community-reported"}, real-adapter validation pending. A matching profile shows only that bytes can move.
-          </p>
-        )}
-        {view.linkInfo?.kind === "web_serial" && (
-          <p data-link-info className="mt-1 text-xs text-slate-400">
-            Serial port at {view.linkInfo.settings.baudRate} baud. An open port shows only that bytes can move.
-          </p>
-        )}
-        {view.needsRecovery && <p className="mt-2 text-sm text-amber-200">The adapter must be reset before anything else is read.</p>}
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button type="button" data-scan className={primaryButton} disabled={!canRead} onClick={() => void session.scan()}>
-            Read codes and data
-          </button>
-          {(view.activity === "scan" || view.activity === "discovery") && (
-            <button type="button" data-cancel className={quietButton} disabled={view.stopping} onClick={() => session.cancel()}>
-              Cancel
-            </button>
-          )}
-          {ready && (
-            <button type="button" data-recover className={quietButton} onClick={() => void session.recover()}>
-              Reset adapter and search again
-            </button>
-          )}
-          {(view.link === "open" || view.link === "connecting") && (
-            <button type="button" data-disconnect className={quietButton} onClick={() => void session.disconnect()}>
-              Disconnect
-            </button>
-          )}
-          {idle && view.canReconnect && (
-            <button type="button" data-reconnect className={primaryButton} onClick={() => void session.reconnect()}>
-              Connect again
-            </button>
-          )}
-        </div>
-      </Card>
-
-      {view.discovery && <DiscoverySummary discovery={view.discovery} />}
-
-      {view.vehicleFound && view.discovery && (
-        <Card>
-          <SectionTitle aside={<UnverifiedBadge />}>Current-data readings (OBD $01): polling</SectionTitle>
-          <UnverifiedNote source="formulas" />
-          <p className="text-xs text-slate-400">
-            Polling runs only when you start it, for the number of cycles you set, one command at a time. It stops on Stop, a disconnect, or when you leave or hide this page. Pick up to {MAX_LIVE_PIDS} PIDs.
-          </p>
-          {options.length === 0 ? (
-            <p className="mt-2 text-sm text-slate-300">No ECU listed a PID this preview can read.</p>
-          ) : (
-            <div className="mt-2 grid gap-1 sm:grid-cols-2">
-              {options.map((entry) => (
-                <label key={keyOf(entry)} className="flex items-center gap-2 text-xs text-slate-300">
-                  <input
-                    type="checkbox"
-                    data-poll-option={keyOf(entry)}
-                    checked={chosen.includes(keyOf(entry))}
-                    onChange={(event) => setChosen(event.target.checked ? [...chosen, keyOf(entry)] : chosen.filter((key) => key !== keyOf(entry)))}
-                  />
-                  <span>
-                    {pidDefinition(entry.pid)?.quantity} <ModuleLabel module={entry.module} />
-                  </span>
-                </label>
-              ))}
+              )}
+              {disconnect}
             </div>
           )}
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            <label className="block text-xs text-slate-300">
-              Cycles (1 to {MAX_LIVE_CYCLES})
-              <input aria-label="Cycles" inputMode="numeric" className={`${inputClass} mt-1`} value={cycles} onChange={(event) => setCycles(event.target.value)} />
-            </label>
-            <label className="block text-xs text-slate-300">
-              Pause between cycles, ms (0 to {MAX_LIVE_INTERVAL_MS})
-              <input aria-label="Pause between cycles" inputMode="numeric" className={`${inputClass} mt-1`} value={intervalMs} onChange={(event) => setIntervalMs(event.target.value)} />
-            </label>
-          </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button type="button" data-poll-start className={primaryButton} disabled={!canRead || selection.length === 0} onClick={() => void session.startPolling({ selection, cycles: Number(cycles), intervalMs: Number(intervalMs) })}>
-              Start polling
-            </button>
-            {view.activity === "live" && (
-              <button type="button" data-poll-stop className={quietButton} disabled={view.stopping} onClick={() => session.stopPolling()}>
-                Stop polling
-              </button>
-            )}
-          </div>
-          {view.live && <LiveReadings live={view.live} />}
-        </Card>
-      )}
+        </div>
+        <ConnectorGraphic pins={pinsFor(stage, view)} className="order-first mx-auto w-40 sm:w-52 lg:order-none lg:w-full" />
+      </section>
 
-      {view.scan && <ScanResults scan={view.scan} connection={view.connection} />}
+      <div className="mt-8 space-y-4">
+        {inlineNotice && <NoticeBanner notice={view.notice!} hasResults={hasResults} />}
 
-      {view.logTotal > 0 && <AdapterLog log={view.log} total={view.logTotal} />}
-    </GaragePage>
+        {idle && !canRetry && connectionChoices}
+        {idle && canRetry && (
+          <Disclosure summary="Use a different adapter">
+            <div className="space-y-4">{connectionChoices}</div>
+          </Disclosure>
+        )}
+
+        {stage === "scanning" && !view.scan && <ScanSkeleton />}
+
+        {(view.scan || (view.discovery && view.vehicleFound)) && (
+          <div className="grid gap-4 lg:grid-cols-5">
+            {view.scan && <ScanSummary scan={view.scan} connection={view.connection} />}
+            {view.scan && <VehicleCard scan={view.scan} vehicleName={vehicleName} className="lg:col-span-2" />}
+            {view.scan && <FaultCodesCard scan={view.scan} className="lg:col-span-3" />}
+            {view.scan && <ReadinessCard scan={view.scan} className="lg:col-span-2" />}
+            {view.scan && <FreezeFrameCard scan={view.scan} className="lg:col-span-3" />}
+            <LiveDataCard
+              connected={view.link === "open" && view.vehicleFound}
+              scan={view.scan}
+              live={view.live}
+              options={options}
+              chosen={chosen}
+              onToggle={(key, on) => setChosen(on ? [...chosen, key] : chosen.filter((entry) => entry !== key))}
+              cycles={cycles}
+              onCycles={setCycles}
+              intervalMs={intervalMs}
+              onInterval={setIntervalMs}
+              maxPids={MAX_LIVE_PIDS}
+              maxCycles={MAX_LIVE_CYCLES}
+              maxInterval={MAX_LIVE_INTERVAL_MS}
+              canStart={canRead && selection.length > 0}
+              running={view.activity === "live"}
+              stopping={view.stopping}
+              onStart={() => void session.startPolling({ selection, cycles: Number(cycles), intervalMs: Number(intervalMs) })}
+              onStop={() => session.stopPolling()}
+            />
+          </div>
+        )}
+
+        {(view.logTotal > 0 || view.linkInfo) && <AdvancedDiagnostics log={view.log} total={view.logTotal} discovery={view.discovery} linkInfo={view.linkInfo} evidence={view.scan?.evidence ?? null} />}
+
+        <footer className="flex gap-2 pt-4 text-xs text-slate-500">
+          <ShieldIcon className="size-4 shrink-0" />
+          <div>
+            <p>Read-only. Nothing read here is saved, sent or attached to a diagnosis.</p>
+            <p data-preview-banner role="note">
+              {PREVIEW_BANNER}
+            </p>
+          </div>
+        </footer>
+      </div>
+    </Frame>
   );
 }

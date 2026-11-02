@@ -330,7 +330,7 @@ describe("lifecycle races", () => {
     await session.connectSerial({});
     const view = session.getSnapshot();
     expect(view).toMatchObject({ link: "open", vehicleFound: false, notice: { tone: "error" } });
-    expect(view.notice?.text).toBe("The adapter answered, but it could not reach the car. Turn the ignition on, then press Reset adapter and search again. Nothing is concluded about the vehicle.");
+    expect(view.notice?.text).toBe("Scanner connected, but the vehicle did not respond. Make sure the ignition is on and try again.");
     // The adapter's own answer stays in the log.
     expect(view.log.find((step) => step.command === "0100")).toMatchObject({ outcome });
     await session.recover();

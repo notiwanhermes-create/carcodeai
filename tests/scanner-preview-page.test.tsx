@@ -32,7 +32,7 @@ import { parseScannerVehicle, scannerBackLink, scannerEntryBuilt, scannerHref, s
 import ScannerClient, { PREVIEW_BANNER } from "../app/scanner/ScannerClient";
 import ScannerPage, { metadata } from "../app/scanner/page";
 import { outcomeText } from "../components/scanner/ScannerPanels";
-import { fakeBle18f0, FakeSerialLink, scriptedVehicle, type FakeBleLink } from "./helpers/scanner-browser-fakes";
+import { deferred, fakeBle18f0, FakeBleLink, FakeSerialLink, scriptedVehicle } from "./helpers/scanner-browser-fakes";
 
 const CONTEXT = { id: "veh-1", year: "2015", make: "Toyota", model: "Camry", returnTo: "garage" as const };
 
@@ -116,9 +116,9 @@ describe("Connect Scanner entries", () => {
     const { container } = render(<><Link vehicle={CONTEXT} returnTo="garage" /><Link vehicle={null} returnTo="garage" /></>);
     expect(container.querySelector("[data-connect-scanner]")).toBeNull();
     await waitFor(() => expect(container.querySelectorAll("[data-connect-scanner]")).toHaveLength(2));
-    // One same-origin HEAD to the route, however many links, carrying nothing.
+    // One same-origin HEAD to the route, however many links, with cookies so a login-protected preview answers it.
     expect(route).toHaveBeenCalledTimes(1);
-    expect(route).toHaveBeenCalledWith("/scanner", expect.objectContaining({ method: "HEAD", credentials: "omit" }));
+    expect(route).toHaveBeenCalledWith("/scanner", expect.objectContaining({ method: "HEAD", credentials: "same-origin" }));
   });
 
   it.each([
@@ -221,7 +221,7 @@ describe("the page", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("service UUID");
     expect(ble.requests).toEqual([]);
     fireEvent.change(select, { target: { value: "documented" } });
-    fireEvent.click(screen.getByLabelText(/Show all nearby devices/));
+    fireEvent.click(screen.getByLabelText(/Show all Bluetooth devices/));
     fireEvent.click(document.querySelector("[data-connect-ble]")!);
     await waitFor(() => expect(ble.requests[0]).toMatchObject({ acceptAllDevices: true }));
     await waitFor(() => expect(document.querySelector("[data-link-info]")?.textContent).toContain("real-adapter validation pending"));
@@ -287,7 +287,7 @@ describe("the page", () => {
     expect(serial.opens[0]).toMatchObject({ baudRate: 9600 });
     expect(document.querySelector("[data-connect-serial]")).toBeNull();
     expect(document.querySelector("[data-link-info]")?.textContent).toContain("9600 baud");
-    expect(document.querySelector("[data-ecu]")?.textContent).toContain("reported VIN 1HGCM82633A004352");
+    expect(document.querySelector("[data-vin]")?.textContent).toBe("1HGCM82633A004352");
 
     fireEvent.click(document.querySelector("[data-scan]")!);
     const code = await waitFor(() => {
@@ -295,26 +295,28 @@ describe("the page", () => {
       expect(found).not.toBeNull();
       return found!;
     });
-    expect(code.textContent).toContain("stored: reported");
-    expect(code.textContent).toContain("pending: not listed");
+    expect(code.textContent).toContain("Stored");
+    expect(code.textContent).not.toContain("Pending");
     expect(code.closest("[data-dtc-module]")?.getAttribute("data-dtc-module")).toBe("obd-can11-7e8");
+    const codeDetail = document.querySelector('[data-code-detail="P0133"]')!;
+    expect(codeDetail.textContent).toContain("stored: reported");
+    expect(codeDetail.textContent).toContain("pending: not listed");
 
     const text = document.body.textContent ?? "";
-    expect(text).toContain("Partial: absence not established");
-    expect(text).toContain("Current-data readings (OBD $01)");
+    expect(text).toContain("Partial scan");
+    expect(text).toContain("Live Data");
     expect(text).toContain("That is a monitor status, not a fault");
     expect(text).toContain("not current values");
     expect(text).toContain("Nothing here is sent to Guided Diagnostics");
     expect(text).not.toMatch(/no codes found|all clear|safe to drive|passed|healthy/i);
-    expect(text).not.toMatch(/live data/i);
 
     const rpm = [...document.querySelectorAll('[data-reading="0C"]')].at(-1)!;
     expect(within(rpm as HTMLElement).getByText("750 rpm")).toBeTruthy();
-    expect(rpm.querySelector("[data-module]")?.textContent).toContain("obd-can11-7e8");
-    expect(rpm.querySelector("[data-raw]")?.textContent).toContain("41 0C 0B B8");
+    expect(rpm.querySelector("[data-module]")?.getAttribute("data-module")).toBe("obd-can11-7e8");
+    expect([...document.querySelectorAll('[data-raw-reading="0C"]')].at(-1)?.textContent).toContain("41 0C 0B B8");
     const badges = document.querySelectorAll("[data-unverified]");
-    expect(badges.length).toBeGreaterThanOrEqual(4);
-    for (const badge of badges) expect(badge.textContent).toBe("Pending / unverified");
+    expect(badges).toHaveLength(3); // readiness, freeze frame, live data
+    for (const badge of badges) expect(badge.textContent).toBe("Pending verification");
     // Each decoded section says why it is pending, beside its badge.
     const notes = [...document.querySelectorAll("[data-unverified-note]")].map((note) => note.textContent);
     expect(notes).toHaveLength(badges.length);
@@ -419,6 +421,189 @@ describe("the page", () => {
     expect(document.querySelector('[data-section="current_data"]')?.textContent).toContain("Stopped part-way");
     const unread = [...document.querySelectorAll('[data-reading="0D"]')].at(-1)!;
     expect(unread.querySelector("[data-value]")?.textContent).toBe("Not read in this run");
+  });
+
+  it("the first screen is the two choices: nothing technical is open, and manual options stay behind Advanced", async () => {
+    browser({ bluetooth: fakeBle18f0(), serial: new FakeSerialLink() });
+    render(<ScannerClient vehicle={null} />);
+    await waitFor(() => expect(document.querySelector("[data-connect-ble]")).not.toBeNull());
+    expect(document.querySelector("[data-stage]")?.getAttribute("data-stage")).toBe("disconnected");
+    expect(screen.getByRole("heading", { name: "Connect your scanner" })).toBeTruthy();
+    expect(document.querySelector("[data-connect-ble]")?.textContent).toBe("Connect Bluetooth");
+    expect(document.querySelector("[data-connect-serial]")?.textContent).toBe("Connect COM Port");
+    const advanced = document.querySelector("[data-advanced-connection]") as HTMLDetailsElement;
+    expect(advanced.open).toBe(false);
+    for (const label of ["Adapter profile", "Baud rate"]) expect(advanced.contains(screen.getByLabelText(label))).toBe(true);
+    expect(advanced.contains(screen.getByLabelText(/Show all Bluetooth devices/))).toBe(true);
+    expect(screen.queryByLabelText("service UUID")).toBeNull();
+  });
+
+  it("raw bytes and the adapter log stay collapsed; normal results show none of them", async () => {
+    await scanned(() => scriptedVehicle());
+    for (const raw of document.querySelectorAll("[data-raw], [data-raw-reading]")) expect((raw.closest("details") as HTMLDetailsElement).open, raw.textContent ?? "").toBe(false);
+    const log = document.querySelector("[data-adapter-log]") as HTMLDetailsElement;
+    expect(log.open).toBe(false);
+    expect(log.closest("[data-advanced-diagnostics]")).not.toBeNull();
+    expect((document.querySelector("[data-advanced-diagnostics]") as HTMLDetailsElement).open).toBe(false);
+    expect(log.textContent).toContain("Adapter communication log");
+  });
+
+  it("a code shows a title only from CarCode's lookup, says when none is on file, and shows each reported status", async () => {
+    await scanned(() => ({ ...scriptedVehicle(), "03": { lines: ["7E8 06 43 02 03 01 01 71"] }, "07": { lines: ["7E8 04 47 01 01 71"] } }));
+    const lean = document.querySelector('[data-code="P0171"]')!;
+    expect(lean.querySelector("[data-code-title]")?.textContent).toMatch(/System Too Lean/);
+    expect([...lean.querySelectorAll("[data-kind]")].map((kind) => kind.textContent)).toEqual(["Stored", "Pending"]);
+    const unknown = document.querySelector('[data-code="P0301"]')!;
+    expect(unknown.querySelector("[data-code-title]")?.textContent).toBe("No definition on file yet");
+    expect([...unknown.querySelectorAll("[data-kind]")].map((kind) => kind.textContent)).toEqual(["Stored"]);
+    expect(document.body.textContent).toContain("not licensed SAE data");
+  });
+
+  it("a code read that failed is said out loud, never shown as no codes", async () => {
+    await scanned(() => ({ ...scriptedVehicle(), "0A": { lines: ["NO DATA"] } }));
+    expect(document.querySelector('[data-unread-service="0A"]')?.textContent).toContain("Permanent codes not read: No response. This does not mean no codes");
+  });
+
+  it("the steps follow the real read order while connecting, and the connected card shows only what was detected", async () => {
+    const serial = new FakeSerialLink(() => ({ ...scriptedVehicle(), "0900": { lines: ["NO DATA"] } }));
+    serial.chooser = deferred();
+    browser({ serial });
+    render(<ScannerClient vehicle={null} />);
+    await waitFor(() => expect(document.querySelector("[data-connect-serial]")).not.toBeNull());
+    fireEvent.click(document.querySelector("[data-connect-serial]")!);
+    await waitFor(() => expect(document.querySelector("[data-stage]")?.getAttribute("data-stage")).toBe("choosing"));
+    expect([...document.querySelectorAll("[data-step]")].map((step) => step.textContent)).toEqual(["Scanner selected", "COM port opened", "Adapter responding", "Detecting vehicle", "Checking modules", "Reading VIN"]);
+    expect(document.querySelector('[data-step="selected"]')?.getAttribute("data-step-state")).toBe("active");
+    serial.chooser.resolve(serial as never);
+    await waitFor(() => expect(document.querySelector("[data-stage]")?.getAttribute("data-stage")).toBe("connected"));
+    expect(screen.getByRole("heading", { name: "Connected" })).toBeTruthy();
+    expect(document.querySelector("[data-scan]")?.textContent).toBe("Scan Vehicle");
+    expect(document.querySelector("[data-vin]")).toBeNull(); // the car reported no VIN, so no VIN row
+    expect(document.querySelector("[data-vehicle-context]")).toBeNull();
+    // What was left out up front is still there under Advanced diagnostics.
+    const details = document.querySelector("[data-advanced-diagnostics]")!;
+    expect(details.textContent).toContain("ELM327 v1.5");
+    expect(details.querySelector('[data-module-detail="obd-can11-7e8"]')?.textContent).toContain("VIN: Support unknown, so not requested");
+  });
+
+  it("UNABLE TO CONNECT reads as a silent vehicle, in plain words, with Try Again", async () => {
+    const replies = { ...scriptedVehicle(), "0100": [{ lines: ["UNABLE TO CONNECT"] }, { lines: ["7E8 06 41 00 98 18 80 01"] }] };
+    const serial = new FakeSerialLink(() => replies);
+    browser({ serial });
+    render(<ScannerClient vehicle={null} />);
+    await waitFor(() => expect(document.querySelector("[data-connect-serial]")).not.toBeNull());
+    fireEvent.click(document.querySelector("[data-connect-serial]")!);
+    await waitFor(() => expect(document.querySelector("[data-stage]")?.getAttribute("data-stage")).toBe("no_vehicle"));
+    expect(screen.getByRole("alert").textContent).toContain("Scanner connected, but the vehicle did not respond. Make sure the ignition is on and try again.");
+    expect(document.querySelector("[data-stage]")?.textContent).not.toContain("no_vehicle_protocol");
+    expect(document.querySelector("[data-advanced-diagnostics]")?.textContent).toContain("ELM327 v1.5"); // the adapter's identity is still available
+    expect(document.querySelector("[data-connector]")?.getAttribute("data-bus")).toBe("silent");
+    const retry = document.querySelector("[data-recover]") as HTMLButtonElement;
+    expect(retry.textContent).toBe("Try Again");
+    fireEvent.click(retry);
+    await waitFor(() => expect(document.querySelector("[data-stage]")?.getAttribute("data-stage")).toBe("connected"));
+    expect(serial.opens).toHaveLength(1);
+  });
+
+  it("an adapter with no recognized profile gets the plain message, with the original wording under Technical details", async () => {
+    const unknown = new FakeBleLink("0000dead-0000-1000-8000-00805f9b34fb", "0000dea0-0000-1000-8000-00805f9b34fb", "0000dea1-0000-1000-8000-00805f9b34fb");
+    browser({ bluetooth: unknown });
+    render(<ScannerClient vehicle={null} />);
+    await waitFor(() => expect(document.querySelector("[data-connect-ble]")).not.toBeNull());
+    fireEvent.click(screen.getByLabelText(/Show all Bluetooth devices/));
+    fireEvent.click(document.querySelector("[data-connect-ble]")!);
+    await waitFor(() => expect(document.querySelector("[data-stage]")?.getAttribute("data-stage")).toBe("failed"));
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("CarCode connected to the Bluetooth device, but it doesn't use a scanner profile we currently recognize.");
+    const technical = alert.querySelector("[data-notice-technical]")!;
+    expect(technical.textContent).toContain("none of the profile services");
+    expect((technical.closest("details") as HTMLDetailsElement).open).toBe(false);
+    // Connecting to the same device again cannot help, so the other ways to connect come first.
+    expect(document.querySelector("[data-reconnect]")).toBeNull();
+    expect(document.querySelector("[data-connect-ble]")?.closest("details")).toBeNull();
+  });
+
+  it("after a lost link, Connect again is the one main action, other adapters are tucked away, and live updates are gone", async () => {
+    const serial = new FakeSerialLink();
+    browser({ serial });
+    render(<ScannerClient vehicle={null} />);
+    await waitFor(() => expect(document.querySelector("[data-connect-serial]")).not.toBeNull());
+    fireEvent.click(document.querySelector("[data-connect-serial]")!);
+    await waitFor(() => expect(document.querySelector("[data-poll-start]")).not.toBeNull());
+    serial.drop();
+    await waitFor(() => expect(document.querySelector("[data-reconnect]")).not.toBeNull());
+    expect((document.querySelector("[data-connect-serial]")?.closest("details") as HTMLDetailsElement).open).toBe(false);
+    expect(document.querySelector("[data-poll-start]")).toBeNull();
+  });
+
+  it("Disconnect stays available while connecting and while scanning, and closes the link", async () => {
+    const connecting = new FakeSerialLink(() => ({ ...scriptedVehicle(), "0100": { lines: ["7E8 06 41 00 98 18 80 01"], delayMs: 300 } }));
+    browser({ serial: connecting });
+    const { unmount } = render(<ScannerClient vehicle={null} />);
+    await waitFor(() => expect(document.querySelector("[data-connect-serial]")).not.toBeNull());
+    fireEvent.click(document.querySelector("[data-connect-serial]")!);
+    await waitFor(() => expect(document.querySelector('[data-step="vehicle"]')?.getAttribute("data-step-state")).toBe("active"));
+    expect(document.querySelector("[data-cancel]")).not.toBeNull();
+    fireEvent.click(document.querySelector("[data-disconnect]")!);
+    await waitFor(() => expect(connecting.isOpen).toBe(false));
+    await waitFor(() => expect(document.querySelector("[data-stage]")?.getAttribute("data-stage")).not.toBe("connecting"));
+    unmount();
+
+    const scanning = new FakeSerialLink(() => ({ ...scriptedVehicle(), "07": { lines: ["7E8 02 47 00"], delayMs: 300 } }));
+    browser({ serial: scanning });
+    render(<ScannerClient vehicle={null} />);
+    await waitFor(() => expect(document.querySelector("[data-connect-serial]")).not.toBeNull());
+    fireEvent.click(document.querySelector("[data-connect-serial]")!);
+    await waitFor(() => expect((document.querySelector("[data-scan]") as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(document.querySelector("[data-scan]")!);
+    await waitFor(() => expect(document.querySelector("[data-stage]")?.getAttribute("data-stage")).toBe("scanning"));
+    expect(document.querySelector("[data-cancel]")).not.toBeNull();
+    fireEvent.click(document.querySelector("[data-disconnect]")!);
+    await waitFor(() => expect(scanning.isOpen).toBe(false));
+  });
+
+  it("a scan keeps its own vehicle after a reconnect; the connected card shows the new one, and results stay on screen throughout", async () => {
+    const vin = (last: string) => ["7E8 10 14 49 02 01 31 48 47", "7E8 21 43 4D 38 32 36 33 33", `7E8 22 41 30 30 34 33 35 ${last}`];
+    let lastByte = "32";
+    const serial = new FakeSerialLink(() => ({ ...scriptedVehicle(), "0902": { lines: vin(lastByte) } }));
+    browser({ serial });
+    render(<ScannerClient vehicle={null} />);
+    await waitFor(() => expect(document.querySelector("[data-connect-serial]")).not.toBeNull());
+    fireEvent.click(document.querySelector("[data-connect-serial]")!);
+    await waitFor(() => expect((document.querySelector("[data-scan]") as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(document.querySelector("[data-scan]")!);
+    await waitFor(() => expect(document.querySelector("[data-scan-vin]")?.textContent).toBe("1HGCM82633A004352"));
+
+    serial.drop();
+    await waitFor(() => expect(document.querySelector("[data-reconnect]")).not.toBeNull());
+    lastByte = "33";
+    fireEvent.click(document.querySelector("[data-reconnect]")!);
+    await waitFor(() => expect(document.querySelector("[data-stage]")?.getAttribute("data-stage")).toBe("connecting"));
+    expect(document.querySelector("[data-scan-vin]")?.textContent).toBe("1HGCM82633A004352");
+    await waitFor(() => expect(document.querySelector("[data-vin]")?.textContent).toBe("1HGCM82633A004353"));
+    expect(document.querySelector("[data-scan-vin]")?.textContent).toBe("1HGCM82633A004352");
+    expect(document.querySelector("[data-earlier-link]")).not.toBeNull();
+  });
+
+  it("after a disconnect the retained Vehicle section still says the name was chosen, not detected", async () => {
+    await scanned(() => scriptedVehicle());
+    fireEvent.click(document.querySelector("[data-disconnect]")!);
+    await waitFor(() => expect(document.querySelector("[data-stage]")?.getAttribute("data-stage")).toBe("disconnected"));
+    const card = document.querySelector("[data-vehicle-card]")!;
+    expect(card.textContent).toContain("2015 Toyota Camry");
+    expect(card.textContent).toContain("Chosen in your garage, not confirmed by the car.");
+    expect(card.querySelector("[data-scan-vin]")?.textContent).toBe("1HGCM82633A004352");
+  });
+
+  it("a mistake in the manual options stays a form message; nothing failed", async () => {
+    browser({ bluetooth: fakeBle18f0() });
+    render(<ScannerClient vehicle={null} />);
+    fireEvent.change(await screen.findByLabelText("Adapter profile"), { target: { value: "manual" } });
+    fireEvent.change(screen.getByLabelText("service UUID"), { target: { value: "bad" } });
+    fireEvent.click(document.querySelector("[data-connect-ble]")!);
+    await screen.findByRole("alert");
+    expect(document.querySelector("[data-stage]")?.getAttribute("data-stage")).toBe("disconnected");
+    expect(screen.getByRole("heading", { name: "Connect your scanner" })).toBeTruthy();
   });
 
   it("outcome wording never turns a missing answer into a clean result", () => {

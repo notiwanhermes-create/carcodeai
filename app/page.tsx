@@ -7,6 +7,7 @@ import Image from "next/image";
 import { ComboSelect } from "../components/ComboSelect";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { VehicleDeleteButton } from "../components/VehicleDeleteButton";
+import { ConnectScannerLink } from "../components/scanner/ConnectScannerLink";
 import { LANGUAGES, tr, type LangCode } from "./data/translations";
 import { useGarageVehicles } from "./lib/useGarageVehicles";
 import { track } from "./lib/analytics";
@@ -2614,6 +2615,7 @@ export default function Home() {
                     >
                       {tr("addFirstVehicle", lang)}
                     </button>
+                    <ConnectScannerLink vehicle={null} returnTo="garage" className={cn("mt-3 block text-xs font-semibold", t("text-blue-300 hover:text-blue-200", "text-blue-600 hover:text-blue-700"))} />
                   </div>
                 ) : garage.map((v) => {
                   const isActive = v.id === activeId;
@@ -2642,6 +2644,7 @@ export default function Home() {
                             <div className="min-w-0">
                               <div className={cn("truncate text-sm font-semibold", t("text-white", "text-slate-900"))}>{v.year} {v.make} {v.model}{v.engine ? ` (${v.engine})` : ""}</div>
                               {v.vin ? <div className="text-[10px] text-slate-500">{tr("vinSaved", lang)}</div> : null}
+                              <ConnectScannerLink vehicle={v} returnTo={signedIn ? "vehicle" : "garage"} className={cn("mt-0.5 block text-[11px] font-semibold", t("text-blue-300 hover:text-blue-200", "text-blue-600 hover:text-blue-700"))} />
                               {signedIn && (
                                 <div className={cn("mt-0.5 flex flex-wrap items-center gap-x-2 text-[11px]", t("text-slate-400", "text-slate-500"))}>
                                   {facts && <span data-vehicle-facts>{facts}</span>}

@@ -1,4 +1,5 @@
 import { auth } from "@/app/lib/auth-config";
+import { scannerPreviewEnabled } from "@/app/lib/scanner-preview";
 import { redirect } from "next/navigation";
 import VehicleClient from "./VehicleClient";
 
@@ -11,5 +12,5 @@ export default async function VehiclePage({ params }: { params: Promise<{ id: st
   if (!session?.user?.id) {
     redirect(`/login?callbackUrl=${encodeURIComponent(`/garage/${id}`)}`);
   }
-  return <VehicleClient vehicleId={id} />;
+  return <VehicleClient vehicleId={id} scannerPreview={scannerPreviewEnabled()} />;
 }

@@ -772,13 +772,13 @@ describe("isolation of unverified values from diagnostic decisions", () => {
     for (const value of decoded) expectPending(value);
   });
 
-  it("nothing outside the vehicle-communication layer imports it (no path into Guided Diagnostics, routes or pages)", () => {
+  it("only the gated /scanner preview imports the layer (no path into Guided Diagnostics or other routes and pages)", () => {
     const root = path.resolve(__dirname, "..");
-    const layer = path.join(root, "app/lib/vehicle-communication");
+    const preview = [path.join(root, "app/lib/vehicle-communication"), path.join(root, "app/scanner"), path.join(root, "components/scanner")];
     const listTs = (dir: string): string[] =>
       readdirSync(dir).flatMap((name) => {
         const full = path.join(dir, name);
-        if (full === layer || name === "node_modules") return [];
+        if (preview.includes(full) || name === "node_modules") return [];
         if (statSync(full).isDirectory()) return listTs(full);
         return /\.tsx?$/.test(name) ? [full] : [];
       });

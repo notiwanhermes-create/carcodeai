@@ -216,11 +216,17 @@ then the baseline above applies.
 
 ## Validation status
 
-- **Simulated validation**: S1–S7 pass their tests against scripted adapters
-  only, per the [simulated test matrix](scan-flow.md#simulated-test-matrix);
-  S10–S12 are not yet built. Page hide, navigation and unmount reach the
-  controller only through `cancel()` / `dispose()`, which S12 must wire. PID and readiness tables: primary-source check
-  **pending** ([live-data](live-data.md#primary-source-check-pending)).
+- **Simulated validation**: S1–S12 pass their tests against scripted adapters
+  and scripted doubles of `navigator.bluetooth` / `navigator.serial` only, per
+  the [simulated test matrix](scan-flow.md#simulated-test-matrix). Page hide
+  cancels the running activity; navigation, pagehide and unmount close the link
+  (`app/scanner/scanner-session.ts`). PID and readiness tables: primary-source
+  check **pending** ([live-data](live-data.md#primary-source-check-pending)).
+- **One gate**: the route gate is read per request and open only for development,
+  test or `CARCODE_SCANNER_PREVIEW=1`. The home page is static, so on a built site
+  its Connect Scanner link asks the route itself (a same-origin HEAD, once per
+  page load, only when the garage shows the link) and stays hidden unless the
+  route answers. The `/scanner` page itself makes no network call.
 - **Real-adapter validation: PENDING.** No adapter of any kind has been
   connected. No BLE UUID has been confirmed on a device.
 - **Real-vehicle validation: PENDING.** No vehicle has been read.

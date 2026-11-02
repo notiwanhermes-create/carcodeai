@@ -1,8 +1,8 @@
 /**
  * Vehicle communication: shared outcome and lifecycle types.
  *
- * RESEARCH PROTOTYPE (scanner foundation). Not used by any route or page.
- * Client-only, read-only: no database, no network, no Guided Diagnostics
+ * RESEARCH PROTOTYPE (scanner foundation). Used only by the gated `/scanner`
+ * preview. Client-only, read-only: no database, no network, no Guided Diagnostics
  * imports. Design: docs/research/scanner-engine/ (protocol-stack.md,
  * scan-flow.md, vci-transport.md, carcode-scanner-architecture.md).
  *

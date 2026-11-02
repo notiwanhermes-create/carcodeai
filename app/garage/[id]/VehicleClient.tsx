@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { track } from "@/app/lib/analytics";
 import type { VehicleDetailDto, VehicleDto } from "@/app/lib/garage-types";
 import { formatOdometer } from "@/app/lib/odometer";
+import { scannerHref } from "@/app/lib/scanner-preview";
 import { PermanentDeletePanel } from "@/components/garage/PermanentDeletePanel";
 import { MaintenanceForm, MaintenanceRow, MileageEditor, TimelineList } from "@/components/garage/VehicleParts";
 import { Card, CodeChips, GaragePage, SectionTitle, cn, formatDay, inputClass, primaryButton, quietButton } from "@/components/garage/shared";
@@ -18,7 +19,7 @@ type Panel = null | "mileage" | "maintenance" | "details" | "remove" | "permanen
  * One vehicle: what it is, what is still open, what has happened to it, and its
  * service records. Everything comes from the account's own records.
  */
-export default function VehicleClient({ vehicleId }: { vehicleId: string }) {
+export default function VehicleClient({ vehicleId, scannerPreview = false }: { vehicleId: string; scannerPreview?: boolean }) {
   const router = useRouter();
   const [detail, setDetail] = useState<VehicleDetailDto | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "missing" | "error">("loading");
@@ -260,6 +261,11 @@ export default function VehicleClient({ vehicleId }: { vehicleId: string }) {
             <button type="button" data-action-mileage className={quietButton} onClick={() => open("mileage")}>
               Update mileage
             </button>
+            {scannerPreview && (
+              <Link href={scannerHref(vehicle, "vehicle")} data-connect-scanner className={quietButton}>
+                Connect Scanner
+              </Link>
+            )}
           </div>
         )}
         {error && <p role="alert" className="mt-3 text-sm text-red-300">{error}</p>}

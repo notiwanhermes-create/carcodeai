@@ -107,6 +107,9 @@ export type ScannerSessionOptions = {
 
 const isRefusal = (result: object): result is ScannerRefusal => "status" in result && result.status === "refused";
 
+/** The adapter's own wording for this is in the log. The likeliest cause is the ignition, but nothing is concluded about the vehicle. */
+const CAR_NOT_REACHED = "The adapter answered, but it could not reach the car. Turn the ignition on, then press Reset adapter and search again. Nothing is concluded about the vehicle.";
+
 const ATTEMPT_CANCELLED: Notice = { tone: "info", text: "The connection attempt was cancelled, so nothing was opened. Choose the adapter again." };
 
 function endNotice(what: string, ended: ScanEndReason, detail: string | null): Notice | null {
@@ -350,7 +353,9 @@ export class ScannerSession {
   private discoveryNotice(report: DiscoveryReport): Notice | null {
     const ended = this.ended("Connecting", report.ended, report.endDetail);
     if (ended) return ended;
-    return report.result.status === "no_vehicle" ? { tone: "error", text: `No vehicle was read: ${report.result.detail}.` } : null;
+    if (report.result.status !== "no_vehicle") return null;
+    const { reason, detail } = report.result;
+    return { tone: "error", text: reason === "no_ecu_answered" || reason === "no_vehicle_protocol" ? CAR_NOT_REACHED : `No vehicle was read: ${detail}.` };
   }
 
   private ended(what: string, ended: ScanEndReason, detail: string | null): Notice | null {

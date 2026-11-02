@@ -320,6 +320,24 @@ describe("lifecycle races", () => {
     expect(session.getSnapshot()).toMatchObject({ link: "ended", vehicleFound: false, notice: { tone: "error", text: expect.stringContaining("none of the profile services") } });
   });
 
+  it.each([
+    ["UNABLE TO CONNECT", "no_vehicle_protocol"],
+    ["NO DATA", "no_response"],
+  ])("%s on the first request says in plain words what to do next, and the retry works once the car answers", async (token, outcome) => {
+    const replies: Replies = { ...scriptedVehicle(), "0100": [{ lines: [token] }, { lines: ["7E8 06 41 00 98 18 80 01"] }] };
+    const link = new FakeSerialLink(() => replies);
+    const session = serialSession(link);
+    await session.connectSerial({});
+    const view = session.getSnapshot();
+    expect(view).toMatchObject({ link: "open", vehicleFound: false, notice: { tone: "error" } });
+    expect(view.notice?.text).toBe("The adapter answered, but it could not reach the car. Turn the ignition on, then press Reset adapter and search again. Nothing is concluded about the vehicle.");
+    // The adapter's own answer stays in the log.
+    expect(view.log.find((step) => step.command === "0100")).toMatchObject({ outcome });
+    await session.recover();
+    expect(session.getSnapshot()).toMatchObject({ link: "open", vehicleFound: true, notice: null });
+    await session.teardown();
+  });
+
   it("no vehicle leaves the adapter connected and says so; a scan is refused and a retry is not a connection", async () => {
     const replies: Replies = { ...scriptedVehicle(), "0100": [{ lines: ["NO DATA"] }, { lines: ["7E8 06 41 00 98 18 80 01"] }] };
     const link = new FakeSerialLink(() => replies);

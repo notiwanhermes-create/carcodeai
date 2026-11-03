@@ -203,7 +203,8 @@ describe("the page", () => {
   it("works with no vehicle context", async () => {
     browser({ serial: new FakeSerialLink() });
     render(<ScannerClient vehicle={null} />);
-    expect(document.querySelector("[data-vehicle-context]")?.textContent).toContain("No vehicle chosen");
+    expect(document.querySelector("[data-vehicle-context]")).toBeNull();
+    expect(document.querySelector("[data-identify-hint]")?.textContent).toContain("identifies the car from its VIN");
     await waitFor(() => expect(document.querySelector("[data-connect-serial]")).not.toBeNull());
   });
 
@@ -327,7 +328,9 @@ describe("the page", () => {
     expect(log.textContent).toContain("ATZ");
     expect(log.querySelector('[data-log-step="0902"]')?.textContent).toContain("7E8 10 14 49 02");
     expect(log.textContent).toContain("stays on this device");
-    expect(fetch).not.toHaveBeenCalled();
+    // The only request is the VIN lookup, carrying the VIN the car reported and nothing else.
+    expect(fetch).toHaveBeenCalled();
+    for (const [url] of vi.mocked(fetch).mock.calls) expect(url).toBe("/api/vehicles/vin?vin=1HGCM82633A004352");
   });
 
   it("polling needs an explicit selection and Start, shows pending current-data readings, and Stop ends it", async () => {
@@ -604,6 +607,52 @@ describe("the page", () => {
     await screen.findByRole("alert");
     expect(document.querySelector("[data-stage]")?.getAttribute("data-stage")).toBe("disconnected");
     expect(screen.getByRole("heading", { name: "Connect your scanner" })).toBeTruthy();
+  });
+
+  /** The scripted vehicle, reporting a VIN whose last character is `last`, so each test's lookup starts fresh. */
+  const withVin = (last: string) => () => ({ ...scriptedVehicle(), "0902": { lines: ["7E8 10 14 49 02 01 31 48 47", "7E8 21 43 4D 38 32 36 33 33", `7E8 22 41 30 30 34 33 35 ${last}`] } });
+  const decoder = (body: object, status = 200) => vi.fn(async () => new Response(JSON.stringify(body), { status }));
+
+  it("identifies the car from the VIN it reported, like a scan tool's automatic VIN detection, and says when the garage vehicle differs", async () => {
+    vi.stubGlobal("fetch", decoder({ ok: true, decoded: { year: "2003", make: "Honda", model: "Accord", trim: "EX" }, suggestions: ["2.4L I4"] }));
+    await scanned(withVin("36"));
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe("/api/vehicles/vin?vin=1HGCM82633A004356");
+    await waitFor(() => expect(document.querySelectorAll("[data-identified-vehicle]")).toHaveLength(2));
+    for (const name of document.querySelectorAll("[data-identified-vehicle]")) expect(name.textContent).toBe("2003 Honda Accord EX");
+    expect(document.body.textContent).toContain("2.4L I4");
+    expect(document.body.textContent).toContain("Identified from the VIN the car reported");
+    expect(document.querySelector("[data-garage-differs]")?.textContent).toBe("Your garage has 2015 Toyota Camry. That does not match this car.");
+    expect(document.body.textContent).not.toContain("Chosen in your garage, not confirmed by the car.");
+  });
+
+  it("a VIN that names the garage vehicle shows no mismatch", async () => {
+    vi.stubGlobal("fetch", decoder({ ok: true, decoded: { year: "2015", make: "Toyota", model: "Camry", trim: "" }, suggestions: [] }));
+    await scanned(withVin("37"));
+    await waitFor(() => expect(document.querySelector("[data-identified-vehicle]")?.textContent).toBe("2015 Toyota Camry"));
+    expect(document.querySelector("[data-garage-differs]")).toBeNull();
+  });
+
+  it("a VIN the lookup does not recognise identifies nothing and falls back to the garage vehicle, marked as not confirmed", async () => {
+    vi.stubGlobal("fetch", decoder({ ok: false, decoded: null, suggestions: [], code: "not_recognized" }));
+    await scanned(withVin("38"));
+    await waitFor(() => expect(document.querySelector('[data-vehicle-identity="not_identified"]')).not.toBeNull());
+    expect(document.querySelector("[data-identified-vehicle]")).toBeNull();
+    expect(document.body.textContent).toContain("This VIN could not be matched to a vehicle.");
+    expect(document.querySelector("[data-vehicle-card]")?.textContent).toContain("Chosen in your garage, not confirmed by the car.");
+  });
+
+  it("modules that disagree on the VIN identify nothing and ask nothing", async () => {
+    await scanned(() => ({ ...scriptedVehicle(), "0100": { lines: ["7E8 06 41 00 98 18 80 01", "7E9 06 41 00 98 18 80 00"] }, "0900": { lines: ["7E8 06 49 00 40 00 00 00", "7E9 06 49 00 40 00 00 00"] }, "0902": { lines: ["7E8 10 14 49 02 01 31 48 47", "7E8 21 43 4D 38 32 36 33 33", "7E8 22 41 30 30 34 33 35 32", "7E9 10 14 49 02 01 31 48 47", "7E9 21 43 4D 38 32 36 33 33", "7E9 22 41 30 30 34 33 35 39"] } }));
+    expect(document.body.textContent).toContain("Modules reported different VINs");
+    expect(fetch).not.toHaveBeenCalled();
+    expect(document.querySelector("[data-identified-vehicle]")).toBeNull();
+  });
+
+  it("the VIN lookup module asks only CarCode's own VIN route", () => {
+    const source = readFileSync(path.resolve(__dirname, "../app/lib/scanner-vin.ts"), "utf8");
+    expect(source.match(/\bfetch\(/g)).toHaveLength(1);
+    expect(source).toContain("fetch(`/api/vehicles/vin?vin=${encodeURIComponent(vin)}`");
   });
 
   it("outcome wording never turns a missing answer into a clean result", () => {

@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { identityName, type VehicleIdentity } from "@/app/lib/scanner-vin";
 import type { DiscoveryReport } from "@/app/lib/vehicle-communication/scanner/report";
 import { DOCUMENTED_BLE_PROFILES } from "@/app/lib/vehicle-communication/transport/ble-profiles";
 import { WEB_BLUETOOTH_LIMITATIONS } from "@/app/lib/vehicle-communication/transport/web-bluetooth";
@@ -227,22 +228,66 @@ function protocolLabel(protocol: DiscoveryReport["protocol"]): string | null {
   return protocol.family === "can11" ? "CAN, 11-bit" : "CAN, 29-bit";
 }
 
+/** The garage vehicle the page was opened for, if any, and whether it is the car the VIN names. */
+export type GarageVehicle = { name: string; sameAs: (identity: Extract<VehicleIdentity, { status: "identified" }>) => boolean } | null;
+
+/**
+ * What the car is, from the VIN it reported, decoded by the app's VIN lookup.
+ * Without a decoded VIN the garage vehicle is shown, marked as not confirmed;
+ * nothing is ever guessed.
+ */
+export function VehicleIdentityBlock({ identity, garage, size = "large" }: { identity: VehicleIdentity | null; garage: GarageVehicle; size?: "large" | "small" }) {
+  const nameClass = size === "large" ? "text-2xl font-medium tracking-tight text-slate-100" : "text-base font-medium text-slate-100";
+  const noteClass = size === "large" ? "mt-0.5 text-sm text-slate-400" : "text-xs text-slate-400";
+  const fromGarage = garage && (
+    <>
+      <p data-vehicle-context className={nameClass}>
+        {garage.name}
+      </p>
+      <p className={noteClass}>Chosen in your garage, not confirmed by the car.</p>
+    </>
+  );
+  if (identity?.status === "identified") {
+    const differs = garage && !garage.sameAs(identity);
+    return (
+      <div data-vehicle-identity="identified">
+        <p data-vehicle-context data-identified-vehicle className={nameClass}>
+          {identityName(identity)}
+        </p>
+        {identity.engine && <p className={cn(noteClass, "text-slate-300")}>{identity.engine}</p>}
+        <p className={noteClass}>Identified from the VIN the car reported (NHTSA vPIC data).</p>
+        {identity.checkDigitWarning && <p className={cn(noteClass, "text-amber-200")}>The VIN&apos;s check digit does not match. Many cars built outside North America do not use one, but the details may be off.</p>}
+        {differs && <p data-garage-differs className={cn(noteClass, "text-amber-200")}>Your garage has {garage.name}. That does not match this car.</p>}
+      </div>
+    );
+  }
+  if (identity?.status === "identifying") {
+    return (
+      <div data-vehicle-identity="identifying">
+        <p className={cn(noteClass, "text-slate-300")}>Identifying the vehicle from its VIN…</p>
+        {fromGarage}
+      </div>
+    );
+  }
+  return (
+    <div data-vehicle-identity={identity ? "not_identified" : "no_vin"}>
+      {identity && <p className={noteClass}>{identity.reason === "unavailable" ? "The VIN lookup is unavailable right now, so the vehicle was not identified." : "This VIN could not be matched to a vehicle."}</p>}
+      {fromGarage}
+    </div>
+  );
+}
+
 /** Only what was actually detected: a row with nothing behind it is left out. */
-export function ConnectedSummary({ vehicleName, discovery, linkInfo }: { vehicleName: string | null; discovery: DiscoveryReport; linkInfo: LinkInfo | null }) {
+export function ConnectedSummary({ identity, garage, discovery, linkInfo }: { identity: VehicleIdentity | null; garage: GarageVehicle; discovery: DiscoveryReport; linkInfo: LinkInfo | null }) {
   const { adapter, protocol, vinComparison } = discovery;
   const deviceName = linkInfo?.kind === "web_bluetooth" ? linkInfo.deviceName : null;
-  const identity = [...new Set([deviceName, ...adapter.ati.lines, ...adapter.description.lines].filter(Boolean))].join(", ");
+  const adapterName = [...new Set([deviceName, ...adapter.ati.lines, ...adapter.description.lines].filter(Boolean))].join(", ");
   const protocolText = protocolLabel(protocol);
   return (
     <>
-      {vehicleName && (
-        <>
-          <p data-vehicle-context className="mt-3 text-2xl font-medium tracking-tight text-slate-100">
-            {vehicleName}
-          </p>
-          <p className="mt-0.5 text-sm text-slate-400">Chosen in your garage, not confirmed by the car.</p>
-        </>
-      )}
+      <div className="mt-3">
+        <VehicleIdentityBlock identity={identity} garage={garage} />
+      </div>
       <dl className="mt-4 space-y-2">
         {vinComparison.status === "consistent" && (
           <Fact data-vin label="VIN">
@@ -254,9 +299,9 @@ export function ConnectedSummary({ vehicleName, discovery, linkInfo }: { vehicle
             <span className="text-amber-200">Modules reported different VINs. All are kept; none is picked.</span>
           </Fact>
         )}
-        {identity && (
+        {adapterName && (
           <Fact data-adapter label="Adapter">
-            {identity}
+            {adapterName}
           </Fact>
         )}
         {protocolText && <Fact label="Protocol">{protocolText}</Fact>}

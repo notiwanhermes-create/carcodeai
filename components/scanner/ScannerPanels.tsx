@@ -2,13 +2,14 @@
 
 import type { ReactNode } from "react";
 import { lookupCode } from "@/app/lib/dtc";
+import type { VehicleIdentity } from "@/app/lib/scanner-vin";
 import type { DtcKind } from "@/app/lib/vehicle-communication/obd/dtc";
 import { pidDefinition } from "@/app/lib/vehicle-communication/obd/pids";
 import type { CodeEvidence, FreezeFrameEvidence, KindState, ModuleDtcEvidence, PreviewMeasurement } from "@/app/lib/vehicle-communication/evidence/scan-evidence";
 import type { CurrentReading, DiscoveryReport, StepRecord } from "@/app/lib/vehicle-communication/scanner/report";
 import type { LinkInfo, LiveView, ScanView } from "@/app/scanner/scanner-session";
 import { Card, cn, inputClass, SectionTitle } from "@/components/garage/shared";
-import { Disclosure, focusRing, mainAction, quietAction } from "@/components/scanner/ConnectionPanels";
+import { Disclosure, focusRing, mainAction, quietAction, VehicleIdentityBlock, type GarageVehicle } from "@/components/scanner/ConnectionPanels";
 
 const hex = (n: number) => n.toString(16).toUpperCase().padStart(2, "0");
 const bytes = (data: readonly number[]) => data.map(hex).join(" ");
@@ -165,19 +166,16 @@ export function ScanSkeleton() {
 }
 
 /** What this scan's own discovery reported: a later connection never changes it. */
-export function VehicleCard({ scan, vehicleName, className }: { scan: ScanView; vehicleName: string | null; className?: string }) {
+export function VehicleCard({ scan, identity, garage, className }: { scan: ScanView; identity: VehicleIdentity | null; garage: GarageVehicle; className?: string }) {
   const { vehicle, capabilities } = scan.evidence;
   const vin = vehicle.vin.comparison.status === "consistent" ? vehicle.vin.comparison.text : null;
   return (
     <Card className={className}>
       <div data-vehicle-card>
         <SectionTitle>Vehicle</SectionTitle>
-        {vehicleName && (
-          <div className="mb-2">
-            <p className="text-base font-medium text-slate-100">{vehicleName}</p>
-            <p className="text-xs text-slate-400">Chosen in your garage, not confirmed by the car.</p>
-          </div>
-        )}
+        <div className="mb-2">
+          <VehicleIdentityBlock identity={identity} garage={garage} size="small" />
+        </div>
         {vin && (
           <p data-scan-vin className="mb-3 break-all font-mono text-sm text-slate-300">
             {vin}

@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { scannerBackLink, type ScannerVehicleContext } from "@/app/lib/scanner-preview";
+import { identifyVehicle, type VehicleIdentity } from "@/app/lib/scanner-vin";
 import { pidDefinition } from "@/app/lib/vehicle-communication/obd/pids";
 import { MAX_LIVE_CYCLES, MAX_LIVE_INTERVAL_MS, MAX_LIVE_PIDS } from "@/app/lib/vehicle-communication/scanner/controller";
 import type { DiscoveryReport } from "@/app/lib/vehicle-communication/scanner/report";
 import { DEFAULT_SERIAL_SETTINGS } from "@/app/lib/vehicle-communication/transport/web-serial";
 import { cn } from "@/components/garage/shared";
-import { AdvancedConnection, ConnectedSummary, ConnectOptions, Disclosure, FailurePanel, focusRing, mainAction, NoticeBanner, ProgressSteps, quietAction, type ManualUuids } from "@/components/scanner/ConnectionPanels";
+import { AdvancedConnection, ConnectedSummary, type GarageVehicle, ConnectOptions, Disclosure, FailurePanel, focusRing, mainAction, NoticeBanner, ProgressSteps, quietAction, type ManualUuids } from "@/components/scanner/ConnectionPanels";
 import { ConnectorGraphic } from "@/components/scanner/ConnectorGraphic";
 import { ShieldIcon } from "@/components/scanner/ScannerIcons";
 import { AdvancedDiagnostics, FaultCodesCard, FreezeFrameCard, LiveDataCard, pollKey, ReadinessCard, ScanSkeleton, ScanSummary, VehicleCard, type PollOption } from "@/components/scanner/ScannerPanels";
@@ -74,6 +75,25 @@ function Frame({ back, children }: { back: { href: string; label: string }; chil
   );
 }
 
+/** What each VIN decodes to, asked once per VIN; a VIN not yet answered reads as identifying. */
+function useVehicleIdentities(vins: (string | null)[]): (vin: string | null) => VehicleIdentity | null {
+  const [known, setKnown] = useState<Record<string, VehicleIdentity>>({});
+  const wanted = [...new Set(vins.filter((vin): vin is string => Boolean(vin)))].filter((vin) => !known[vin]).join(",");
+  useEffect(() => {
+    if (!wanted) return;
+    let live = true;
+    for (const vin of wanted.split(",")) {
+      void identifyVehicle(vin).then((identity) => {
+        if (live) setKnown((previous) => ({ ...previous, [vin]: identity }));
+      });
+    }
+    return () => {
+      live = false;
+    };
+  }, [wanted]);
+  return (vin) => (vin ? (known[vin] ?? { status: "identifying" }) : null);
+}
+
 /**
  * The scanner page. Everything stays in this page's memory: nothing is saved,
  * sent or attached to a diagnosis. Decoded values are shown as pending
@@ -113,6 +133,16 @@ export default function ScannerClient({ vehicle }: { vehicle: ScannerVehicleCont
   const options = pollable(view.discovery);
   const selection = options.filter((entry) => chosen.includes(pollKey(entry))).map(({ module, pid }) => ({ module, pid }));
   const vehicleName = vehicle ? `${vehicle.year} ${vehicle.make} ${vehicle.model}${vehicle.engine ? ` (${vehicle.engine})` : ""}` : null;
+  const garage: GarageVehicle = vehicle && vehicleName
+    ? {
+        name: vehicleName,
+        sameAs: (identity) => identity.year === vehicle.year && identity.make.toLowerCase() === vehicle.make.toLowerCase() && identity.model.toLowerCase() === vehicle.model.toLowerCase(),
+      }
+    : null;
+  // Only a VIN every answering module agreed on is decoded; conflicting VINs identify nothing.
+  const connectedVin = view.discovery?.vinComparison.status === "consistent" ? view.discovery.vinComparison.text : null;
+  const scanVin = view.scan?.evidence.vehicle.vin.comparison.status === "consistent" ? view.scan.evidence.vehicle.vin.comparison.text : null;
+  const identityOf = useVehicleIdentities([connectedVin, scanVin]);
   const kind = view.link === "choosing" ? pendingKind : (view.transport ?? pendingKind);
   const inlineNotice = view.notice && stage !== "failed" && stage !== "no_vehicle";
   const hasResults = Boolean(view.scan || view.discovery?.ecus.length);
@@ -184,7 +214,7 @@ export default function ScannerClient({ vehicle }: { vehicle: ScannerVehicleCont
                 <span aria-hidden className="mt-1.5 size-3 shrink-0 rounded-full bg-cyan-300 shadow-[0_0_14px_rgba(103,232,249,0.8)]" />
                 Connected
               </h2>
-              {view.discovery && <ConnectedSummary vehicleName={vehicleName} discovery={view.discovery} linkInfo={view.linkInfo} />}
+              {view.discovery && <ConnectedSummary identity={identityOf(connectedVin)} garage={garage} discovery={view.discovery} linkInfo={view.linkInfo} />}
               {view.needsRecovery && <p className="mt-3 text-sm text-amber-200">The adapter needs a reset before anything else is read.</p>}
               <div className="mt-6 flex flex-wrap gap-2">
                 <button type="button" data-scan className={mainAction} disabled={!canRead} onClick={() => void session.scan()}>
@@ -201,9 +231,10 @@ export default function ScannerClient({ vehicle }: { vehicle: ScannerVehicleCont
             </p>
           )}
           {(stage === "disconnected" || stage === "failed") && !view.discovery && (
-            <p data-vehicle-context className="mt-3 text-sm text-slate-400">
-              {vehicleName ?? "No vehicle chosen. You can still connect."}
-            </p>
+            <div className="mt-3 text-sm text-slate-400">
+              {vehicleName && <p data-vehicle-context>{vehicleName}</p>}
+              <p data-identify-hint>{vehicleName ? "CarCode confirms the car from its VIN once connected." : "No vehicle needed: CarCode identifies the car from its VIN once connected."}</p>
+            </div>
           )}
           {stage === "disconnected" && reconnect && <div className="mt-5">{reconnect}</div>}
           {(stage === "choosing" || stage === "connecting") && <ProgressSteps steps={connectionSteps(view, kind)} />}
@@ -240,7 +271,7 @@ export default function ScannerClient({ vehicle }: { vehicle: ScannerVehicleCont
         {(view.scan || (view.discovery && view.vehicleFound)) && (
           <div className="grid gap-4 lg:grid-cols-5">
             {view.scan && <ScanSummary scan={view.scan} connection={view.connection} />}
-            {view.scan && <VehicleCard scan={view.scan} vehicleName={vehicleName} className="lg:col-span-2" />}
+            {view.scan && <VehicleCard scan={view.scan} identity={identityOf(scanVin)} garage={garage} className="lg:col-span-2" />}
             {view.scan && <FaultCodesCard scan={view.scan} className="lg:col-span-3" />}
             {view.scan && <ReadinessCard scan={view.scan} className="lg:col-span-2" />}
             {view.scan && <FreezeFrameCard scan={view.scan} className="lg:col-span-3" />}

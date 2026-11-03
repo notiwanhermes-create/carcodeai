@@ -137,6 +137,23 @@ describe("Connect Scanner entries", () => {
     expect(container.querySelector("[data-connect-scanner]")).toBeNull();
   });
 
+  it("the home page's Scan your car section starts a scan with no vehicle, so the car identifies itself, and follows the same gate", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const route = vi.fn(async () => new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", route);
+    vi.resetModules();
+    const { ScanCarCard } = await import("../components/scanner/ConnectScannerLink");
+    const { container } = render(<ScanCarCard lang="ar" dark />);
+    expect(container.querySelector("[data-scan-car]")).toBeNull();
+    await waitFor(() => expect(container.querySelector("[data-scan-car-start]")).not.toBeNull());
+    expect(container.querySelector("[data-scan-car-start]")?.getAttribute("href")).toBe("/scanner");
+    expect(container.querySelector("h2")?.textContent).toBe("افحص سيارتك");
+    expect(route).toHaveBeenCalledTimes(1);
+
+    const home = readFileSync(path.resolve(__dirname, "../app/page.tsx"), "utf8");
+    expect(home).toMatch(/<ScanCarCard lang=\{lang\} dark=\{theme === "dark"\}/);
+  });
+
   it("the home garage offers the entry per vehicle and with an empty garage", () => {
     const home = readFileSync(path.resolve(__dirname, "../app/page.tsx"), "utf8");
     expect(home).toMatch(/<ConnectScannerLink vehicle=\{v\} returnTo=\{signedIn \? "vehicle" : "garage"\}/);

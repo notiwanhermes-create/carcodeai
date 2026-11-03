@@ -7,7 +7,7 @@ import Image from "next/image";
 import { ComboSelect } from "../components/ComboSelect";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { VehicleDeleteButton } from "../components/VehicleDeleteButton";
-import { ConnectScannerLink } from "../components/scanner/ConnectScannerLink";
+import { ConnectScannerLink, ScanCarCard } from "../components/scanner/ConnectScannerLink";
 import { LANGUAGES, tr, type LangCode } from "./data/translations";
 import { useGarageVehicles } from "./lib/useGarageVehicles";
 import { track } from "./lib/analytics";
@@ -2052,6 +2052,8 @@ export default function Home() {
             </button>
           ))}
         </div>
+
+        <ScanCarCard lang={lang} dark={theme === "dark"} className="mt-4" />
 
         <div className="mt-4 relative z-30">
           {activeVehicle ? (
